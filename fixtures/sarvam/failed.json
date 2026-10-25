@@ -1,0 +1,14 @@
+{
+  "attempt_id": "951e49d8-d9a5-45a9-aed4-c42366d29129",
+  "status": "failed",
+  "channel_info": { "channel_type": "v2v", "channel_provider": "exotel", "agent_phone_number": "+918041234567" },
+  "duration": null,
+  "interaction_id": null,
+  "failure_reason": "exotel: Phone number is registered under TRAI NDNC",
+  "final_agent_variables": null,
+  "webhook_config": {
+    "url": "https://example.supabase.co/functions/v1/sarvam-webhook?token=t0ken",
+    "metadata": null
+  },
+  "interaction_transcript": null
+}

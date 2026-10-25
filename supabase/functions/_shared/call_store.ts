@@ -1,0 +1,103 @@
+// Database access for the call functions (dial, sarvam-webhook). The interface lets tests use a fake.
+import type { SupabaseClient } from "npm:@supabase/supabase-js@2.45.4";
+import type { CallKind, CallResult } from "./sarvam.ts";
+import { serviceClient } from "./store.ts";
+
+// reserve_call() result (0003_guards.sql).
+export type Reservation =
+  | { ok: false; reason: string }
+  | {
+    ok: true;
+    call_id: string;
+    caller_number_id: string;
+    agent_version: string;
+    must_reask: boolean;
+    flags: string[];
+  };
+
+export type DialTarget = { businessPhone: string; callerNumber: string };
+
+export interface CallStore {
+  reserveCall(
+    requestId: string,
+    kind: CallKind,
+    optionId: string | null,
+    isRetry: boolean,
+  ): Promise<Reservation>;
+  dialTarget(callId: string): Promise<DialTarget>;
+  markDialing(callId: string, attemptId: string): Promise<void>;
+  markFailed(callId: string, reason: string): Promise<void>;
+  // false if this attempt's result was already stored.
+  saveEvent(attemptId: string, payload: unknown): Promise<boolean>;
+  // Writes the result to a call that is still open. Returns its id, or null if the
+  // call is unknown or already has a result (a redelivery), so hand-off runs once.
+  finishCall(result: CallResult): Promise<string | null>;
+}
+
+const OPEN = ["queued", "dialing", "in_progress"];
+
+export class DbCallStore implements CallStore {
+  constructor(private db: SupabaseClient = serviceClient()) {}
+
+  async reserveCall(requestId: string, kind: CallKind, optionId: string | null, isRetry: boolean) {
+    const { data, error } = await this.db.rpc("reserve_call", {
+      p_request_id: requestId,
+      p_kind: kind,
+      p_option_id: optionId,
+      p_is_retry: isRetry,
+    });
+    if (error) throw error;
+    return data as Reservation;
+  }
+
+  async dialTarget(callId: string): Promise<DialTarget> {
+    const { data, error } = await this.db.from("calls")
+      .select("businesses(phone_e164), caller_numbers(e164)").eq("id", callId).single();
+    if (error) throw error;
+    // deno-lint-ignore no-explicit-any
+    const row = data as any;
+    return { businessPhone: row.businesses.phone_e164, callerNumber: row.caller_numbers.e164 };
+  }
+
+  async markDialing(callId: string, attemptId: string): Promise<void> {
+    // The webhook may already have closed the call (instant failure); keep its status.
+    const { error } = await this.db.from("calls").update({ provider_call_id: attemptId })
+      .eq("id", callId);
+    if (error) throw error;
+    const { error: e2 } = await this.db.from("calls").update({ status: "dialing" })
+      .eq("id", callId).eq("status", "queued");
+    if (e2) throw e2;
+  }
+
+  async markFailed(callId: string, reason: string): Promise<void> {
+    const { error } = await this.db.from("calls").update({ status: "failed", outcome: reason })
+      .eq("id", callId).in("status", OPEN);
+    if (error) throw error;
+  }
+
+  async saveEvent(attemptId: string, payload: unknown): Promise<boolean> {
+    const { data, error } = await this.db.from("webhook_events")
+      .upsert({ source: "sarvam", external_id: attemptId, payload }, {
+        onConflict: "source,external_id",
+        ignoreDuplicates: true,
+      })
+      .select("id");
+    if (error) throw error;
+    return data.length > 0;
+  }
+
+  async finishCall(r: CallResult): Promise<string | null> {
+    const q = this.db.from("calls").update({
+      provider_call_id: r.attemptId,
+      status: r.status,
+      outcome: r.failureReason ?? r.status,
+      outputs: r.outputs,
+      transcript: r.transcript,
+      duration_s: r.durationS,
+    }).in("status", OPEN);
+    const { data, error } = await (r.callId ? q.eq("id", r.callId) : q.eq("provider_call_id", r.attemptId))
+      .select("id");
+    if (error) throw error;
+    return data[0]?.id ?? null;
+  }
+}

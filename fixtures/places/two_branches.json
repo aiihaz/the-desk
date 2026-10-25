@@ -1,0 +1,47 @@
+{
+  "places": [
+    {
+      "id": "test-place-mg-road",
+      "displayName": { "text": "Navu Bar & Kitchen", "languageCode": "en" },
+      "formattedAddress": "12 MG Road, Ashok Nagar, Bengaluru, Karnataka 560001",
+      "shortFormattedAddress": "12 MG Road, Ashok Nagar, Bengaluru",
+      "internationalPhoneNumber": "+91 98000 00101",
+      "businessStatus": "OPERATIONAL",
+      "addressComponents": [
+        { "longText": "Mahatma Gandhi Road", "shortText": "MG Road", "types": ["route"] },
+        { "longText": "Ashok Nagar", "shortText": "Ashok Nagar", "types": ["sublocality_level_1", "sublocality", "political"] },
+        { "longText": "Bengaluru", "shortText": "Bengaluru", "types": ["locality", "political"] }
+      ],
+      "regularOpeningHours": { "periods": [{ "open": { "day": 2, "hour": 17, "minute": 0 }, "close": { "day": 2, "hour": 23, "minute": 30 } }] }
+    },
+    {
+      "id": "test-place-indiranagar",
+      "displayName": { "text": "Navu", "languageCode": "en" },
+      "formattedAddress": "100 Feet Rd, Indiranagar, Bengaluru, Karnataka 560038",
+      "internationalPhoneNumber": "+91 80 4000 0102",
+      "businessStatus": "OPERATIONAL",
+      "addressComponents": [
+        { "longText": "Indiranagar", "shortText": "Indiranagar", "types": ["sublocality_level_1", "sublocality", "political"] },
+        { "longText": "Bengaluru", "shortText": "Bengaluru", "types": ["locality", "political"] }
+      ]
+    },
+    {
+      "id": "test-place-no-phone",
+      "displayName": { "text": "Navu Cafe" },
+      "formattedAddress": "Koramangala, Bengaluru",
+      "businessStatus": "OPERATIONAL"
+    },
+    {
+      "id": "test-place-closed",
+      "displayName": { "text": "Navu Express" },
+      "internationalPhoneNumber": "+91 98000 00104",
+      "businessStatus": "CLOSED_PERMANENTLY"
+    },
+    {
+      "id": "test-place-guess",
+      "displayName": { "text": "Toit Brewpub" },
+      "internationalPhoneNumber": "+91 98000 00105",
+      "businessStatus": "OPERATIONAL"
+    }
+  ]
+}

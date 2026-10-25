@@ -1,0 +1,27 @@
+{
+  "attempt_id": "44b4f89d-252b-4585-ad2e-0ed5842cc6c5",
+  "status": "connected",
+  "channel_info": { "channel_type": "v2v", "channel_provider": "exotel", "agent_phone_number": "+918041234567" },
+  "duration": 118.4,
+  "interaction_id": "20261023/1ae056a30013510b66a6a0",
+  "failure_reason": null,
+  "final_agent_variables": {
+    "call_kind": "first",
+    "outcome": "options_found",
+    "no_match_reason": "several_options",
+    "options": [{ "time": "2026-10-24T20:30:00+05:30", "party_size": 4 }, { "time": "2026-10-24T21:15:00+05:30", "party_size": 4 }],
+    "advance_required": false,
+    "contact_name": "Ravi",
+    "call_result": "options_collected",
+    "opt_out_requested": "no"
+  },
+  "webhook_config": {
+    "url": "https://example.supabase.co/functions/v1/sarvam-webhook?token=t0ken",
+    "metadata": { "call_id": "11111111-1111-4111-8111-111111111111" }
+  },
+  "interaction_transcript": [
+    { "role": "agent", "en_text": "Hello, is this Paragon? I'm calling to ask about a table for four tomorrow at 8 pm." },
+    { "role": "user", "en_text": "8 is full. We have 8:30 or 9:15." },
+    { "role": "agent", "en_text": "Thank you. I'll check with the customer and call you back shortly." }
+  ]
+}

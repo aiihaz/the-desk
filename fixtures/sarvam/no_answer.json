@@ -1,0 +1,14 @@
+{
+  "attempt_id": "df5b6536-5130-4a43-bc5d-6771d1f93355",
+  "status": "no_answer",
+  "channel_info": { "channel_type": "v2v", "channel_provider": "exotel", "agent_phone_number": "+918041234567" },
+  "duration": null,
+  "interaction_id": null,
+  "failure_reason": null,
+  "final_agent_variables": null,
+  "webhook_config": {
+    "url": "https://example.supabase.co/functions/v1/sarvam-webhook?token=t0ken",
+    "metadata": { "call_id": "22222222-2222-4222-8222-222222222222" }
+  },
+  "interaction_transcript": null
+}

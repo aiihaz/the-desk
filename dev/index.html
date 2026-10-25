@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Desk Test Bench</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #efe9dc;
+    --paper-2: #e4dccb;
+    --ink: #2b2a26;
+    --dim: #7d766a;
+    --rule: #bdb39d;
+    --desk: #8a2b1d;
+    --you: #2d4a6b;
+    --you-ink: #f4efe4;
+    --ok: #3d5a2a;
+    --warn: #9a6a12;
+    --err: #a3271c;
+    --hl: #f7e7a6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #16130e; --paper-2: #26211a; --ink: #e9dcc0; --dim: #8f8571; --rule: #3d362a;
+      --desk: #e49a6c; --you: #3f5f82; --you-ink: #f1e8d6; --ok: #a6c48a; --warn: #e2b85c; --err: #f08a7e; --hl: #3a3218;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #16130e; --paper-2: #26211a; --ink: #e9dcc0; --dim: #8f8571; --rule: #3d362a;
+    --desk: #e49a6c; --you: #3f5f82; --you-ink: #f1e8d6; --ok: #a6c48a; --warn: #e2b85c; --err: #f08a7e; --hl: #3a3218;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--paper); color: var(--ink);
+    font: 13px/1.5 "IBM Plex Mono", "Courier New", monospace;
+    display: grid; grid-template-columns: minmax(340px, 5fr) 7fr; height: 100vh; overflow: hidden;
+  }
+  button, select, input, textarea {
+    font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--rule); border-radius: 0; padding: 3px 8px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--hl); }
+  section { display: flex; flex-direction: column; min-height: 0; }
+  .scroll { overflow-y: auto; min-height: 0; }
+
+  /* Left: the phone ------------------------------------------------------- */
+  #left { border-right: 1px dashed var(--rule); }
+  .contact { padding: 14px 16px 10px; border-bottom: 1px solid var(--rule); text-align: center; position: relative; }
+  .avatar {
+    width: 38px; height: 38px; border-radius: 50%; margin: 0 auto 4px; display: grid; place-items: center;
+    background: var(--ink); color: var(--paper); font-weight: 600; letter-spacing: .04em;
+  }
+  .contact .name { font-weight: 600; font-size: 12px; }
+  .contact .sub { color: var(--dim); font-size: 11px; }
+  .contact .tag { position: absolute; right: 16px; top: 14px; color: var(--dim); font-size: 11px; }
+  #chat { flex: 1; padding: 14px 14px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .stamp { align-self: center; color: var(--dim); font-size: 11px; margin: 10px 0 6px; }
+  .bubble {
+    max-width: 78%; padding: 7px 12px; border-radius: 18px; white-space: pre-wrap; word-break: break-word;
+    margin-top: 2px;
+  }
+  .from-desk { align-self: flex-start; background: var(--paper-2); color: var(--ink); border-bottom-left-radius: 6px; }
+  .from-you { align-self: flex-end; background: var(--you); color: var(--you-ink); border-bottom-right-radius: 6px; }
+  .from-you.tap { background: transparent; color: var(--you); border: 1px solid var(--you); }
+  .gap { margin-top: 10px; }
+  .actions { align-self: flex-start; display: flex; flex-direction: column; gap: 4px; margin: 4px 0 2px; max-width: 78%; }
+  .actions button {
+    border: 1px solid var(--rule); border-radius: 14px; padding: 5px 14px; text-align: left; color: var(--desk); background: var(--paper);
+  }
+  .actions button:hover { background: var(--hl); }
+  .note { align-self: center; color: var(--dim); font-size: 11px; font-style: italic; margin: 6px 0; text-align: center; max-width: 90%; }
+  .typing { align-self: flex-start; background: var(--paper-2); border-radius: 18px; border-bottom-left-radius: 6px; padding: 9px 14px; display: none; gap: 4px; margin-top: 6px; }
+  .typing.on { display: flex; }
+  .typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); animation: blink 1.2s infinite; }
+  .typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+  .from-desk { cursor: pointer; }
+  .from-desk:hover { outline: 1px dashed var(--rule); }
+  .quote { align-self: flex-end; max-width: 70%; font-size: 11px; color: var(--dim); border-left: 2px solid var(--you); padding: 0 8px; margin-top: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #quotebar { display: none; gap: 8px; align-items: center; padding: 6px 14px; border-top: 1px solid var(--rule); font-size: 12px; color: var(--dim); }
+  #quotebar.on { display: flex; }
+  #quotebar span { flex: 1; min-width: 0; border-left: 2px solid var(--you); padding-left: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #quotebar button { border: none; padding: 0 4px; }
+  #compose { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--rule); align-items: center; }
+  #compose input { flex: 1; border-radius: 18px; padding: 8px 14px; outline: none; }
+  #compose input::placeholder { color: var(--dim); }
+  #compose button { width: 34px; height: 34px; border-radius: 50%; padding: 0; background: var(--you); color: var(--you-ink); border: none; font-weight: 600; }
+  #compose button:disabled { opacity: .4; cursor: default; }
+  details.panel { border-top: 1px solid var(--rule); }
+  details.panel > summary { padding: 6px 16px; cursor: pointer; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; font-size: 11px; }
+  .tools { padding: 4px 16px 12px; display: grid; gap: 6px; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  textarea { width: 100%; min-height: 70px; resize: vertical; font-size: 12px; }
+  .hint { color: var(--dim); font-size: 11px; }
+
+  /* Right: under the hood ------------------------------------------------- */
+  header { padding: 10px 16px; border-bottom: 1px solid var(--rule); display: flex; justify-content: space-between; gap: 8px; }
+  header b { letter-spacing: .08em; text-transform: uppercase; font-weight: 600; }
+  header span { color: var(--dim); }
+  #state { padding: 10px 16px; border-bottom: 1px solid var(--rule); max-height: 40vh; }
+  #state h3 { margin: 8px 0 2px; font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; }
+  #state h3:first-child { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  td, th { text-align: left; padding: 1px 8px 1px 0; vertical-align: top; }
+  th { color: var(--dim); font-weight: 400; border-bottom: 1px dotted var(--rule); }
+  .now { background: var(--hl); }
+  .voided { color: var(--dim); text-decoration: line-through; }
+  .mono-dim { color: var(--dim); }
+  #logbar { padding: 6px 16px; border-bottom: 1px dotted var(--rule); display: flex; gap: 14px; color: var(--dim); font-size: 12px; flex-wrap: wrap; }
+  #logbar label { cursor: pointer; }
+  #log { flex: 1; padding: 6px 16px 16px; font-size: 12px; }
+  .ev { border-bottom: 1px dotted var(--rule); padding: 3px 0; }
+  .ev > .sum { display: grid; grid-template-columns: 68px 118px 1fr; gap: 8px; cursor: pointer; }
+  .ev .t { color: var(--dim); }
+  .ev .k { font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: .04em; }
+  .ev pre { margin: 4px 0 4px 76px; padding: 6px 8px; background: var(--paper-2); white-space: pre-wrap; word-break: break-word; font-size: 11px; display: none; }
+  .ev.open pre { display: block; }
+  .k-in { color: var(--you); } .k-out { color: var(--desk); }
+  .k-gate, .k-decision { color: var(--ok); }
+  .k-luna { color: var(--you); }
+  .k-write { color: var(--warn); } .k-read { color: var(--dim); }
+  .k-err { color: var(--err); }
+  .ev.read { color: var(--dim); }
+  @media (max-width: 860px) {
+    body { grid-template-columns: 1fr; grid-template-rows: 60vh 40vh; overflow: auto; }
+    #left { border-right: none; border-bottom: 1px dashed var(--rule); }
+    .ev > .sum { grid-template-columns: 60px 1fr; }
+    .ev > .sum .k { grid-column: 2; }
+    .ev pre { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<section id="left">
+  <div class="contact">
+    <div class="avatar">D</div>
+    <div class="name">The Desk</div>
+    <div class="sub">WhatsApp (simulated) · no real calls</div>
+    <span class="tag" id="conn">…</span>
+  </div>
+  <div id="chat" class="scroll"><div class="typing" id="typing"><i></i><i></i><i></i></div></div>
+  <div id="quotebar"><span id="quotetext"></span><button type="button" id="unquote" aria-label="cancel reply">✕</button></div>
+  <form id="compose">
+    <input id="msg" autocomplete="off" placeholder="Message · click a Desk bubble to reply to it">
+    <button id="sendBtn" aria-label="send">↑</button>
+  </form>
+  <details class="panel">
+    <summary>simulate calls &amp; clock</summary>
+    <div class="tools">
+      <div class="row">
+        <button data-sim="call_1_options">call 1 → 2 options</button>
+        <button data-sim="call_booked">call → booked</button>
+      </div>
+      <div class="row">
+        <button data-sim="expire" data-hours="13">expiry job at +13h</button>
+        <button data-sim="expire" data-hours="0">expiry job now</button>
+        <button data-sim="reopen">reopen expired</button>
+        <button id="reset">reset chat</button>
+      </div>
+    </div>
+  </details>
+  <details class="panel">
+    <summary>manual tools (bypass Luna)</summary>
+    <div class="tools">
+      <div class="row">
+        <span class="hint">start</span>
+        <button data-start="booking">booking</button><button data-start="question">question</button>
+        <button id="cancelReq">cancel_request</button>
+      </div>
+      <textarea id="slots" spellcheck="false">{"party_size": 4}</textarea>
+      <div class="row">
+        <button id="setSlots">set_slots</button>
+        <select id="biz"></select><button id="setBiz">set_business</button>
+      </div>
+    </div>
+  </details>
+</section>
+
+<section id="right">
+  <header><b>Under the hood</b><span>local Supabase · fake WhatsApp &amp; Sarvam</span></header>
+  <div id="state" class="scroll"></div>
+  <div id="logbar">
+    <label><input type="checkbox" id="showReads"> db reads</label>
+    <label><input type="checkbox" id="autoscroll" checked> follow</label>
+    <span id="count"></span>
+  </div>
+  <div id="log" class="scroll"></div>
+</section>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const chat = $("#chat"), log = $("#log"), typing = $("#typing");
+const hhmm = (iso) => new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+const hms = (iso) => new Date(iso).toLocaleTimeString("en-GB");
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const short = (v, n = 90) => { const s = typeof v === "string" ? v : JSON.stringify(v); return s && s.length > n ? s.slice(0, n) + "…" : s; };
+
+let busy = 0;
+function setBusy(d) {
+  busy += d;
+  typing.classList.toggle("on", busy > 0);
+  chat.appendChild(typing);
+  chat.scrollTop = chat.scrollHeight;
+}
+async function post(path, body, showTyping = true) {
+  if (showTyping) setBusy(1);
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
+    if (!r.ok) console.warn(await r.text());
+  } finally {
+    if (showTyping) setBusy(-1);
+  }
+}
+
+// Chat: iMessage-style bubbles ------------------------------------------------
+let lastAt = 0, lastFrom = null;
+function add(el) { chat.insertBefore(el, typing); chat.scrollTop = chat.scrollHeight; return el; }
+function stamp(at) {
+  const t = new Date(at).getTime();
+  if (t - lastAt > 5 * 60_000) {
+    const s = document.createElement("div");
+    s.className = "stamp";
+    s.textContent = new Date(at).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+    add(s);
+    lastFrom = null;
+  }
+  lastAt = t;
+}
+function bubble(from, at, text, extra = "") {
+  stamp(at);
+  const b = document.createElement("div");
+  b.className = `bubble from-${from} ${extra} ${lastFrom && lastFrom !== from ? "gap" : ""}`;
+  b.textContent = text;
+  b.title = hhmm(at);
+  lastFrom = from;
+  return add(b);
+}
+function note(at, text) {
+  stamp(at);
+  const n = document.createElement("div");
+  n.className = "note"; n.textContent = text;
+  lastFrom = null;
+  add(n);
+}
+const sentText = new Map();
+let quote = null;
+function setQuote(id) {
+  quote = id;
+  $("#quotebar").classList.toggle("on", !!id);
+  $("#quotetext").textContent = id ? "Replying to: " + (sentText.get(id) ?? "") : "";
+  if (id) $("#msg").focus();
+}
+$("#unquote").onclick = () => setQuote(null);
+function renderOut(e) {
+  const m = e.data.msg;
+  const text = m.body ?? `[template ${m.name}]`;
+  sentText.set(e.data.id, text);
+  const b = bubble("desk", e.at, text);
+  b.title = "click to reply to this message";
+  b.onclick = () => setQuote(e.data.id);
+  const choices = m.kind === "buttons" ? m.buttons.map((b) => ({ id: b.id, title: b.title, label: b.title }))
+    : m.kind === "list" ? m.rows.map((r) => ({ id: r.id, title: r.title, label: r.title + (r.description ? " · " + r.description : "") }))
+    : [];
+  if (!choices.length) return;
+  const a = document.createElement("div");
+  a.className = "actions";
+  for (const ch of choices) {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = ch.label; b.title = ch.id;
+    b.onclick = () => post("/api/message", { replyId: ch.id, title: ch.title });
+    a.appendChild(b);
+  }
+  add(a);
+}
+function renderIn(e) {
+  const m = e.data;
+  if (m.quotedId) {
+    const q = document.createElement("div");
+    q.className = "quote";
+    q.textContent = "↪ " + (sentText.get(m.quotedId) ?? "earlier message");
+    add(q);
+    lastFrom = null;
+  }
+  if (m.replyId) bubble("you", e.at, `↳ ${m.text}`, "tap");
+  else bubble("you", e.at, m.text ?? `[${m.type}]`);
+}
+
+// Log --------------------------------------------------------------------------
+const KIND = (t) =>
+  t === "whatsapp_in" ? ["in", "k-in"] : t === "whatsapp_out" ? ["out", "k-out"]
+  : t === "decision:gate" ? ["gate", "k-gate"]
+  : t.startsWith("decision:luna") || t.startsWith("decision:reply") ? [t.slice(9).replace("_", " "), "k-luna"]
+  : t === "decision:fallback" ? ["fallback", "k-err"]
+  : t.startsWith("decision:") ? [t.slice(9).replace("_", " "), "k-decision"]
+  : t === "db_write" ? ["db write", "k-write"] : t === "db_read" ? ["db read", "k-read"]
+  : t === "error" || t === "simulate_refused" ? [t.replace("_", " "), "k-err"]
+  : [t.replace("_", " "), t === "luna" ? "k-luna" : t === "call" ? "k-decision" : ""];
+
+function summary(e) {
+  const d = e.data;
+  switch (e.type) {
+    case "whatsapp_in": return d.replyId ? `tap ${d.replyId}` : `${d.type} “${short(d.text, 70)}”`;
+    case "whatsapp_out": return `${d.msg.kind} ${short(d.msg.body ?? "", 70)}`;
+    case "decision:gate": {
+      const r = d.route;
+      const extra = r.kind === "consent" ? ` prompt=${r.promptId.slice(0, 8)} word=${r.word}${r.optionId ? " option=" + r.optionId.slice(0, 8) : ""}` : "";
+      const q = d.quoted ? ` · quotes ${d.quoted.prompt ? "prompt " + d.quoted.prompt.slice(0, 8) : "a chat message"}` : "";
+      return `route=${r.kind}${extra} · state=${d.state ?? "none"} · prompt ${d.prompt ? d.prompt.kind + (d.prompt.waMessageId === d.lastOutboundId ? " (last sent)" : " (not last sent)") : "none"}${q}`;
+    }
+    case "decision:luna_step": return `step ${d.step} · ${d.state ?? "no request"} · ${d.calls.map((c) => c.name).join(", ") || "no call"} · ${d.ms}ms · ${d.usage.input_tokens}→${d.usage.output_tokens} tok`;
+    case "decision:replace_guard": return d.reason;
+    case "decision:luna_error": return `step ${d.step}: ${short(d.error, 90)}`;
+    case "decision:luna_tool": return `${d.tool}(${short(d.args, 60)}) → ${short(d.result, 80)}`;
+    case "decision:reply_sent": return `“${short(d.text, 90)}”`;
+    case "decision:reply_rejected": return `${d.problem}: “${short(d.text, 60)}”`;
+    case "decision:reply_dropped": return `${d.why}: “${short(d.text, 60)}”`;
+    case "decision:find_business": return `searched “${d.searched}” (city: ${d.city_from}) → ${d.hits.join(" | ") || "no match"}${d.no_phone_or_closed ? ` · ${d.no_phone_or_closed} dropped (no phone or closed)` : ""}`;
+    case "decision:set_city": return `saved city: ${d.city}${d.from ? ` (from ${d.from})` : ""}`;
+    case "decision:places_error": return `“${d.text}”: ${short(d.error, 80)}`;
+    case "db_write": case "db_read": return `${d.method}(${short(d.args.map((a) => typeof a === "string" && a.length > 20 ? a.replace(/^dev\.(in|out)\./, "").slice(0, 8) : a), 60)}) → ${short(d.result, 70)}  ${d.ms}ms`;
+    case "luna": case "call": case "command": case "payment": return d.note;
+    default: return short(d, 110);
+  }
+}
+
+let shown = 0;
+function renderEvent(e) {
+  const [label, cls] = KIND(e.type);
+  const div = document.createElement("div");
+  div.className = "ev" + (e.type === "db_read" ? " read" : "");
+  div.dataset.type = e.type;
+  const body = e.type === "decision:luna_step"
+    ? `context Luna saw:\n\n${e.data.context}\n\n${JSON.stringify({ ...e.data, context: undefined }, null, 2)}`
+    : JSON.stringify(e.data, null, 2);
+  div.innerHTML = `<div class="sum"><span class="t">${hms(e.at)}</span><span class="k ${cls}">${esc(label)}</span><span>${esc(summary(e))}</span></div><pre>${esc(body)}</pre>`;
+  div.querySelector(".sum").onclick = () => div.classList.toggle("open");
+  if (e.type === "db_read" && !$("#showReads").checked) div.style.display = "none";
+  log.appendChild(div);
+  $("#count").textContent = `${++shown} events · click a line for the full data`;
+  if ($("#autoscroll").checked) log.scrollTop = log.scrollHeight;
+}
+$("#showReads").onchange = (ev) => {
+  for (const d of log.querySelectorAll('.ev[data-type="db_read"]')) d.style.display = ev.target.checked ? "" : "none";
+};
+
+// State ------------------------------------------------------------------------
+const id8 = (s) => s ? s.slice(0, 8) : "";
+function table(rows, cols, rowCls) {
+  if (!rows?.length) return `<div class="mono-dim">none</div>`;
+  return `<table><tr>${cols.map(([h]) => `<th>${h}</th>`).join("")}</tr>${rows.map((r) =>
+    `<tr class="${rowCls ? rowCls(r) : ""}">${cols.map(([, f]) => `<td>${esc(f(r))}</td>`).join("")}</tr>`).join("")}</table>`;
+}
+function renderState(s) {
+  const active = ["collecting","choosing_place","confirming","awaiting_yes","calling_1","options_ready","awaiting_pick","calling_2","verifying","stale_options"];
+  const fields = (f) => Object.entries(f ?? {}).map(([k, v]) => `${k}=${typeof v === "string" && /T\d\d:/.test(v) ? v.slice(5, 16).replace("T", " ") : v}`).join(" ");
+  $("#state").innerHTML =
+    `<h3>requests</h3>` + table(s.requests, [["id", (r) => id8(r.id)], ["task", (r) => r.task], ["state", (r) => r.state], ["v", (r) => r.version], ["end", (r) => r.end_reason ?? ""], ["fields", (r) => fields(r.fields)]], (r) => active.includes(r.state) ? "now" : r.state === "queued" ? "" : "voided") +
+    `<h3>consent prompts</h3>` + table(s.consent_prompts, [["id", (p) => id8(p.id)], ["req", (p) => id8(p.request_id)], ["kind", (p) => p.kind + (p.confirm_word === "cancel" ? " (CANCEL)" : "")], ["v", (p) => p.request_version], ["status", (p) => p.closed_at ? "closed: " + p.close_reason : "OPEN"], ["sent as", (p) => id8(p.wa_message_id?.replace("dev.out.", ""))]], (p) => p.closed_at ? "voided" : "now") +
+    `<h3>consents</h3>` + table(s.consents, [["id", (c) => id8(c.id)], ["req", (c) => id8(c.request_id)], ["kind", (c) => c.kind === "ask" ? "ask (#1)" : "book (#2)"], ["v", (c) => c.request_version], ["status", (c) => c.voided_at ? "void: " + c.void_reason : "valid"]], (c) => c.voided_at ? "voided" : "now") +
+    `<h3>options</h3>` + table(s.options, [["id", (o) => id8(o.id)], ["label", (o) => o.label], ["status", (o) => o.voided_at ? "void: " + o.void_reason : "live"]], (o) => o.voided_at ? "voided" : "") +
+    `<h3>calls</h3>` + table(s.calls, [["id", (c) => id8(c.id)], ["kind", (c) => c.kind], ["status", (c) => c.status]]);
+}
+
+// Wiring -----------------------------------------------------------------------
+const es = new EventSource("/events");
+es.onopen = () => { $("#conn").textContent = "live"; fetch("/api/state").then((r) => r.json()).then(renderState); };
+es.onerror = () => { $("#conn").textContent = "offline"; };
+es.onmessage = (m) => {
+  const e = JSON.parse(m.data);
+  if (e.type === "state") return renderState(e.data);
+  if (e.type === "reset") {
+    for (const el of [...chat.children]) if (el !== typing) el.remove();
+    log.innerHTML = ""; shown = 0; lastAt = 0; lastFrom = null;
+  }
+  if (e.type === "whatsapp_out") renderOut(e);
+  if (e.type === "whatsapp_in") renderIn(e);
+  if (e.type === "luna") note(e.at, e.data.note);
+  if (e.type === "call") note(e.at, "Consent stored. The call would start here; use “simulate” below to fake its result.");
+  if (e.type === "error") note(e.at, "Error: " + short(e.data.error, 120));
+  renderEvent(e);
+};
+
+$("#compose").onsubmit = (ev) => {
+  ev.preventDefault();
+  const t = $("#msg").value.trim();
+  if (!t) return;
+  $("#msg").value = "";
+  const body = { text: t, ...(quote ? { quotedId: quote } : {}) };
+  setQuote(null);
+  post("/api/message", body);
+};
+
+for (const b of document.querySelectorAll("[data-start]")) b.onclick = () => post("/api/tool", { tool: "start_new_request", args: { task: b.dataset.start } }, false);
+for (const b of document.querySelectorAll("[data-sim]")) b.onclick = () => post("/api/simulate", { action: b.dataset.sim, args: { hours: b.dataset.hours } }, false);
+$("#setSlots").onclick = () => {
+  let fields;
+  try { fields = JSON.parse($("#slots").value); } catch { return alert("slots must be JSON"); }
+  post("/api/tool", { tool: "set_slots", args: { fields } }, false);
+};
+$("#setBiz").onclick = () => post("/api/tool", { tool: "set_business", args: { business_id: $("#biz").value } }, false);
+$("#cancelReq").onclick = () => post("/api/tool", { tool: "cancel_request" }, false);
+$("#reset").onclick = () => confirm("Delete the dev user's requests and messages?") && post("/api/reset", {}, false);
+fetch("/api/businesses").then((r) => r.json()).then((bs) => {
+  $("#biz").innerHTML = bs.map((b) => `<option value="${b.id}">${esc(b.name)}, ${esc(b.address)}</option>`).join("");
+});
+$("#msg").focus();
+</script>
+</body>
+</html>

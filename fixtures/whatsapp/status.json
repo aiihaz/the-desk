@@ -1,0 +1,1 @@
+{"object":"whatsapp_business_account","entry":[{"id":"100000000000001","changes":[{"field":"messages","value":{"messaging_product":"whatsapp","metadata":{"display_phone_number":"15550000000","phone_number_id":"200000000000001"},"statuses":[{"id":"wamid.OUT1","status":"delivered","timestamp":"1792760410","recipient_id":"919800000001"}]}}]}]}
