@@ -1,7 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1.0.8";
 import type { User } from "../store.ts";
 import { parsePlaces, type PlaceHit } from "../places.ts";
-import { findBusiness, type FindDeps, nameFits, sameCity } from "./find.ts";
+import { findBusiness, type FindDeps, nameFits, sameCity, searchCity } from "./find.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
 
 const user: User = { id: "u1", waId: "919812345678", blocked: false };
@@ -28,7 +28,8 @@ function setup(hits: PlaceHit[] = fixture) {
 Deno.test("two branches: both shown by area, no phone, closed and guesses dropped", async () => {
   const { store, queries, deps } = setup();
   const r = await findBusiness(deps, user, { name: "navu", area: null, city: "Bangalore" });
-  assertEquals(queries, ["navu, Bangalore"]);
+  // Old and short city names search under Google's name.
+  assertEquals(queries, ["navu, Bengaluru"]);
   assertEquals(r.ok && (r.matches as { area: string | null }[]).map((m) => m.area), [
     "Ashok Nagar",
     "Indiranagar",
@@ -103,9 +104,13 @@ Deno.test("a match in another city is checked; the saved city copied back isn't 
   const { store, queries, deps } = setup(fixture.slice(0, 1));
   store.city = "Calicut";
   const r = await findBusiness(deps, user, { name: "navu", area: null, city: "Kozhikode" });
-  assertEquals(queries, ["navu, Calicut"]);
+  assertEquals(queries, ["navu, Kozhikode"]);
   assertEquals(String(r.ok && r.next).startsWith("none in Calicut; it is in Bengaluru."), true);
   assertEquals(sameCity("Bangalore", "Bengaluru"), true);
+  assertEquals(sameCity("TVM", "Thiruvananthapuram"), true);
+  assertEquals(searchCity("TVM"), "Thiruvananthapuram");
+  assertEquals(searchCity("new delhi"), "Delhi");
+  assertEquals(searchCity("Kannur"), "Kannur");
   assertEquals(sameCity("New  Delhi", "Delhi"), true);
   assertEquals(sameCity("Kochi", "Kozhikode"), false);
 });

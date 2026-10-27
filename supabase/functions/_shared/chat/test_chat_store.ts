@@ -3,7 +3,7 @@ import type { Outbound } from "../whatsapp.ts";
 import type { OpenPrompt } from "./gate.ts";
 import type { Prompt } from "./readback.ts";
 import type { RouteLog } from "./router.ts";
-import type { ActiveRequest, ChatStore, ConsentStored, Refused } from "./store.ts";
+import type { ActiveRequest, ChatStore, ConsentStored, Refused, TurnClaim } from "./store.ts";
 
 export class FakeChatStore implements ChatStore {
   req: ActiveRequest | null = null;
@@ -26,8 +26,15 @@ export class FakeChatStore implements ChatStore {
   consents: unknown[] = [];
   slotWrites: Record<string, unknown>[] = [];
 
+  stoppedAt: Date | null = null;
   async user() {
-    return { name: "Ihaz", phone: "+919812345678", language: "en-IN", city: this.city };
+    return {
+      name: "Ihaz",
+      phone: "+919812345678",
+      language: "en-IN",
+      city: this.city,
+      stoppedAt: this.stoppedAt,
+    };
   }
   async active() {
     return { request: this.req, prompt: this.prompt };
@@ -100,6 +107,50 @@ export class FakeChatStore implements ChatStore {
   }
   async redirectsSince() {
     return this.redirects;
+  }
+  // Turns: each claimTurn result in order, then "claimed" with an empty batch.
+  claims: TurnClaim[] = [];
+  turnLog: string[] = [];
+  async claimTurn(_u: string, wa: string) {
+    const c = this.claims.shift() ?? { status: "claimed" as const, batch: [] };
+    this.turnLog.push(`claim:${wa}:${c.status}`);
+    return c;
+  }
+  async releaseTurn(_u: string, wa: string) {
+    this.turnLog.push(`release:${wa}`);
+  }
+  async markHandled(wa: string) {
+    this.turnLog.push(`handled:${wa}`);
+  }
+  async stopUser() {
+    this.stoppedAt = new Date();
+    this.req = null;
+    this.prompt = null;
+    return { ok: true as const, cancelled: 1, in_flight: false };
+  }
+  async resumeUser() {
+    const was = !!this.stoppedAt;
+    this.stoppedAt = null;
+    return { ok: true as const, was_stopped: was };
+  }
+  deletionRequested = false;
+  async requestDeletion() {
+    this.deletionRequested = true;
+    return this.stopUser();
+  }
+  async pauseRequest() {
+    this.req = { ...this.req!, pausedAt: new Date(), state: "confirming" };
+    this.prompt = null;
+    return { ok: true as const, state: this.req.state };
+  }
+  async resumeRequest() {
+    this.req = { ...this.req!, pausedAt: null };
+    return { ok: true as const, changed: true, state: this.req.state };
+  }
+  notStarted: string[] = [];
+  async callNotStarted(id: string) {
+    this.notStarted.push(id);
+    return { ok: true as const };
   }
   async touch() {}
   async startRequest(): Promise<never> {

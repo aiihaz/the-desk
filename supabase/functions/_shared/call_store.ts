@@ -1,5 +1,6 @@
 // Database access for the call functions (dial, sarvam-webhook). The interface lets tests use a fake.
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2.45.4";
+import type { CallInputs } from "./call_vars.ts";
 import type { CallKind, CallResult } from "./sarvam.ts";
 import { serviceClient } from "./store.ts";
 
@@ -25,6 +26,8 @@ export interface CallStore {
     isRetry: boolean,
   ): Promise<Reservation>;
   dialTarget(callId: string): Promise<DialTarget>;
+  // What the voice agent's variables are built from, read for a reserved call (P15).
+  callInputs(callId: string): Promise<CallInputs>;
   markDialing(callId: string, attemptId: string): Promise<void>;
   markFailed(callId: string, reason: string): Promise<void>;
   // false if this attempt's result was already stored.
@@ -57,6 +60,47 @@ export class DbCallStore implements CallStore {
     // deno-lint-ignore no-explicit-any
     const row = data as any;
     return { businessPhone: row.businesses.phone_e164, callerNumber: row.caller_numbers.e164 };
+  }
+
+  async callInputs(callId: string): Promise<CallInputs> {
+    const { data, error } = await this.db.from("calls").select("request_id, option_id").eq("id", callId)
+      .single();
+    if (error) throw error;
+    return this.requestInputs(data.request_id, data.option_id);
+  }
+
+  // The same inputs for a request with no call yet (the dev bench shows what a call would get).
+  async requestInputs(requestId: string, optionId: string | null): Promise<CallInputs> {
+    const { data, error } = await this.db.from("requests")
+      .select("task, fields, businesses(name), users(phone_e164)").eq("id", requestId).single();
+    if (error) throw error;
+    // deno-lint-ignore no-explicit-any
+    const row = data as any;
+    let option: CallInputs["option"] = null;
+    if (optionId) {
+      const { data: o, error: e2 } = await this.db.from("options").select("label, value")
+        .eq("id", optionId).single();
+      if (e2) throw e2;
+      option = { label: o.label, value: o.value ?? {} };
+    }
+    const { data: first, error: e3 } = await this.db.from("calls").select("created_at, outputs")
+      .eq("request_id", requestId).eq("kind", "first").eq("status", "completed")
+      .order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (e3) throw e3;
+    return {
+      task: row.task,
+      fields: row.fields ?? {},
+      businessName: row.businesses?.name ?? "",
+      customerPhone: row.users?.phone_e164 ?? null,
+      option,
+      prev: first
+        ? {
+          at: first.created_at,
+          contactName: typeof first.outputs?.contact_name === "string" ? first.outputs.contact_name : null,
+          summary: typeof first.outputs?.notes === "string" ? first.outputs.notes : null,
+        }
+        : null,
+    };
   }
 
   async markDialing(callId: string, attemptId: string): Promise<void> {

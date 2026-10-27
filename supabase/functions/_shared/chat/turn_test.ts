@@ -44,6 +44,7 @@ const tonight: ActiveRequest = {
   businessId: "b1",
   bookingId: null,
   createdAt: now,
+  pausedAt: null,
 };
 
 Deno.test("IST day start", () => {

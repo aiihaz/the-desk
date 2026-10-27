@@ -114,8 +114,9 @@ function checkValue(key: keyof Fields, v: unknown, now: Date): string | null {
       return text(v, 100);
     case "customer_name":
       return text(v, 60);
+    // Room for two or three questions to one place ("walk-ins? and insurance?").
     case "question":
-      return text(v, 200);
+      return text(v, 300);
     case "also_ask":
       return text(v, 150);
     case "place_query":
@@ -133,6 +134,98 @@ function text(v: unknown, max: number): string | null {
   return typeof v === "string" && v.trim().length >= 1 && v.trim().length <= max
     ? null
     : `1-${max} characters`;
+}
+
+// "make it 7", "yes but make it five", "6 instead": an edit with a number and no unit.
+// It could be a time or a number of people, in any task, so code makes Luna ask (P9).
+// A bare "4" answering "how many?" is not an edit, and "7 pm" or "7 people" has a unit.
+const NUM = "(?:\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)";
+const BARE_EDIT = new RegExp(
+  `^(?:(?:yes|ok|okay|sure|haan)\\s+)?(?:but\\s+|actually\\s+|no\\s+)?` +
+    `(?:(?:make|change|move|shift|switch)\\s+(?:it\\s+)?(?:to\\s+)?${NUM}(?:\\s+instead)?|${NUM}\\s+instead)$`,
+);
+
+export function bareNumberEdit(text: string): boolean {
+  return BARE_EDIT.test(text.toLowerCase().replace(/[.!,?]+/g, " ").replace(/\s+/g, " ").trim());
+}
+
+// Numbers and days in what the user asked ("under 300", "ready by Friday"). A rewording
+// of the question or also_ask must keep them (P10).
+const LIMIT =
+  /\d[\d,]*(?:[.:]\d+)?|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b(?:today|tomorrow|tonight|weekend)\b/gi;
+
+function limits(s: string): string[] {
+  return [...new Set((s.match(LIMIT) ?? []).map((m) => m.toLowerCase().replace(/,/g, "")))];
+}
+
+const COMMON = new Set([
+  "the",
+  "and",
+  "you",
+  "your",
+  "for",
+  "are",
+  "can",
+  "what",
+  "does",
+  "have",
+  "with",
+  "they",
+  "them",
+  "this",
+  "that",
+  "there",
+  "how",
+  "much",
+  "any",
+  "will",
+  "ask",
+  "yes",
+  "not",
+]);
+
+function words(s: string): string[] {
+  return s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2 && !COMMON.has(w));
+}
+
+// The new question keeps under half of the old one's words: it replaces the question
+// instead of rewording or adding to it. Long words match on their first five letters.
+function replaces(old: string, next: string): boolean {
+  const before = [...new Set(words(old))];
+  if (!before.length) return false;
+  const after = words(next);
+  const kept = before.filter((w) =>
+    after.some((x) => x === w || (w.length >= 5 && x.slice(0, 5) === w.slice(0, 5)))
+  );
+  return kept.length / before.length < 0.5;
+}
+
+// A set_slots patch that rewrites question or also_ask must keep what the user asked
+// for. drop lists what the user asked to remove: a limit ("300") or "question" for a
+// question they want replaced. Returns the problem for Luna, or null.
+export function rewordingProblem(
+  current: Fields,
+  patch: Record<string, unknown>,
+  drop: string[],
+): string | null {
+  const dropped = new Set(drop.flatMap(limits));
+  for (const key of ["question", "also_ask"] as const) {
+    const old = current[key];
+    const next = patch[key];
+    if (typeof old !== "string" || typeof next !== "string" || old === next) continue;
+    const keep = new Set(limits(next));
+    const lost = limits(old).filter((t) => !keep.has(t) && !dropped.has(t));
+    if (lost.length) {
+      const list = lost.map((t) => `"${t}"`).join(", ");
+      return `${key}: the new text drops ${list} from "${old}". Keep every limit the user gave; ` +
+        `only if they asked to remove it, call again with drop: [${list}]`;
+    }
+    if (key === "question" && !drop.includes("question") && replaces(old, next)) {
+      return `question: this replaces "${old}" instead of adding to it. If they want both asked, put ` +
+        `both in question; only if they want just the new one, call again with drop: ["question"]`;
+    }
+  }
+  return null;
 }
 
 // What the request still needs before a read-back. "business" and "booking" are

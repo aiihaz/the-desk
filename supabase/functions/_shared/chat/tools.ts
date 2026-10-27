@@ -2,8 +2,8 @@
 // stores through the SQL functions, moves the state, and sends the code-built
 // read-back once nothing is missing. The dev test page calls these directly.
 import type { User } from "../store.ts";
-import { checkSlots, collectingState } from "./slots.ts";
-import { group, type Task } from "./states.ts";
+import { checkSlots, collectingState, rewordingProblem } from "./slots.ts";
+import { group, type Task, TASKS } from "./states.ts";
 import type { ActiveRequest, Refused } from "./store.ts";
 import { bookItPrompt } from "./readback.ts";
 import { presentReadback, type PromptDeps, sendPrompt } from "./turn.ts";
@@ -26,9 +26,28 @@ export async function startNewRequest(
   task: Task,
   confirmReplace = false,
 ): Promise<ToolResult> {
+  if (!TASKS.includes(task)) {
+    return {
+      ok: false,
+      reason: "changing or cancelling bookings isn't available yet. Say so once, plainly, and that they " +
+        "should contact the place directly. Don't collect details for it",
+    };
+  }
+  const { request } = await deps.store.active(user.id);
+  const cur = request ?? await deps.store.queued(user.id);
+  // Another place for the same task is the same request with a new business; a new
+  // request would drop the details they gave.
+  if (cur && cur.task === task && group(cur.state) === "before_consent") {
+    const res = {
+      ok: false as const,
+      reason: `there is already an open ${task}. To change the place, find_business and choose_business ` +
+        "on it; to change details, set_slots. Its details stay. Only if they want to start over, " +
+        "cancel_request first",
+    };
+    deps.trace?.("same_task_guard", res);
+    return res;
+  }
   if (!confirmReplace) {
-    const { request } = await deps.store.active(user.id);
-    const cur = request ?? await deps.store.queued(user.id);
     if (cur && wouldLose(cur)) {
       const where = cur.businessId ? ` at ${(await deps.store.place(cur.businessId)).name}` : "";
       const res = {
@@ -60,16 +79,23 @@ export async function cancelActive(deps: ToolDeps, user: User): Promise<ToolResu
   return res;
 }
 
+// drop: what the user asked to remove from question or also_ask (rewordingProblem).
 export async function setSlots(
   deps: ToolDeps,
   user: User,
   patch: Record<string, unknown>,
+  drop: string[] = [],
 ): Promise<ToolResult> {
   const r = await current(deps, user);
   if (!r) return { ok: false, reason: "no_active_request" };
   const check = checkSlots(r.task, r.fields, patch, deps.now?.() ?? new Date());
   deps.trace?.("check_slots", check);
   if (!check.ok) return { ok: false, reason: "invalid", errors: check.errors };
+  const reworded = rewordingProblem(r.fields, check.patch, drop);
+  if (reworded) {
+    deps.trace?.("reword_guard", reworded);
+    return { ok: false, reason: reworded };
+  }
   const res = await deps.store.updateSlots(r.id, check.patch);
   deps.trace?.("update_slots", res);
   if (!res.ok) return res;
@@ -78,6 +104,7 @@ export async function setSlots(
 
 // After the user picks a place (find_business in step 3, or the dev page).
 export async function setBusiness(deps: ToolDeps, user: User, businessId: string): Promise<ToolResult> {
+  if (!UUID.test(businessId)) return { ok: false, reason: UNKNOWN_BUSINESS };
   const r = await current(deps, user);
   if (!r) return { ok: false, reason: "no_active_request" };
   const res = await deps.store.setBusiness(r.id, businessId);
@@ -105,6 +132,7 @@ async function settle(deps: ToolDeps, user: User, requestId: string): Promise<To
   }
   if (to !== "confirming") return { ok: true, state: to };
   if (r.state === "awaiting_yes") return { ok: true, state: r.state };
+  if (r.pausedAt) return { ok: true, state: to, paused: "no read-back until they say to carry on" };
   const sent: { ok: true; promptId: string } | Refused = await presentReadback(deps, user, r.id);
   deps.trace?.("read_back", sent);
   return sent.ok ? { ok: true, state: "awaiting_yes", prompt_id: sent.promptId } : sent;
@@ -114,7 +142,11 @@ async function settle(deps: ToolDeps, user: User, requestId: string): Promise<To
 // read-back names the place, so the user's YES confirms it. With no saved city yet,
 // the picked place's city becomes theirs, so the next search starts there.
 export async function chooseBusiness(deps: ToolDeps, user: User, businessId: string): Promise<ToolResult> {
-  if (!(await deps.store.businessExists(businessId))) return { ok: false, reason: "unknown business_id" };
+  // Checked before the database: a made-up id ("PLACEHOLDER", a name) is not a uuid and
+  // would fail the query, and with it the whole turn.
+  if (!UUID.test(businessId) || !(await deps.store.businessExists(businessId))) {
+    return { ok: false, reason: UNKNOWN_BUSINESS };
+  }
   if (!(await deps.store.user(user.id)).city) {
     const { city } = await deps.store.place(businessId);
     if (city) {
@@ -123,6 +155,31 @@ export async function chooseBusiness(deps: ToolDeps, user: User, businessId: str
     }
   }
   return setBusiness(deps, user, businessId);
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UNKNOWN_BUSINESS = "unknown business_id; use one from find_business or my_places";
+
+// "Hang on, don't do anything yet": the read-back closes and nothing is sent or called
+// until resumeActive. A YES meanwhile gets the paused_hold template (gate).
+export async function pauseActive(deps: ToolDeps, user: User): Promise<ToolResult> {
+  const r = await current(deps, user);
+  if (!r) return { ok: false, reason: "no_active_request" };
+  const res = await deps.store.pauseRequest(r.id);
+  deps.trace?.("pause_request", res);
+  return res.ok
+    ? { ok: true, state: res.state, paused: "nothing is sent or called until they're back" }
+    : res;
+}
+
+// They're back: lift the pause, and send the read-back again if nothing is missing.
+export async function resumeActive(deps: ToolDeps, user: User): Promise<ToolResult> {
+  const r = await current(deps, user);
+  if (!r) return { ok: false, reason: "no_active_request" };
+  const res = await deps.store.resumeRequest(r.id);
+  deps.trace?.("resume_request", res);
+  if (!res.ok) return res;
+  return settle(deps, user, r.id);
 }
 
 // A saved place by label or alias ("paragon", "the usual biryani place").

@@ -21,9 +21,23 @@ export type ActiveRequest = {
   businessId: string | null;
   bookingId: string | null;
   createdAt: Date;
+  // Set while the user has asked the Desk to wait (pause_request); no read-back goes out.
+  pausedAt: Date | null;
 };
 
-export type UserInfo = { name: string | null; phone: string | null; language: string; city: string | null };
+export type UserInfo = {
+  name: string | null;
+  phone: string | null;
+  language: string;
+  city: string | null;
+  // Set by STOP, cleared by START.
+  stoppedAt: Date | null;
+};
+
+// claim_turn(): a turn takes every unhandled message up to its own as one batch.
+export type TurnClaim =
+  | { status: "claimed"; batch: string[] }
+  | { status: "busy" | "newer" | "handled" };
 
 export type Refused = { ok: false; reason: string };
 export type Changed = { ok: true; changed: boolean; state: State; version: number };
@@ -70,6 +84,19 @@ export interface ChatStore {
   savePlace(p: PlaceHit): Promise<string>;
   setCity(userId: string, city: string): Promise<void>;
   logRoute(log: RouteLog): Promise<void>;
+  // One turn per user at a time, and a burst of messages is one turn (0006).
+  claimTurn(userId: string, waMessageId: string, ttlS: number): Promise<TurnClaim>;
+  releaseTurn(userId: string, waMessageId: string): Promise<void>;
+  // A message handled outside a turn (a command), so no later batch counts it.
+  markHandled(waMessageId: string): Promise<void>;
+  // STOP, START, "delete my data" (0006). Stopping ends every request not yet calling.
+  stopUser(userId: string): Promise<{ ok: true; cancelled: number; in_flight: boolean }>;
+  resumeUser(userId: string): Promise<{ ok: true; was_stopped: boolean }>;
+  requestDeletion(userId: string): Promise<{ ok: true; cancelled: number; in_flight: boolean }>;
+  pauseRequest(requestId: string): Promise<{ ok: true; state: State } | Refused>;
+  resumeRequest(requestId: string): Promise<{ ok: true; changed: boolean; state: State } | Refused>;
+  // The consent's call could not start: the request ends.
+  callNotStarted(requestId: string): Promise<{ ok: true } | Refused>;
   // Gate-mode redirects since `since`, for the daily redirect cap.
   redirectsSince(userId: string, since: Date): Promise<number>;
 
@@ -123,8 +150,11 @@ function toRequest(r: Row): ActiveRequest {
     businessId: r.business_id,
     bookingId: r.booking_id,
     createdAt: new Date(r.created_at),
+    pausedAt: r.paused_at ? new Date(r.paused_at) : null,
   };
 }
+
+const REQUEST_COLUMNS = "id, task, state, version, fields, business_id, booking_id, created_at, paused_at";
 
 export class DbChatStore implements ChatStore {
   constructor(private db: SupabaseClient = serviceClient()) {}
@@ -137,14 +167,20 @@ export class DbChatStore implements ChatStore {
 
   async user(userId: string): Promise<UserInfo> {
     const { data, error } = await this.db.from("users")
-      .select("name, phone_e164, language, city").eq("id", userId).single();
+      .select("name, phone_e164, language, city, stopped_at").eq("id", userId).single();
     if (error) throw error;
-    return { name: data.name, phone: data.phone_e164, language: data.language, city: data.city };
+    return {
+      name: data.name,
+      phone: data.phone_e164,
+      language: data.language,
+      city: data.city,
+      stoppedAt: data.stopped_at ? new Date(data.stopped_at) : null,
+    };
   }
 
   async active(userId: string) {
     const { data, error } = await this.db.from("requests")
-      .select("id, task, state, version, fields, business_id, booking_id, created_at")
+      .select(REQUEST_COLUMNS)
       .eq("user_id", userId).in("state", ACTIVE).maybeSingle();
     if (error) throw error;
     if (!data) return { request: null, prompt: null };
@@ -169,7 +205,7 @@ export class DbChatStore implements ChatStore {
 
   async queued(userId: string): Promise<ActiveRequest | null> {
     const { data, error } = await this.db.from("requests")
-      .select("id, task, state, version, fields, business_id, booking_id, created_at")
+      .select(REQUEST_COLUMNS)
       .eq("user_id", userId).eq("state", "queued")
       .order("created_at", { ascending: false }).limit(1).maybeSingle();
     if (error) throw error;
@@ -178,8 +214,7 @@ export class DbChatStore implements ChatStore {
 
   async request(requestId: string): Promise<ActiveRequest> {
     const { data, error } = await this.db.from("requests")
-      .select("id, task, state, version, fields, business_id, booking_id, created_at").eq("id", requestId)
-      .single();
+      .select(REQUEST_COLUMNS).eq("id", requestId).single();
     if (error) throw error;
     return toRequest(data);
   }
@@ -278,8 +313,60 @@ export class DbChatStore implements ChatStore {
       l3_result: l.l3Result,
       l3_failed: l.l3Failed,
       latency_ms: l.latencyMs,
+      luna_model: l.lunaModel,
+      luna_reasoning_effort: l.lunaEffort,
+      luna_max_output_tokens: l.lunaMaxOutputTokens,
     });
     if (error) throw error;
+  }
+
+  async claimTurn(userId: string, waMessageId: string, ttlS: number): Promise<TurnClaim> {
+    const res = await this.rpc<{ status: TurnClaim["status"]; batch?: Row[] }>("claim_turn", {
+      p_user_id: userId,
+      p_message_id: waMessageId,
+      p_ttl_s: ttlS,
+    });
+    return res.status === "claimed"
+      ? { status: "claimed", batch: (res.batch ?? []).map(inboundText) }
+      : { status: res.status } as TurnClaim;
+  }
+
+  async releaseTurn(userId: string, waMessageId: string): Promise<void> {
+    await this.rpc("release_turn", { p_user_id: userId, p_message_id: waMessageId });
+  }
+
+  async markHandled(waMessageId: string): Promise<void> {
+    const { error } = await this.db.from("messages").update({ handled_at: new Date().toISOString() })
+      .eq("wa_message_id", waMessageId).is("handled_at", null);
+    if (error) throw error;
+  }
+
+  stopUser(userId: string) {
+    return this.rpc<{ ok: true; cancelled: number; in_flight: boolean }>("stop_user", { p_user_id: userId });
+  }
+
+  resumeUser(userId: string) {
+    return this.rpc<{ ok: true; was_stopped: boolean }>("resume_user", { p_user_id: userId });
+  }
+
+  requestDeletion(userId: string) {
+    return this.rpc<{ ok: true; cancelled: number; in_flight: boolean }>("request_data_deletion", {
+      p_user_id: userId,
+    });
+  }
+
+  pauseRequest(requestId: string) {
+    return this.rpc<{ ok: true; state: State } | Refused>("pause_request", { p_request_id: requestId });
+  }
+
+  resumeRequest(requestId: string) {
+    return this.rpc<{ ok: true; changed: boolean; state: State } | Refused>("resume_request", {
+      p_request_id: requestId,
+    });
+  }
+
+  callNotStarted(requestId: string) {
+    return this.rpc<{ ok: true } | Refused>("call_not_started", { p_request_id: requestId });
   }
 
   async redirectsSince(userId: string, since: Date): Promise<number> {
@@ -290,10 +377,13 @@ export class DbChatStore implements ChatStore {
     return count ?? 0;
   }
 
+  // Inbound messages count once a turn has taken them, so a turn never answers a
+  // message that arrived during it; the next turn does.
   async history(userId: string, since: Date, limit: number): Promise<ChatLine[]> {
     const { data, error } = await this.db.from("messages")
       .select("direction, body, at").eq("user_id", userId).gte("at", since.toISOString())
-      .order("at", { ascending: false }).limit(limit);
+      .or("direction.eq.out,handled_at.not.is.null")
+      .order("at", { ascending: false }).order("seq", { ascending: false }).limit(limit);
     if (error) throw error;
     return data.reverse().map((m: Row) => ({
       from: m.direction === "in" ? "user" as const : "desk" as const,
@@ -450,7 +540,7 @@ export class DbChatStore implements ChatStore {
 }
 
 // Stored inbound bodies are Meta's raw message (or the dev page's equivalent).
-function inboundText(b: Row): string {
+export function inboundText(b: Row): string {
   if (typeof b?.text === "string") return b.text;
   if (b?.text?.body) return b.text.body;
   const reply = b?.interactive?.button_reply ?? b?.interactive?.list_reply;

@@ -1,5 +1,50 @@
 import { assertEquals } from "jsr:@std/assert@1.0.8";
-import { checkSlots, collectingState, missing } from "./slots.ts";
+import { bareNumberEdit, checkSlots, collectingState, missing, rewordingProblem } from "./slots.ts";
+
+Deno.test("bare-number edits: a number with no unit, in an edit (P9)", () => {
+  for (
+    const t of [
+      "make it 7 instead",
+      "yes but make it 7",
+      "make it five",
+      "6 instead",
+      "change to 8",
+      "Make it 7.",
+    ]
+  ) {
+    assertEquals(bareNumberEdit(t), true, t);
+  }
+  for (
+    const t of ["7", "4", "make it 7 pm", "make it 7 people", "five people, not 5pm", "at 7", "make it 8:30"]
+  ) {
+    assertEquals(bareNumberEdit(t), false, t);
+  }
+});
+
+Deno.test("rewording keeps the user's limits and adds questions rather than swapping (P7, P10)", () => {
+  const q = { question: "Do you dry clean blazers, and is the price under Rs 300?" };
+  const open = { question: "Do you dry clean blazers? If yes, what is the price?" };
+  assertEquals(rewordingProblem(q, open, [])?.startsWith('question: the new text drops "300"'), true);
+  assertEquals(rewordingProblem(q, open, ["300"]), null);
+  assertEquals(rewordingProblem(q, { question: "Can you dry clean a blazer for under 300?" }, []), null);
+  const friday = { question: "Do you do pickup and delivery, ready by Friday?" };
+  assertEquals(
+    rewordingProblem(friday, { question: "Do you do pickup and delivery?" }, [])?.includes('"friday"'),
+    true,
+  );
+
+  const walk = { question: "Do you take walk-ins?" };
+  const insurance = { question: "Do you accept Star Health insurance?" };
+  assertEquals(rewordingProblem(walk, insurance, [])?.startsWith("question: this replaces"), true);
+  assertEquals(rewordingProblem(walk, insurance, ["question"]), null);
+  assertEquals(
+    rewordingProblem(walk, { question: "Do you take walk-ins, and accept Star Health insurance?" }, []),
+    null,
+  );
+  // A first question, or one cleared, has nothing to keep.
+  assertEquals(rewordingProblem({}, insurance, []), null);
+  assertEquals(rewordingProblem(walk, { question: null }, []), null);
+});
 
 const now = new Date("2026-10-23T12:00:00+05:30");
 

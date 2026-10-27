@@ -33,7 +33,8 @@ Set these on the Supabase project (`supabase secrets set ...`):
 | `WA_VERIFY_TOKEN` | any long random string; paste the same one into Meta's webhook setup |
 | `WA_ACCESS_TOKEN` | WhatsApp → API setup (temporary token, then a system-user token) |
 | `WA_PHONE_NUMBER_ID` | WhatsApp → API setup → Phone number ID |
-| `DESK_ECHO` | `1` to echo every message back (E3 round-trip test only) |
+| `DESK_ECHO` | `1` to echo every message back instead of running the chat agent (E3 round-trip test only) |
+| `DESK_ADMIN_WA_IDS` | comma-separated wa_ids allowed admin commands (the commands themselves are E7) |
 
 Webhook URL for Meta: `https://<project-ref>.supabase.co/functions/v1/wa-inbound`, subscribed to the `messages` field.
 
@@ -67,12 +68,14 @@ Same place as the Sarvam ones: `supabase/functions/.env` locally, `supabase secr
 - `supabase/migrations/0002_limits.sql`: configurable limits, `set_limit()`, `get_limit()` (5.2)
 - `supabase/migrations/0003_guards.sql`: `check_dial()` and `reserve_call()` (5.1). Every call goes through `reserve_call()`.
 - `supabase/migrations/0004_chat.sql`: the chat state machine: request lifecycle, consent prompts, version bumps that void old approvals (E4 design 2.5, 2.8)
-- `supabase/tests/`: pgTAP suites for guards, limits and the chat state machine
+- `supabase/migrations/0006_evidence_fixes.sql`: fixes from the 27 Oct evidence review: STOP/START and "delete my data" (`stop_user()`; while stopped no prompt, consent or call), pause (`pause_request()`), one turn per user with bursts merged (`claim_turn()`), `max_advance_rs` 0 by default, `call_not_started()`, Luna's settings in `router_log`
+- `supabase/tests/`: pgTAP suites for guards, limits, the chat state machine and the 0006 fixes
 - `supabase/functions/_shared/chat/`: the chat agent: code gate (`gate.ts`), slot checks, code-built read-backs, Luna's cards, the turn router (`turn.ts`), tool actions (`tools.ts`), Luna's prompt and tool loop (`luna.ts`, OpenAI Responses API via `_shared/openai.ts`; model pinned in the `luna_model` limit)
 - `dev/`: local test bench while WhatsApp is blocked. `supabase start`, then `deno task dev`, then open http://localhost:8787. Real chat agent and Luna against the local database; WhatsApp and Sarvam are faked, so no message or call leaves the machine. With the bench running, `deno task eval` plays 5 live conversations through it and reports pass/fail, user messages to the read-back, Luna steps, time and tokens (`dev/evals.ts`; costs a few OpenAI calls)
 - `supabase/functions/_shared/places.ts`: Google Places Text Search (New), India only; `_shared/chat/find.ts` decides the city (named in the chat, else the saved one; the first one named is saved), keeps callable matches, and tells Luna when to ask which branch or check a match in another city. The bench uses real Places when `GOOGLE_MAPS_API_KEY` is set
-- `supabase/functions/wa-inbound/`: Meta webhook (signature check, dedupe, hand-off)
+- `supabase/functions/_shared/chat/agent.ts`: the one entry for an inbound message, used by `wa-inbound` and the bench alike: commands at once, else a `turn_debounce_ms` wait and one turn per user. `commands.ts` runs STOP/START/delete; `calls.ts` starts the call after a consent and ends the request if it can't start
+- `supabase/functions/wa-inbound/`: Meta webhook (signature check, dedupe, hand-off to the chat agent)
 - `supabase/functions/wa-send/`: internal send endpoint; `_shared/deliver.ts` is the one send path (24-hour window check + log)
 - `supabase/functions/_shared/sarvam.ts`: Instant Outbound request, webhook parsing, token check
-- `supabase/functions/dial/`: internal; `reserve_call()` first, then Sarvam. The only way to start a call
+- `supabase/functions/dial/` and `_shared/dial.ts`: internal; `reserve_call()` first, then Sarvam. The only way to start a call. The voice agent's variables are built from the request's stored, consented fields (`_shared/call_vars.ts`); a request body carrying `variables` is refused
 - `supabase/functions/sarvam-webhook/`: token check, raw event stored, call row closed once, hand-off (E6 fills it in)

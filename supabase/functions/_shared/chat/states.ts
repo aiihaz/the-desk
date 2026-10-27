@@ -56,25 +56,37 @@ export type Tool =
   | "my_places"
   | "cancel_request"
   | "start_new_request"
+  | "pause_request"
+  | "resume_request"
   | "pick_option"
   | "find_booking";
 
-// null = no active request.
-export function toolsFor(state: State | null): Tool[] {
+// Reschedule and cancel need Desk bookings, which come with E6. Until then neither is
+// offered, so Luna says so once instead of collecting details for a request that can't finish.
+export const BOOKING_CHANGES = false;
+export const TASKS: Task[] = BOOKING_CHANGES
+  ? ["booking", "question", "reschedule", "cancel"]
+  : ["booking", "question"];
+const findBooking: Tool[] = BOOKING_CHANGES ? ["find_booking"] : [];
+
+// null = no active request. paused: the request is on hold (pause_request).
+export function toolsFor(state: State | null, paused = false): Tool[] {
+  const hold: Tool[] = [paused ? "resume_request" : "pause_request"];
   const t = ((): Tool[] => {
     switch (state) {
       // Two widenings of the design table so Luna can do a whole message in one step:
       // set_slots with start_new_request (it applies to the request just started), and
       // the place tools while collecting. Code checks every call either way.
       case null:
-        return ["start_new_request", "set_slots", "find_business", "my_places", "find_booking"];
+        return ["start_new_request", "set_slots", "find_business", "my_places", ...findBooking];
       case "collecting":
         return [
           "set_slots",
           "find_business",
           "choose_business",
           "my_places",
-          "find_booking",
+          ...findBooking,
+          ...hold,
           "cancel_request",
           "start_new_request",
         ];
@@ -87,12 +99,23 @@ export function toolsFor(state: State | null): Tool[] {
           "choose_business",
           "set_slots",
           "my_places",
+          ...hold,
           "cancel_request",
           "start_new_request",
         ];
+      // The place tools here too: "try another laundry" changes the business of this
+      // request and keeps its details; a new request would drop them.
       case "confirming":
       case "awaiting_yes":
-        return ["set_slots", "cancel_request", "start_new_request"];
+        return [
+          "set_slots",
+          "find_business",
+          "choose_business",
+          "my_places",
+          ...hold,
+          "cancel_request",
+          "start_new_request",
+        ];
       case "options_ready":
       case "awaiting_pick":
       case "stale_options":
@@ -107,7 +130,7 @@ export function toolsFor(state: State | null): Tool[] {
       case "verifying":
         return ["start_new_request"];
       default:
-        return ["start_new_request", "my_places", "find_booking"];
+        return ["start_new_request", "my_places", ...findBooking];
     }
   })();
   return ["reply", ...t];

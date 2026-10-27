@@ -19,7 +19,11 @@ import {
   startNewRequest,
   type ToolDeps,
 } from "../supabase/functions/_shared/chat/tools.ts";
-import { handleTurn, sendPrompt, type TurnDeps } from "../supabase/functions/_shared/chat/turn.ts";
+import { sendPrompt } from "../supabase/functions/_shared/chat/turn.ts";
+import { type AgentDeps, handleInbound } from "../supabase/functions/_shared/chat/agent.ts";
+import { runCommand } from "../supabase/functions/_shared/chat/commands.ts";
+import { DbCallStore } from "../supabase/functions/_shared/call_store.ts";
+import { callVariables } from "../supabase/functions/_shared/call_vars.ts";
 import { type LunaDeps, runLuna } from "../supabase/functions/_shared/chat/luna.ts";
 import { responsesClient } from "../supabase/functions/_shared/openai.ts";
 import { jevClient } from "../supabase/functions/_shared/jev.ts";
@@ -89,6 +93,15 @@ const WRITES = new Set([
   "openPrompt",
   "promptSent",
   "recordConsent",
+  "claimTurn",
+  "releaseTurn",
+  "markHandled",
+  "stopUser",
+  "resumeUser",
+  "requestDeletion",
+  "pauseRequest",
+  "resumeRequest",
+  "callNotStarted",
 ]);
 
 // Logs every ChatStore call with its arguments, result and time.
@@ -170,25 +183,40 @@ const lunaDeps: LunaDeps | null = openaiKey
   }
   : null;
 
-const turnDeps: TurnDeps = {
+const callStore = new DbCallStore(db);
+
+// The same entry as production (wa-inbound): debounce, one turn per user, real commands.
+// Only the call is faked: on a consent the bench shows the variables dial would send.
+const turnDeps: AgentDeps = {
   store,
   send,
   isAdmin: (waId) => waId === DEV_WA_ID && Deno.env.get("DEV_ADMIN") === "1",
   trace: (event, data) => emit(`decision:${event}`, data),
-  luna: async (user, _text, msg) => {
+  luna: async (user, text, msg) => {
     if (!lunaDeps) {
       return emit("luna", { note: "OPENAI_API_KEY is not set in supabase/functions/.env; Luna is off." });
     }
-    await runLuna(lunaDeps, user, msg.at, msg.messageId);
+    await runLuna(lunaDeps, user, msg.at, msg.messageId, text);
   },
   onConsent: async (_user, consent) => {
+    const r = await store.request(consent.request_id);
+    const kind = consent.kind === "book" ? "booking" : r.task === "question" ? "question" : "first";
+    let variables: unknown;
+    try {
+      variables = callVariables(kind, await callStore.requestInputs(r.id, consent.option_id), false);
+    } catch (e) {
+      variables = { error: errText(e) };
+    }
     emit("call", {
-      note: "Consent stored. E6 would now call dial (reserve_call → Sarvam). No call is placed here; " +
-        "use Simulate to fake the result.",
+      note: "Consent stored. Production now calls dial (reserve_call → Sarvam) with these variables. " +
+        "No call is placed here; use Simulate to fake the result.",
       consent,
+      kind,
+      variables,
     });
   },
-  onCommand: async (_user, route) => emit("command", { note: "Commands are E7; nothing done.", route }),
+  onCommand: (user, route) =>
+    runCommand({ store, send, trace: (event, data) => emit(`decision:${event}`, data) }, user, route),
   onPayment: async (_user, route) =>
     emit("payment", { note: "Screenshot check is E7; nothing done.", route }),
 };
@@ -300,7 +328,7 @@ async function onMessage(
   };
   emit("whatsapp_in", msg);
   await waStore.saveInbound(user.id, msg);
-  await handleTurn(user, msg, turnDeps);
+  await handleInbound(user, msg, turnDeps);
 }
 
 async function onTool(body: { tool: string; args?: Record<string, unknown> }) {
@@ -419,8 +447,12 @@ async function reset() {
   const user = await devUser();
   await db.from("requests").delete().eq("user_id", user.id);
   await db.from("messages").delete().eq("user_id", user.id);
-  // A new user: no saved city, so the first search shows where the place is.
-  await db.from("users").update({ city: null }).eq("id", user.id);
+  await db.from("user_turns").delete().eq("user_id", user.id);
+  // A new user: no saved city, not stopped, so the first search shows where the place is.
+  await db.from("users").update({ city: null, stopped_at: null, delete_requested_at: null }).eq(
+    "id",
+    user.id,
+  );
   history.length = 0;
   emit("reset", { user_id: user.id });
 }

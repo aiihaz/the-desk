@@ -27,7 +27,7 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
     deps.trace?.("set_city", { city: named });
   }
 
-  const text = [name, area, city].filter(Boolean).join(", ");
+  const text = [name, area, city && searchCity(city)].filter(Boolean).join(", ");
   let found: PlaceHit[];
   try {
     found = await deps.searchPlaces({ text });
@@ -140,13 +140,27 @@ const CITY_ALIASES: Record<string, string> = {
   baroda: "vadodara",
   vizag: "visakhapatnam",
   "new delhi": "delhi",
+  // Short forms people type.
+  tvm: "thiruvananthapuram",
+  blr: "bengaluru",
+  bom: "mumbai",
+  hyd: "hyderabad",
+  ekm: "kochi",
+  clt: "kozhikode",
+  ggn: "gurugram",
 };
 
+function cityKey(s: string): string {
+  return s.toLowerCase().normalize("NFKD").replace(/[^\p{L} ]/gu, "").replace(/\s+/g, " ").trim();
+}
+
 export function sameCity(a: string, b: string | null): boolean {
-  if (!b) return false;
-  const norm = (s: string) => {
-    const t = s.toLowerCase().normalize("NFKD").replace(/[^\p{L} ]/gu, "").replace(/\s+/g, " ").trim();
-    return CITY_ALIASES[t] ?? t;
-  };
-  return norm(a) === norm(b);
+  const norm = (s: string) => CITY_ALIASES[cityKey(s)] ?? cityKey(s);
+  return !!b && norm(a) === norm(b);
+}
+
+// The name to search with: "TVM" and "Trivandrum" search as Thiruvananthapuram.
+export function searchCity(city: string): string {
+  const known = CITY_ALIASES[cityKey(city)];
+  return known ? known.replace(/(^|\s)\p{L}/gu, (c) => c.toUpperCase()) : city;
 }

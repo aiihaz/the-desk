@@ -24,6 +24,10 @@ export type RouteLog = {
   l3Result: "pass" | "retry_pass" | "fallback" | null;
   l3Failed: string[];
   latencyMs: number | null;
+  // The Luna settings this turn ran with, so an eval can tell which produced a reply.
+  lunaModel: string | null;
+  lunaEffort: string | null;
+  lunaMaxOutputTokens: number | null;
 };
 
 // What Jev sees: the task card and the last 4 messages (design L1).

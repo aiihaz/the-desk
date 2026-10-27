@@ -1,5 +1,6 @@
 // In-memory CallStore for the dial and sarvam-webhook tests.
 import type { CallStore, DialTarget, Reservation } from "./call_store.ts";
+import type { CallInputs } from "./call_vars.ts";
 import type { CallKind, CallResult } from "./sarvam.ts";
 
 type Row = { id: string; status: string; providerCallId: string | null; outcome: string | null };
@@ -31,6 +32,23 @@ export class FakeCallStore implements CallStore {
   }
   async dialTarget(): Promise<DialTarget> {
     return { businessPhone: "+919876543210", callerNumber: "+918041234567" };
+  }
+  inputs: CallInputs = {
+    task: "booking",
+    fields: {
+      party_size: 4,
+      customer_name: "Ihaz",
+      exact_time: "2026-10-23T20:00:00+05:30",
+      may_book: true,
+      max_advance_rs: 0,
+    },
+    businessName: "Paragon",
+    customerPhone: "+919812345678",
+    option: null,
+    prev: null,
+  };
+  async callInputs() {
+    return this.inputs;
   }
   async markDialing(callId: string, attemptId: string) {
     const c = this.calls.get(callId)!;

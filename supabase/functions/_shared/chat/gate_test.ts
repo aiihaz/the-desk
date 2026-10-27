@@ -26,6 +26,9 @@ const readback: GateContext = {
   quotedPromptId: null,
   heldDeposit: false,
   isAdmin: false,
+  stopped: false,
+  paused: false,
+  burst: false,
 };
 
 const optionList: GateContext = {
@@ -88,10 +91,69 @@ Deno.test("typed YES in several languages, only when the read-back was the last 
   });
 });
 
-Deno.test("anything but a listed word goes to Luna, which cannot consent", () => {
-  for (const t of ["ok", "yes but make it 5", "sure why not", "yess", "👍"]) {
+Deno.test("anything but approval words goes to Luna, which cannot consent", () => {
+  for (
+    const t of [
+      "yes but make it 5",
+      "sure why not",
+      "yess",
+      "👍",
+      "did you ask them yet?",
+      "ok thanks",
+      "please",
+    ]
+  ) {
     assertEquals(classify(text(t), readback), { kind: "luna", text: t }, t);
   }
+});
+
+Deno.test("plain-words approval right after the read-back is consent (P2)", () => {
+  for (
+    const t of [
+      "ok",
+      "okay",
+      "sure go ahead",
+      "ok go ahead",
+      "haan theek hai",
+      "Yes please, go ahead!",
+      "do it",
+    ]
+  ) {
+    assertEquals(classify(text(t), readback).kind, "consent", t);
+  }
+  // Not the last thing sent: re-send the plan instead.
+  assertEquals(classify(text("okay"), { ...readback, lastOutboundId: "wamid.luna" }), {
+    kind: "resend_prompt",
+  });
+  // A possible loss still needs the word CANCEL.
+  const loss: GateContext = { ...readback, prompt: { ...readback.prompt!, confirmWord: "cancel" } };
+  assertEquals(classify(text("sure go ahead"), loss).kind, "luna");
+  // Never a pick from a list.
+  assertEquals(classify(text("ok"), optionList).kind, "luna");
+});
+
+Deno.test("an approval at the end of a burst is not consent (P6)", () => {
+  assertEquals(classify(text("yes"), { ...readback, burst: true }), { kind: "luna", text: "yes" });
+  assertEquals(classify(text("2"), { ...optionList, burst: true }), { kind: "luna", text: "2" });
+});
+
+Deno.test("stopped: nothing but START does anything, taps included (P1)", () => {
+  const stopped = { ...readback, stopped: true };
+  assertEquals(classify(text("yes"), stopped), { kind: "stopped" });
+  assertEquals(classify(inbound({ type: "interactive", replyId: "yes:p1" }), stopped), { kind: "stopped" });
+  assertEquals(classify(text("book paragon tonight"), stopped), { kind: "stopped" });
+  assertEquals(classify(text("START"), stopped), { kind: "command", command: "start", text: "START" });
+  assertEquals(classify(text("stop"), stopped).kind, "command");
+  // START when not stopped is just a word.
+  assertEquals(classify(text("start"), nothing), { kind: "luna", text: "start" });
+});
+
+Deno.test("paused: an approval or a tap has nothing to approve (P3)", () => {
+  const paused = { ...readback, paused: true, prompt: null };
+  assertEquals(classify(text("yes"), paused), { kind: "paused" });
+  assertEquals(classify(text("go ahead"), paused), { kind: "paused" });
+  assertEquals(classify(inbound({ type: "interactive", replyId: "yes:p1" }), paused), { kind: "paused" });
+  assertEquals(classify(text("ok I'm back, carry on"), paused).kind, "luna");
 });
 
 Deno.test("typed YES with no open prompt (after a replace) goes to Luna", () => {
@@ -150,6 +212,7 @@ Deno.test("YES on a Book-it prompt is consent #2 for its one option", () => {
 Deno.test("commands come before everything else", () => {
   assertEquals(classify(text("STOP"), readback), { kind: "command", command: "stop", text: "STOP" });
   assertEquals(classify(text("delete my data"), readback).kind, "command");
+  assertEquals(classify(text("stop"), { ...readback, paused: true }).kind, "command");
   assertEquals(classify(text("stop all"), readback), { kind: "luna", text: "stop all" });
   assertEquals(classify(text("stop all"), { ...readback, isAdmin: true }), {
     kind: "command",

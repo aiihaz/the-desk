@@ -34,13 +34,27 @@ Deno.test("task card shows filled, missing, and the state's tools", () => {
       "filled: party_size=4; place_query=paragon",
       "missing: time (window_start and window_end, or exact_time), customer_name, business",
       "business: not picked",
-      "tools: reply, set_slots, find_business, choose_business, my_places, find_booking, cancel_request, start_new_request",
+      "tools: reply, set_slots, find_business, choose_business, my_places, pause_request, cancel_request, start_new_request",
     ].join("\n"),
   );
   assertEquals(
     taskCard(null, now),
-    "TASK\nnone active\ntools: reply, start_new_request, set_slots, find_business, my_places, find_booking",
+    "TASK\nnone active\ntools: reply, start_new_request, set_slots, find_business, my_places",
   );
+});
+
+Deno.test("a paused request says so and offers resume", () => {
+  const card = taskCard({
+    task: "booking",
+    state: "confirming",
+    fields: {},
+    place: null,
+    hasBooking: false,
+    options: [],
+    paused: true,
+  }, now);
+  assertEquals(card.includes("paused: yes"), true);
+  assertEquals(card.includes("resume_request") && !card.includes("pause_request"), true);
 });
 
 Deno.test("recent requests, at most three", () => {

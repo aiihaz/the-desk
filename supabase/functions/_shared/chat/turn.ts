@@ -3,7 +3,7 @@
 // Also builds and sends the code-built read-back once slots are complete.
 import type { User } from "../store.ts";
 import type { Inbound, Outbound } from "../whatsapp.ts";
-import { classify, type Route } from "./gate.ts";
+import { classify, normalise, type Route } from "./gate.ts";
 import {
   bookingReadback,
   cancelReadback,
@@ -40,15 +40,24 @@ export function istDayStart(now: Date): Date {
   return new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate()) - 330 * 60_000);
 }
 
-export async function handleTurn(user: User, msg: Inbound, deps: TurnDeps): Promise<void> {
+// msg is the last message of the turn; batch is the text of every message the turn
+// took (claim_turn), oldest first. Without a batch the turn is that one message.
+export async function handleTurn(
+  user: User,
+  msg: Inbound,
+  deps: TurnDeps,
+  batch: string[] = [],
+): Promise<void> {
   const { store } = deps;
   const now = deps.now?.() ?? new Date();
   const { request, prompt } = await store.active(user.id);
-  const [lastOutboundId, heldDeposit, quotedPromptId] = await Promise.all([
+  const [lastOutboundId, heldDeposit, quotedPromptId, info] = await Promise.all([
     store.lastOutboundId(user.id),
     store.heldDeposit(user.id),
     msg.quotedId ? store.promptForMessage(user.id, msg.quotedId) : Promise.resolve(null),
+    store.user(user.id),
   ]);
+  const burst = new Set(batch.map(normalise)).size > 1;
   const route = classify(msg, {
     state: request?.state ?? null,
     prompt,
@@ -56,6 +65,9 @@ export async function handleTurn(user: User, msg: Inbound, deps: TurnDeps): Prom
     quotedPromptId,
     heldDeposit,
     isAdmin: deps.isAdmin(user.waId),
+    stopped: !!info.stoppedAt,
+    paused: !!request?.pausedAt,
+    burst,
   });
   deps.trace?.("gate", {
     route,
@@ -64,6 +76,9 @@ export async function handleTurn(user: User, msg: Inbound, deps: TurnDeps): Prom
     lastOutboundId,
     quoted: msg.quotedId ? { message: msg.quotedId, prompt: quotedPromptId } : null,
     heldDeposit,
+    stopped: !!info.stoppedAt,
+    paused: !!request?.pausedAt,
+    batch,
   });
 
   // STOP and delete my data always work, even over the daily cap.
@@ -96,6 +111,10 @@ export async function handleTurn(user: User, msg: Inbound, deps: TurnDeps): Prom
       return refuseStale(deps, user);
     case "resend_prompt":
       return resendOpenPrompt(deps, user);
+    case "stopped":
+      return sendTemplate(deps, user, "stopped_reminder");
+    case "paused":
+      return sendTemplate(deps, user, "paused_hold");
     case "screenshot":
     case "ask_screenshot":
       return deps.onPayment(user, route, msg);
@@ -104,7 +123,7 @@ export async function handleTurn(user: User, msg: Inbound, deps: TurnDeps): Prom
   }
 }
 
-async function sendTemplate(deps: TurnDeps, user: User, key: string): Promise<void> {
+export async function sendTemplate(deps: PromptDeps, user: User, key: string): Promise<void> {
   const { language } = await deps.store.user(user.id);
   const text = await deps.store.template(key, language);
   if (!text) throw new Error(`no template ${key}`);
@@ -149,7 +168,9 @@ export async function sendPrompt(
 
 // Called by code once the slots are complete (state confirming). First writes the
 // code-only fields the consent must cover (may_book, max_advance_rs, tolerance), so
-// a later change to a limit can't change what the user approved.
+// a later change to a limit can't change what the user approved. max_advance_rs is 0
+// unless set for the user, and the read-back then says no advance will be agreed (P5).
+// Nothing goes out while the request is paused.
 export async function presentReadback(
   deps: PromptDeps,
   user: User,
@@ -159,6 +180,7 @@ export async function presentReadback(
   const now = deps.now?.() ?? new Date();
   let r = await store.request(requestId);
   if (r.state !== "confirming" && r.state !== "awaiting_yes") return { ok: false, reason: "wrong_state" };
+  if (r.pausedAt) return { ok: false, reason: "paused" };
 
   const code: Record<string, unknown> = {};
   if (r.task === "booking" || r.task === "reschedule") {

@@ -4,6 +4,7 @@ import type { Item, ResponseOut } from "../openai.ts";
 import type { Outbound } from "../whatsapp.ts";
 import { checkReply, type LunaDeps, runLuna } from "./luna.ts";
 import { cleanField } from "./tools.ts";
+import type { ActiveRequest } from "./store.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
 
 const user: User = { id: "u1", waId: "919812345678", blocked: false };
@@ -60,7 +61,6 @@ Deno.test("Luna sees the clock and the cards, and only this state's tools", asyn
     "set_slots",
     "find_business",
     "my_places",
-    "find_booking",
   ]);
 });
 
@@ -160,6 +160,7 @@ Deno.test("starting a new request over one with details is refused until the use
     businessId: "b1",
     bookingId: null,
     createdAt: now,
+    pausedAt: null,
   };
   await runLuna(deps, user, now);
   const out = JSON.parse(inputs[1].find((i) => i.type === "function_call_output")!.output);
@@ -264,6 +265,115 @@ Deno.test("gate, Jev down for L3: a short task reply goes out, a long one gets t
   await runLuna(long.deps, user, now);
   assertEquals(long.sent, [{ kind: "text", body: "[fallback_generic]" }]);
   assertEquals(long.store.routes[0].l3Failed, ["jev_down"]);
+});
+
+const awaitingYes = (
+  fields: ActiveRequest["fields"],
+  task: ActiveRequest["task"] = "booking",
+): ActiveRequest => ({
+  id: "r1",
+  task,
+  state: "awaiting_yes",
+  version: 2,
+  fields,
+  businessId: "b1",
+  bookingId: null,
+  createdAt: now,
+  pausedAt: null,
+});
+
+Deno.test("'make it 7' on a 6 pm checkup: set_slots is refused, Luna has to ask", async () => {
+  const { store, inputs, sent, deps } = setup([
+    [call("set_slots", { fields: { party_size: 7 } })],
+    [call("reply", { text: "7 pm, or 7 people?" })],
+  ]);
+  store.req = awaitingYes({
+    service: "checkup",
+    exact_time: "2026-10-23T18:00:00+05:30",
+    customer_name: "Ihaz",
+  });
+  await runLuna(deps, user, now, null, "make it 7 instead");
+  const out = JSON.parse(inputs[1].find((i) => i.type === "function_call_output")!.output);
+  assertEquals([out.ok, out.reason.includes("time or a number of people")], [false, true]);
+  assertEquals(store.slotWrites, []);
+  assertEquals(sent, [{ kind: "text", body: "7 pm, or 7 people?" }]);
+});
+
+Deno.test("a reworded question that drops the user's limit is refused", async () => {
+  const { store, inputs, deps } = setup([
+    [call("set_slots", { fields: { question: "Do you dry clean blazers? If yes, what is the price?" } })],
+    [call("reply", { text: "Updated." })],
+  ]);
+  store.req = awaitingYes(
+    { question: "Do you dry clean blazers, and is the price under Rs 300?" },
+    "question",
+  );
+  await runLuna(deps, user, now, null, "if you dont know just ask them, no booking");
+  const out = JSON.parse(inputs[1].find((i) => i.type === "function_call_output")!.output);
+  assertEquals([out.ok, out.reason.startsWith('question: the new text drops "300"')], [false, true]);
+  assertEquals(store.slotWrites, []);
+});
+
+Deno.test("a made-up business id is refused without touching the database", async () => {
+  const { store, inputs, deps } = setup([
+    [call("choose_business", { business_id: "PLACEHOLDER" })],
+    [call("reply", { text: "Which branch?" })],
+  ]);
+  store.businessExists = () => Promise.reject(new Error("22P02 invalid input syntax for type uuid"));
+  store.req = { ...awaitingYes({}), state: "choosing_place" };
+  await runLuna(deps, user, now);
+  const out = JSON.parse(inputs[1].find((i) => i.type === "function_call_output")!.output);
+  assertEquals(out.reason, "unknown business_id; use one from find_business or my_places");
+});
+
+Deno.test("a tool that throws is fed back as a failure; the user still gets a reply", async () => {
+  const { store, sent, inputs, deps } = setup([
+    [call("cancel_request", {})],
+    [call("reply", { text: "Sorry, I couldn't cancel that just now." })],
+  ]);
+  store.req = awaitingYes({ party_size: 4 });
+  store.cancelRequest = () => Promise.reject(new Error("db down"));
+  await runLuna(deps, user, now);
+  assertEquals(JSON.parse(inputs[1].find((i) => i.type === "function_call_output")!.output).ok, false);
+  assertEquals(sent, [{ kind: "text", body: "Sorry, I couldn't cancel that just now." }]);
+});
+
+Deno.test("a reply promising a queue that doesn't exist is sent back", async () => {
+  const { store, sent, inputs, deps } = setup([
+    [call("reply", { text: "Yes, I can handle both. I'll queue the dental one behind it." }, "a")],
+    [call("reply", { text: "One at a time: finish the laundry question first, or drop it?" }, "b")],
+  ]);
+  store.req = awaitingYes({ question: "Do you deliver?" }, "question");
+  await runLuna(deps, user, now);
+  assertEquals(JSON.parse(inputs[1].at(-1)!.output).reason.startsWith("nothing is queued"), true);
+  assertEquals(sent, [{
+    kind: "text",
+    body: "One at a time: finish the laundry question first, or drop it?",
+  }]);
+});
+
+Deno.test("pause: the read-back closes, and the tools offer resume", async () => {
+  const { store, tools, deps } = setup([
+    [call("pause_request", {}), call("reply", { text: "Sure, I'll wait." })],
+    [call("reply", { text: "Still here." })],
+  ]);
+  store.req = awaitingYes({ party_size: 4 });
+  await runLuna(deps, user, now);
+  assertEquals(store.req!.pausedAt !== null, true);
+  await runLuna(deps, user, now);
+  assertEquals(tools[1].includes("resume_request") && !tools[1].includes("pause_request"), true);
+});
+
+Deno.test("the log records Luna's model and settings for the turn", async () => {
+  const { store, deps } = setup([[call("reply", { text: "Which day?" })]]);
+  store.texts = { luna_model: "gpt-6-luna-2026-10-01", luna_reasoning_effort: "medium" };
+  await runLuna(deps, user, now);
+  const log = store.routes[0];
+  assertEquals([log.lunaModel, log.lunaEffort, log.lunaMaxOutputTokens], [
+    "gpt-6-luna-2026-10-01",
+    "medium",
+    1500,
+  ]);
 });
 
 Deno.test("without a pinned model, Jev doesn't run and the log says off", async () => {

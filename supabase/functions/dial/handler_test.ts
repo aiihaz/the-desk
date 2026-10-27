@@ -18,9 +18,9 @@ function setup(start?: (c: StartCall) => Promise<string>) {
 
 const post = (body: unknown) => new Request("http://x/dial", { method: "POST", body: JSON.stringify(body) });
 
-const ok = { request_id: "r-1", kind: "first", variables: { party_size: 4 } };
+const ok = { request_id: "r-1", kind: "first" };
 
-Deno.test("reserves, dials, stores the attempt id", async () => {
+Deno.test("reserves, builds the variables from stored fields, dials, stores the attempt id", async () => {
   const { deps, store, started } = setup();
   const res = await handle(post({ ...ok, language: "Tamil" }), deps);
   assertEquals(res.status, 200);
@@ -29,7 +29,22 @@ Deno.test("reserves, dials, stores the attempt id", async () => {
   assertEquals(started[0].businessPhone, "+919876543210");
   assertEquals(started[0].agentVersion, "3");
   assertEquals(started[0].language, "Tamil");
-  assertEquals(started[0].variables, { party_size: 4, must_reask: false });
+  assertEquals(started[0].variables, {
+    window_start: null,
+    window_end: null,
+    exact_time: "2026-10-23T20:00:00+05:30",
+    tolerance_min: null,
+    party_size: 4,
+    service: null,
+    max_price: null,
+    may_book: true,
+    max_advance_rs: 0,
+    customer_name: "Ihaz",
+    customer_phone: "+919812345678",
+    also_ask: null,
+    business_name: "Paragon",
+    must_reask: false,
+  });
   assertEquals(store.calls.get("c-1"), {
     id: "c-1",
     status: "dialing",
@@ -38,12 +53,40 @@ Deno.test("reserves, dials, stores the attempt id", async () => {
   });
 });
 
+Deno.test("variables in the body are refused: no caller tells the voice agent anything (P15)", async () => {
+  const { deps, store, started } = setup();
+  const res = await handle(
+    post({ ...ok, variables: { party_size: 40, customer_phone: "+910000000000" } }),
+    deps,
+  );
+  assertEquals(res.status, 400);
+  assertEquals(await res.json(), { error: "variables_not_accepted" });
+  assertEquals([store.reserved, started], [[], []]);
+});
+
 Deno.test("must_reask from reserve_call reaches the agent", async () => {
   const { deps, store, started } = setup();
   store.reservation = { ...store.reservation, must_reask: true } as typeof store.reservation;
+  store.inputs = {
+    ...store.inputs,
+    option: { label: "9:30 pm", value: { time: "2026-10-23T21:30:00+05:30" } },
+    prev: { at: "2026-10-23T18:00:00+05:30", contactName: "Ravi", summary: null },
+  };
   await handle(post({ ...ok, kind: "booking", option_id: "o-1" }), deps);
   assertEquals(store.reserved[0].optionId, "o-1");
   assertEquals(started[0].variables.must_reask, true);
+  assertEquals(started[0].variables.option_time, "2026-10-23T21:30:00+05:30");
+  assertEquals(started[0].variables.prev_contact_name, "Ravi");
+});
+
+Deno.test("a required input missing: the call row fails, Sarvam is never called", async () => {
+  const { deps, store, started } = setup();
+  store.inputs = { ...store.inputs, fields: { party_size: 4, may_book: true } };
+  const res = await handle(post(ok), deps);
+  assertEquals(res.status, 502);
+  assertEquals((await res.json()).detail, "Error: first call is missing time, customer_name");
+  assertEquals(started, []);
+  assertEquals(store.calls.get("c-1")!.status, "failed");
 });
 
 Deno.test("refused by check_dial → 409 with the reason, Sarvam never called", async () => {
@@ -67,7 +110,7 @@ Deno.test("Sarvam error → call row marked failed, 502", async () => {
 Deno.test("bad input → 400 before any reservation", async () => {
   const { deps, store } = setup();
   assertEquals((await handle(post({ ...ok, kind: "chat" }), deps)).status, 400);
-  assertEquals((await handle(post({ kind: "first", variables: {} }), deps)).status, 400);
+  assertEquals((await handle(post({ kind: "first" }), deps)).status, 400);
   assertEquals((await handle(post({ ...ok, language: "Klingon" }), deps)).status, 400);
   assertEquals(store.reserved, []);
 });

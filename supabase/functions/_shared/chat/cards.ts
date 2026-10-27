@@ -20,6 +20,8 @@ export type TaskView = {
   place: Place | null;
   hasBooking: boolean;
   options: { label: string; detail: string | null }[];
+  // The user asked the Desk to wait (pause_request).
+  paused?: boolean;
 };
 
 export type RecentRequest = {
@@ -65,6 +67,7 @@ export function taskCard(t: TaskView | null, now: Date): string {
     "TASK",
     `task: ${t.task}`,
     `state: ${t.state}${STATE_NOTE[t.state] ? ` (${STATE_NOTE[t.state]})` : ""}`,
+    ...(t.paused ? ["paused: yes (they asked you to wait; no read-back until resume_request)"] : []),
     `filled: ${filled.length ? filled.join("; ") : "nothing yet"}`,
     `missing: ${need.length ? need.join(", ") : "nothing"}`,
     `business: ${t.place ? placeName(t.place) : "not picked"}`,
@@ -76,7 +79,7 @@ export function taskCard(t: TaskView | null, now: Date): string {
       }`,
     );
   }
-  lines.push(`tools: ${toolsFor(t.state).join(", ")}`);
+  lines.push(`tools: ${toolsFor(t.state, t.paused).join(", ")}`);
   return lines.join("\n");
 }
 

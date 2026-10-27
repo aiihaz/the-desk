@@ -23,6 +23,13 @@ export type GateContext = {
   // The user has a booking held_pending_deposit (eng plan 2.2).
   heldDeposit: boolean;
   isAdmin: boolean;
+  // The user sent STOP and not START since (users.stopped_at).
+  stopped: boolean;
+  // The active request is paused (requests.paused_at).
+  paused: boolean;
+  // This turn takes several different messages at once (claim_turn). An approval at the
+  // end of a burst ("make it 7", "yes") would approve the plan before the edit: not consent.
+  burst: boolean;
 };
 
 export type Route =
@@ -33,14 +40,17 @@ export type Route =
   | { kind: "resend_prompt" }
   | { kind: "screenshot" }
   | { kind: "ask_screenshot" }
-  | { kind: "command"; command: "stop" | "delete_data" | "admin"; text: string }
+  | { kind: "command"; command: "stop" | "start" | "delete_data" | "admin"; text: string }
+  // Anything but START while stopped: say how to turn the Desk back on.
+  | { kind: "stopped" }
+  // An approval while the request is paused: nothing is open to approve; say so.
+  | { kind: "paused" }
   | { kind: "ignore" }
   // Free text, or a marker for media Luna can't read, goes to the router and Luna.
   | { kind: "luna"; text: string };
 
 // Typed approvals. Short and fixed on purpose: anything else goes to Luna, which
-// cannot consent. "ok" is left out because it is often only an acknowledgement.
-// Needs a native speaker's review for hi, ml and ta.
+// cannot consent. Needs a native speaker's review for hi, ml and ta.
 const YES = new Set([
   "yes",
   "y",
@@ -71,6 +81,56 @@ const YES = new Set([
   "சரி",
 ]);
 
+// Plain-words approvals (P2): "sure go ahead", "okay", "haan theek hai". A message counts
+// only if it is made of these phrases and nothing else, so "yes but make it 7" (an edit)
+// and "did you ask them yet?" go to Luna. Like YES, it binds only to a "yes" prompt that
+// is the last thing sent or is quoted; a CANCEL prompt still needs the word CANCEL.
+const ASSENT = [
+  "ok",
+  "okay",
+  "okk",
+  "okie",
+  "sure",
+  "alright",
+  "all right",
+  "fine",
+  "go ahead",
+  "go on",
+  "go for it",
+  "do it",
+  "proceed",
+  "confirm",
+  "confirmed",
+  "call them",
+  "book it",
+  "sounds good",
+  "perfect",
+  "theek hai",
+  "thik hai",
+  "chalo",
+  "kar do",
+  "karo",
+  "ठीक है",
+];
+// Words that may go with an approval but are not one on their own ("please", "ji").
+const ASSENT_FILLER = ["please", "pls", "plz", "ji", "then", "now"];
+const ASSENT_PHRASES = [...YES, ...ASSENT, ...ASSENT_FILLER].map((p) => p.split(" "))
+  .sort((a, b) => b.length - a.length);
+
+export function isAssent(t: string): boolean {
+  const words = t.replace(/[,.!]+/g, " ").split(" ").filter(Boolean);
+  let core = false;
+  for (let i = 0; i < words.length;) {
+    const hit = ASSENT_PHRASES.find((p) => p.every((w, k) => words[i + k] === w));
+    if (!hit) return false;
+    if (!ASSENT_FILLER.includes(hit.join(" "))) core = true;
+    i += hit.length;
+  }
+  return core;
+}
+
+const START = new Set(["start", "resume"]);
+
 const PAID = new Set(["paid", "i paid", "i have paid", "payment done", "done paid", "paid it"]);
 
 const ADMIN = /^(status|review|stop all|resume|credit\b|optout\b|limits|set limit\b|numbers|number off\b)/;
@@ -80,37 +140,59 @@ export function normalise(text: string): string {
   return text.normalize("NFC").trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!,]+$/u, "").trim();
 }
 
+// The command a message is, whatever the state. Code runs these before any wait or turn.
+export function command(msg: Inbound, isAdmin: boolean): Extract<Route, { kind: "command" }> | null {
+  if (msg.type !== "text" || msg.replyId) return null;
+  const raw = (msg.text ?? "").trim();
+  const t = normalise(raw);
+  if (isAdmin && ADMIN.test(t)) return { kind: "command", command: "admin", text: raw };
+  if (t === "stop") return { kind: "command", command: "stop", text: raw };
+  if (t === "delete my data") return { kind: "command", command: "delete_data", text: raw };
+  if (START.has(t)) return { kind: "command", command: "start", text: raw };
+  return null;
+}
+
 export function classify(msg: Inbound, ctx: GateContext): Route {
-  // 1. Button and list taps.
+  if (msg.type === "reaction") return { kind: "ignore" };
+
+  // 1. Commands. STOP, START and delete always work, whatever the state or daily cap.
+  //    START when not stopped is just a word, for Luna.
+  const cmd = command(msg, ctx.isAdmin);
+  if (cmd && (cmd.command !== "start" || ctx.stopped)) return cmd;
+
+  // 2. Stopped: nothing else does anything until START (P1).
+  if (ctx.stopped) return { kind: "stopped" };
+
+  const raw = msg.text ?? "";
+  const t = msg.type === "text" ? normalise(raw) : "";
+  const yes = YES.has(t) || isAssent(t);
+  const approval = yes || t === "cancel" || /^[1-9]$/.test(t);
+
+  // 3. Paused: a tap or a typed approval has nothing open to approve (P3).
+  if (ctx.paused && (msg.replyId || approval)) return { kind: "paused" };
+
+  // 4. Button and list taps.
   if (msg.replyId) return tap(msg.replyId, ctx);
 
-  // 2. Media. A screenshot while a deposit is held goes to the payment check.
-  if (msg.type === "reaction") return { kind: "ignore" };
+  // 5. Media. A screenshot while a deposit is held goes to the payment check.
   if (msg.type === "image" && ctx.heldDeposit) return { kind: "screenshot" };
   if (msg.type !== "text") return { kind: "luna", text: mediaMarker(msg.type) };
 
-  const raw = msg.text ?? "";
-  const t = normalise(raw);
-
-  // 3. Commands. STOP and delete always work, whatever the state or daily cap.
-  if (ctx.isAdmin && ADMIN.test(t)) return { kind: "command", command: "admin", text: raw.trim() };
-  if (t === "stop") return { kind: "command", command: "stop", text: raw.trim() };
-  if (t === "delete my data") return { kind: "command", command: "delete_data", text: raw.trim() };
-
-  // 4. Typed approvals bind to the open prompt if it was the last thing sent, or if the
+  // 6. Typed approvals bind to the open prompt if it was the last thing sent, or if the
   //    user quoted it (review item 12). Quoting an older prompt is refused like an old tap.
+  //    At the end of a burst they go to Luna with the rest of it.
   const p = ctx.prompt;
-  const approval = YES.has(t) || t === "cancel" || /^[1-9]$/.test(t);
+  if (ctx.burst && approval) return { kind: "luna", text: raw };
   const quotedOpen = !!p && ctx.quotedPromptId === p.id;
   if (ctx.quotedPromptId && !quotedOpen && approval) return { kind: "stale_approval" };
   const bound = quotedOpen || (!!p?.waMessageId && p.waMessageId === ctx.lastOutboundId);
   if (p && p.kind === "ask") {
-    const word = YES.has(t) ? "yes" : t === "cancel" ? "cancel" : null;
+    const word = t === "cancel" ? "cancel" : yes ? "yes" : null;
     if (word && word === p.confirmWord) {
       return bound ? { kind: "consent", promptId: p.id, optionId: null, word } : { kind: "resend_prompt" };
     }
   }
-  if (p && p.kind === "book" && YES.has(t)) {
+  if (p && p.kind === "book" && yes) {
     return bound
       ? { kind: "consent", promptId: p.id, optionId: p.optionIds[0], word: "yes" }
       : { kind: "resend_prompt" };
