@@ -22,6 +22,7 @@ import {
 import { handleTurn, sendPrompt, type TurnDeps } from "../supabase/functions/_shared/chat/turn.ts";
 import { type LunaDeps, runLuna } from "../supabase/functions/_shared/chat/luna.ts";
 import { responsesClient } from "../supabase/functions/_shared/openai.ts";
+import { jevClient } from "../supabase/functions/_shared/jev.ts";
 import { type PlaceHit, placesClient, type SearchPlaces } from "../supabase/functions/_shared/places.ts";
 import type { Task } from "../supabase/functions/_shared/chat/states.ts";
 
@@ -157,11 +158,13 @@ async function searchDevBusinesses({ text }: { text: string }): Promise<PlaceHit
 }
 
 const openaiKey = Deno.env.get("OPENAI_API_KEY");
+const typesafeKey = Deno.env.get("TYPESAFE_API_KEY");
 const lunaDeps: LunaDeps | null = openaiKey
   ? {
     store,
     send,
     create: responsesClient(openaiKey),
+    jev: typesafeKey ? jevClient(typesafeKey) : undefined,
     searchPlaces,
     trace: (event, data) => emit(`decision:${event}`, data),
   }
@@ -176,7 +179,7 @@ const turnDeps: TurnDeps = {
     if (!lunaDeps) {
       return emit("luna", { note: "OPENAI_API_KEY is not set in supabase/functions/.env; Luna is off." });
     }
-    await runLuna(lunaDeps, user, msg.at);
+    await runLuna(lunaDeps, user, msg.at, msg.messageId);
   },
   onConsent: async (_user, consent) => {
     emit("call", {

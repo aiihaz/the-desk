@@ -8,6 +8,7 @@ import type { Outbound } from "../whatsapp.ts";
 import type { RecentRequest } from "./cards.ts";
 import { mediaMarker, type OpenPrompt } from "./gate.ts";
 import type { BookingSummary, Place, Prompt } from "./readback.ts";
+import type { RouteLog } from "./router.ts";
 import type { Fields } from "./slots.ts";
 import type { State, Task } from "./states.ts";
 
@@ -68,6 +69,9 @@ export interface ChatStore {
   // Upserts a search result by place_id (fresh phone and hours each search) and returns its id.
   savePlace(p: PlaceHit): Promise<string>;
   setCity(userId: string, city: string): Promise<void>;
+  logRoute(log: RouteLog): Promise<void>;
+  // Gate-mode redirects since `since`, for the daily redirect cap.
+  redirectsSince(userId: string, since: Date): Promise<number>;
 
   touch(requestId: string, at: Date): Promise<void>;
   startRequest(userId: string, task: Task): Promise<{
@@ -251,6 +255,39 @@ export class DbChatStore implements ChatStore {
       // Fees stated on the booking call come with E6's output mapping.
       knownFeeRs: null,
     };
+  }
+
+  async logRoute(l: RouteLog): Promise<void> {
+    let messageId: string | null = null;
+    if (l.waMessageId) {
+      const { data } = await this.db.from("messages").select("id").eq("wa_message_id", l.waMessageId)
+        .maybeSingle();
+      messageId = data?.id ?? null;
+    }
+    const { error } = await this.db.from("router_log").insert({
+      user_id: l.userId,
+      message_id: messageId,
+      request_id: l.requestId,
+      jev_mode: l.jevMode,
+      model: l.model,
+      intent: l.intent,
+      probabilities: l.probabilities,
+      injection: l.injection,
+      mode: l.mode,
+      luna_tools: l.lunaTools,
+      l3_result: l.l3Result,
+      l3_failed: l.l3Failed,
+      latency_ms: l.latencyMs,
+    });
+    if (error) throw error;
+  }
+
+  async redirectsSince(userId: string, since: Date): Promise<number> {
+    const { count, error } = await this.db.from("router_log")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId).eq("jev_mode", "gate").eq("mode", "redirect").gte("at", since.toISOString());
+    if (error) throw error;
+    return count ?? 0;
   }
 
   async history(userId: string, since: Date, limit: number): Promise<ChatLine[]> {

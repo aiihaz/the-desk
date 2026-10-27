@@ -2,6 +2,7 @@
 import type { Outbound } from "../whatsapp.ts";
 import type { OpenPrompt } from "./gate.ts";
 import type { Prompt } from "./readback.ts";
+import type { RouteLog } from "./router.ts";
 import type { ActiveRequest, ChatStore, ConsentStored, Refused } from "./store.ts";
 
 export class FakeChatStore implements ChatStore {
@@ -52,8 +53,9 @@ export class FakeChatStore implements ChatStore {
   async limitBool(key: string) {
     return this.limits[key] as boolean;
   }
-  async limitText() {
-    return null;
+  texts: Record<string, string | null> = {};
+  async limitText(key: string) {
+    return this.texts[key] ?? null;
   }
   async template(key: string) {
     return `[${key}]`;
@@ -90,6 +92,14 @@ export class FakeChatStore implements ChatStore {
   }
   async setCity(_u: string, city: string) {
     this.city = city;
+  }
+  routes: RouteLog[] = [];
+  redirects = 0;
+  async logRoute(l: RouteLog) {
+    this.routes.push(structuredClone(l));
+  }
+  async redirectsSince() {
+    return this.redirects;
   }
   async touch() {}
   async startRequest(): Promise<never> {

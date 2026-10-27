@@ -9,7 +9,7 @@ A WhatsApp calling and booking agent for India. Plan: `../the-desk-plan.md`, eng
 | E1 Repo + CI | done |
 | E2 Schema, `limits`, `check_dial()`, pgTAP | done |
 | E3 WhatsApp in/out | built and tested locally; live round trip needs the Meta test number |
-| E4 Chat state machine, Luna, business search | built and tested locally (Places search live on the bench); Jev router and L3 check still to do |
+| E4 Chat state machine, Luna, business search | built and tested locally (Places search live on the bench); Jev router and L3 Jev check built (shadow by default, needs `jev_model` pinned); L3 facts check still to do |
 | E5/E6 Sarvam plumbing (client, `dial`, `sarvam-webhook`) | built and tested locally, ahead of E4; agent, mapping and verification still to do |
 
 ## Run the tests locally

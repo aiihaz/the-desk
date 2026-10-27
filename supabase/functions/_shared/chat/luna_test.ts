@@ -167,3 +167,110 @@ Deno.test("starting a new request over one with details is refused until the use
   assertEquals(out.reason.startsWith("this would drop the open booking at Paragon"), true);
   assertEquals(sent.length, 1);
 });
+
+// A scripted Jev: router questions get `routeAns`, output checks get `outAns`.
+function withJev(
+  deps: LunaDeps,
+  store: FakeChatStore,
+  mode: string,
+  routeAns: Record<string, unknown> | Error,
+  outAns: Record<string, unknown> | Error = { claims_action: noul(0), off_task_content: noul(0) },
+) {
+  store.texts = { jev_mode: mode, jev_model: "jev-test" };
+  const asked: string[][] = [];
+  deps.jev = async (req) => {
+    asked.push(Object.keys(req.questions));
+    const a = "intent" in req.questions ? routeAns : outAns;
+    if (a instanceof Error) throw a;
+    return a as never;
+  };
+  return asked;
+}
+const noul = (p: number) => ({ type: "noul", noul: p });
+const offScope = {
+  intent: { type: "choice", choice: "off_scope", confidence: 0.97, probabilities: { off_scope: 0.97 } },
+  injection: noul(0.02),
+};
+
+Deno.test("shadow: Jev's redirect is logged, but Luna still runs in task mode", async () => {
+  const { store, tools, inputs, deps } = setup([[
+    call("reply", { text: "I can't write resumes, but I can call a business for you." }),
+  ]]);
+  const asked = withJev(deps, store, "shadow", offScope);
+  await runLuna(deps, user, now, "wamid.in1");
+  assertEquals(tools[0].length > 1, true);
+  assertEquals((inputs[0][0].content as string).includes("MODE: task"), true);
+  assertEquals(asked, [["intent", "injection"], ["claims_action", "off_task_content"]]);
+  const log = store.routes[0];
+  assertEquals([log.jevMode, log.intent, log.mode, log.l3Result, log.waMessageId], [
+    "shadow",
+    "off_scope",
+    "task",
+    "pass",
+    "wamid.in1",
+  ]);
+});
+
+Deno.test("gate: an off-scope message gets redirect mode with reply only", async () => {
+  const { store, tools, inputs, sent, deps } = setup([[
+    call("reply", { text: "Can't help with that, but I can book a table." }),
+  ]]);
+  withJev(deps, store, "gate", offScope);
+  await runLuna(deps, user, now);
+  assertEquals(tools[0], ["reply"]);
+  assertEquals((inputs[0][0].content as string).includes("MODE: redirect."), true);
+  assertEquals(sent.length, 1);
+  assertEquals(store.routes[0].mode, "redirect");
+});
+
+Deno.test("gate: past the redirect cap, the one-line template goes out and Luna isn't called", async () => {
+  const { store, tools, sent, deps } = setup([]);
+  withJev(deps, store, "gate", offScope);
+  store.redirects = 5;
+  await runLuna(deps, user, now);
+  assertEquals(tools.length, 0);
+  assertEquals(sent, [{ kind: "text", body: "[offscope_limit]" }]);
+});
+
+Deno.test("gate: a reply that claims a booking before any call is sent back, then passes", async () => {
+  const { store, sent, inputs, deps } = setup([
+    [call("reply", { text: "Booked at Paragon for 8." }, "a")],
+    [call("reply", { text: "Which day?" }, "b")],
+  ]);
+  let n = 0;
+  withJev(deps, store, "gate", new Error("router down"));
+  deps.jev = async (req) => {
+    if ("intent" in req.questions) throw new Error("router down");
+    return (n++ === 0
+      ? { claims_action: noul(0.95), off_task_content: noul(0) }
+      : { claims_action: noul(0), off_task_content: noul(0) }) as never;
+  };
+  await runLuna(deps, user, now);
+  assertEquals(JSON.parse(inputs[1].at(-1)!.output).reason.startsWith("it says a call, booking"), true);
+  assertEquals(sent, [{ kind: "text", body: "Which day?" }]);
+  assertEquals([store.routes[0].l3Result, store.routes[0].l3Failed], ["retry_pass", ["claims_action"]]);
+});
+
+Deno.test("gate, Jev down for L3: a short task reply goes out, a long one gets the fallback", async () => {
+  const short = setup([[call("reply", { text: "Which day?" })]]);
+  withJev(short.deps, short.store, "gate", new Error("down"), new Error("down"));
+  await runLuna(short.deps, user, now);
+  assertEquals(short.sent, [{ kind: "text", body: "Which day?" }]);
+
+  const long = setup([[
+    call("reply", { text: "Sure, " + "which day works for you and how many people? ".repeat(4) }),
+  ]]);
+  withJev(long.deps, long.store, "gate", new Error("down"), new Error("down"));
+  await runLuna(long.deps, user, now);
+  assertEquals(long.sent, [{ kind: "text", body: "[fallback_generic]" }]);
+  assertEquals(long.store.routes[0].l3Failed, ["jev_down"]);
+});
+
+Deno.test("without a pinned model, Jev doesn't run and the log says off", async () => {
+  const { store, deps } = setup([[call("reply", { text: "Which day?" })]]);
+  const asked = withJev(deps, store, "gate", offScope);
+  store.texts.jev_model = null;
+  await runLuna(deps, user, now);
+  assertEquals(asked, []);
+  assertEquals(store.routes[0].jevMode, "off");
+});
