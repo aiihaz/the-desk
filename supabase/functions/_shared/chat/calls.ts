@@ -1,7 +1,7 @@
 // After a stored consent: start the call it allows, through dial() (eng plan 5.4).
 // If the call can't start, the request ends (call_not_started) and the user hears why
 // in plain words, so nothing waits in calling_1 for a call that isn't coming.
-// The call's result and the report to the user come with E6 (sarvam-webhook hand-off).
+// The result comes back through sarvam-webhook to report.ts.
 import type { DialArgs, DialResult } from "../dial.ts";
 import type { User } from "../store.ts";
 import type { ConsentStored } from "./store.ts";
@@ -30,7 +30,12 @@ const WHY: Record<string, string> = {
 };
 const OUR_SIDE = "Calls aren't working on my side right now; please try again later.";
 
-export async function callAfterConsent(deps: CallDeps, user: User, c: ConsentStored): Promise<void> {
+// started: the call is dialing. false: the request has ended and the user has been told why.
+export async function callAfterConsent(
+  deps: CallDeps,
+  user: User,
+  c: ConsentStored,
+): Promise<{ started: boolean }> {
   const r = await deps.store.request(c.request_id);
   const args: DialArgs = {
     requestId: c.request_id,
@@ -40,7 +45,7 @@ export async function callAfterConsent(deps: CallDeps, user: User, c: ConsentSto
   };
   const res = await deps.dial(args);
   deps.trace?.("dial", { args, res });
-  if (res.ok) return;
+  if (res.ok) return { started: true };
 
   console.warn("call not started", c.request_id, res.error === "refused" ? res.reason : res.detail);
   const ended = await deps.store.callNotStarted(c.request_id);
@@ -52,4 +57,5 @@ export async function callAfterConsent(deps: CallDeps, user: User, c: ConsentSto
     kind: "text",
     body: (tpl ?? "I couldn't start the call. {reason}").replace("{reason}", why),
   });
+  return { started: false };
 }

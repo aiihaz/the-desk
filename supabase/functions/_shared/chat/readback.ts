@@ -1,27 +1,22 @@
-// Code-built consent prompts: read-backs, the option list, the Book-it button
-// (eng plan 2 step 3, E4 design 2.6, 2.7, 2.8, 2.9). The user approves exactly
-// this text, and the voice agent gets the same stored fields. Luna never writes these.
-// English only for now; translations need a native speaker's review.
+// Code-built plans: what the Desk will say and agree to on a call, and the options after
+// call 1 (eng plan 2 step 3, E4 design 2.6-2.9). The user approves exactly this text, in
+// their own words, and the voice agent gets the same stored fields. Luna never writes
+// these; it can put one short line of its own before a plan (note). No buttons and no
+// "reply YES": each ends with a plain question, and approval is read in context
+// (approval.ts). English only for now; translations need a native speaker's review.
 import type { Outbound } from "../whatsapp.ts";
-import type { Fields } from "./slots.ts";
+import { currentQuestions, type Fields } from "./slots.ts";
 
 const TZ = "Asia/Kolkata";
 
 export type Place = { name: string; address: string | null; city: string | null };
 
 export type Prompt = {
-  kind: "ask" | "options" | "book";
+  kind: "ask" | "options";
   optionIds: string[];
   confirmWord: "yes" | "cancel";
   text: string;
   message: Outbound;
-};
-
-// Button and list ids carry the prompt id, so a tap binds to the message it came from.
-export const ids = {
-  yes: (promptId: string) => `yes:${promptId}`,
-  cancel: (promptId: string) => `cancel:${promptId}`,
-  pick: (promptId: string, optionId: string) => `pick:${promptId}:${optionId}`,
 };
 
 export function placeName(p: Place): string {
@@ -120,76 +115,56 @@ function what(f: Fields, article: "a" | "your" | "" = "a"): string {
   return `${article ? article + " " : ""}table for ${f.party_size}`;
 }
 
-function cap(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
 function rs(n: number): string {
   return `Rs ${n.toLocaleString("en-IN")}`;
 }
 
-function ask(promptId: string, text: string, word: "yes" | "cancel" = "yes", title = "YES"): Prompt {
-  return {
-    kind: "ask",
-    optionIds: [],
-    confirmWord: word,
-    text,
-    message: {
-      kind: "buttons",
-      body: text,
-      buttons: [
-        word === "yes" ? { id: ids.yes(promptId), title } : {
-          id: ids.cancel(promptId),
-          title: "CANCEL",
-        },
-      ],
-    },
-  };
+function ask(text: string, word: "yes" | "cancel" = "yes"): Prompt {
+  return { kind: "ask", optionIds: [], confirmWord: word, text, message: { kind: "text", body: text } };
 }
 
-// Read-backs lead with what will happen (place, what, when), then what will be shared
-// and when the Desk comes back instead of booking, then the one action. Blank lines
-// separate the parts; WhatsApp shows them as written. No markdown.
+// A short line from Luna before the plan ("Found it."), when there is one.
+function withNote(note: string | null | undefined, text: string): string {
+  return note?.trim() ? `${note.trim()}\n\n${text}` : text;
+}
 
-// Booking read-back. f.may_book and f.max_advance_rs must already be set from limits,
-// so the consent covers them.
+// Plans lead with what will happen (place, what, when), then what will be shared and
+// what the Desk won't agree to, then one plain question. f.may_book and f.max_advance_rs
+// must already be set from limits, so the consent covers them.
 export function bookingReadback(
-  promptId: string,
-  x: { place: Place; f: Fields; customerPhone: string | null; now: Date },
+  x: { place: Place; f: Fields; customerPhone: string | null; now: Date; note?: string | null },
 ): Prompt {
   const { place, f, now } = x;
-  const price = f.max_price_rs !== undefined ? ` · up to ${rs(f.max_price_rs)}` : "";
-  const top = [placeName(place), `${cap(what(f, ""))} · ${fmtWhen(f, now, true)}${price}`].join("\n");
+  const price = f.max_price_rs !== undefined ? `, for up to ${rs(f.max_price_rs)}` : "";
+  const what_ = `${what(f)}, ${fmtWhen(f, now, true)}${price}`;
+  const also = f.also_ask ? ` I'll also ask: "${f.also_ask}".` : "";
   if (!f.may_book) {
-    return ask(
-      promptId,
-      `${top}\n\nI'll call and ask what they have, then check with you before booking anything.\n\nTap YES to call.`,
-      "yes",
-      "YES, call",
-    );
+    return ask(withNote(
+      x.note,
+      `I'll call ${placeName(place)} and ask if they can do ${what_}. I won't book anything or give ` +
+        `your name or number yet; I'll come back to you with what they say.${also}\n\nShall I call them?`,
+    ));
   }
   const who = x.customerPhone ? `${f.customer_name}, ${maskPhone(x.customerPhone)}` : f.customer_name;
   const advance = f.max_advance_rs
     ? `If they want an advance of up to ${rs(f.max_advance_rs)}, I'll hold it and you pay them directly.`
-    : "If they want an advance, I won't agree to it; I'll check with you.";
-  const also = f.also_ask ? ` I'll also ask: "${f.also_ask}"` : "";
-  return ask(
-    promptId,
-    `${top}\n\nI'll call and book it in your name (${who}). ${advance} ` +
-      `If it isn't available, I'll come back with what they have.${also}\n\nTap YES to book.`,
-    "yes",
-    "YES, book it",
-  );
+    : "If they want an advance, I won't agree to it.";
+  return ask(withNote(
+    x.note,
+    `I'll call ${placeName(place)} and book ${what_}, in your name (${who}). ${advance} ` +
+      `If that isn't free, I won't book anything else; I'll come back to you with what they have.${also}` +
+      "\n\nShall I go ahead?",
+  ));
 }
 
-export function questionReadback(promptId: string, x: { place: Place; f: Fields }): Prompt {
-  return ask(
-    promptId,
-    `${placeName(x.place)}\nI'll call and ask: "${x.f.question}"\n` +
-      "I won't book anything or share your name or number.\n\nTap YES to call.",
-    "yes",
-    "YES, call",
-  );
+export function questionReadback(x: { place: Place; f: Fields; note?: string | null }): Prompt {
+  const qs = currentQuestions(x.f);
+  const asks = qs.length === 1 ? `"${qs[0]}"` : qs.map((q, i) => `\n${i + 1}. ${q}`).join("");
+  return ask(withNote(
+    x.note,
+    `I'll call ${placeName(x.place)} and ask: ${asks}\n\nI won't book anything or share your name or ` +
+      "number.\n\nShall I call them?",
+  ));
 }
 
 export type BookingSummary = {
@@ -208,93 +183,63 @@ function bookingLine(b: BookingSummary, now: Date): string {
   } (${b.customerName})`;
 }
 
-export function rescheduleReadback(
-  promptId: string,
-  x: { booking: BookingSummary; f: Fields; now: Date },
-): Prompt {
+export function rescheduleReadback(x: { booking: BookingSummary; f: Fields; now: Date }): Prompt {
   const b = x.booking;
   const ifCan = x.f.may_book
     ? "If they can, I'll move it."
     : "If they can, I'll check with you before moving it.";
   return ask(
-    promptId,
     `${bookingLine(b, x.now)}\nI'll call and ask to move it to ${fmtWhen(x.f, x.now, true)}. ${ifCan} ` +
-      `If not, I'll ask them to keep ${fmtTime(b.time)} and check with you.\n\nTap YES to call.`,
-    "yes",
-    "YES, call",
+      `If not, I'll ask them to keep ${fmtTime(b.time)} and check with you.\n\nShall I call them?`,
   );
 }
 
-// A known deposit or fee needs CANCEL, not YES, so a reflexive YES cannot approve a loss (2.9).
-export function cancelReadback(promptId: string, x: { booking: BookingSummary; now: Date }): Prompt {
+// A known deposit or fee needs the user to accept the loss in so many words (2.9):
+// confirm word "cancel", which the approval check holds to.
+export function cancelReadback(x: { booking: BookingSummary; now: Date }): Prompt {
   const b = x.booking;
   const top = bookingLine(b, x.now);
   if (b.depositRs) {
     return ask(
-      promptId,
       `${top}\nYou paid a ${rs(b.depositRs)} advance, and they may keep it. I'll ask about a refund, ` +
-        "but cancelling could mean losing it.\n\nReply CANCEL to go ahead.",
+        "but cancelling could mean losing it.\n\nDo you still want me to cancel?",
       "cancel",
     );
   }
   if (b.knownFeeRs) {
     return ask(
-      promptId,
       `${top}\nThey said cancelling costs ${rs(b.knownFeeRs)}. If you cancel, you may have to pay it.` +
-        "\n\nReply CANCEL to go ahead.",
+        "\n\nDo you still want me to cancel?",
       "cancel",
     );
   }
   return ask(
-    promptId,
     `${top}\nI'll call and cancel it. If they mention a charge, I won't agree to it; I'll check with you first.` +
-      "\n\nTap YES to cancel.",
-    "yes",
-    "YES, cancel it",
+      "\n\nShall I call them?",
   );
 }
 
 export type OptionRow = { id: string; label: string; detail: string | null };
 
-// The option list after call 1. Tapping a row or replying its number is consent #2.
-export function optionsPrompt(promptId: string, x: { place: Place; options: OptionRow[] }): Prompt {
+// The options after call 1. The user picks one in their own words, and that pick is
+// consent #2 for booking it (approval.ts).
+export function optionsPrompt(
+  x: { place: Place; options: OptionRow[]; lead: string; customerName: string | null },
+): Prompt {
   const numbered = x.options.map((o, i) => `${i + 1}. ${o.label}${o.detail ? ` (${o.detail})` : ""}`);
+  const who = x.customerName ? ` in your name (${x.customerName})` : "";
   const text = [
-    `${x.place.name} can do:`,
+    x.lead,
     ...numbered,
-    "Tap one or reply its number, and I'll call back to book it in your name.",
+    "",
+    `Tell me which one and I'll call back to book it${who}. If one needs an advance, I won't agree to ` +
+    "it without checking with you.",
   ].join("\n");
   return {
     kind: "options",
     optionIds: x.options.map((o) => o.id),
     confirmWord: "yes",
     text,
-    message: {
-      kind: "list",
-      body: text,
-      button: "Pick one",
-      rows: x.options.map((o) => ({
-        id: ids.pick(promptId, o.id),
-        title: o.label.slice(0, 24),
-        ...(o.detail ? { description: o.detail.slice(0, 72) } : {}),
-      })),
-    },
-  };
-}
-
-// After a typed pick ("the second one"): one option, one Book-it button.
-export function bookItPrompt(promptId: string, x: { place: Place; option: OptionRow }): Prompt {
-  const text = `Book ${x.option.label}${x.option.detail ? ` (${x.option.detail})` : ""} at ${x.place.name} ` +
-    "in your name?";
-  return {
-    kind: "book",
-    optionIds: [x.option.id],
-    confirmWord: "yes",
-    text,
-    message: {
-      kind: "buttons",
-      body: text,
-      buttons: [{ id: ids.pick(promptId, x.option.id), title: "Book it" }],
-    },
+    message: { kind: "text", body: text },
   };
 }

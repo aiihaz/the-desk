@@ -29,6 +29,14 @@ const searchPlaces: SearchPlaces = env("GOOGLE_MAPS_API_KEY")
   ? placesClient(env("GOOGLE_MAPS_API_KEY"))
   : () => Promise.reject(new Error("GOOGLE_MAPS_API_KEY is not set"));
 
+// After an approval: reserve_call() and Sarvam, through dial().
+const onApproved: LunaDeps["onApproved"] = (user, consent) =>
+  callAfterConsent(
+    { store: chat, send, dial: (a) => dial({ store: calls, start: (c) => startCall(sarvam, c) }, a) },
+    user,
+    consent,
+  );
+
 const luna: LunaDeps | null = env("OPENAI_API_KEY")
   ? {
     store: chat,
@@ -36,6 +44,7 @@ const luna: LunaDeps | null = env("OPENAI_API_KEY")
     create: responsesClient(env("OPENAI_API_KEY")),
     jev: env("TYPESAFE_API_KEY") ? jevClient(env("TYPESAFE_API_KEY")) : undefined,
     searchPlaces,
+    onApproved,
   }
   : null;
 
@@ -46,23 +55,13 @@ const agent: AgentDeps = {
   store: chat,
   send,
   isAdmin: (waId) => admins.has(waId),
-  luna: async (user, text, msg) => {
-    if (luna) return runLuna(luna, user, msg.at, msg.messageId, text);
+  luna: async (user, _text, msg) => {
+    if (luna) return runLuna(luna, user, msg.at, msg.messageId);
     // Misconfigured: say something rather than leave the user in silence.
     console.error("OPENAI_API_KEY is not set");
     const tpl = await chat.template("fallback_generic", (await chat.user(user.id)).language);
     if (tpl) await send(user, { kind: "text", body: tpl });
   },
-  onConsent: (user, consent) =>
-    callAfterConsent(
-      {
-        store: chat,
-        send,
-        dial: (a) => dial({ store: calls, start: (c) => startCall(sarvam, c) }, a),
-      },
-      user,
-      consent,
-    ),
   onCommand: (user, route) => runCommand({ store: chat, send }, user, route),
   // The screenshot check is E7 (eng plan 2.2). No booking holds a deposit before then.
   onPayment: async (_user, route) => console.warn("payment check is E7; nothing done", route.kind),

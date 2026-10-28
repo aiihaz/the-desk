@@ -1,52 +1,34 @@
 import { assertEquals } from "jsr:@std/assert@1.0.8";
-import { bareNumberEdit, checkSlots, collectingState, missing, rewordingProblem } from "./slots.ts";
-
-Deno.test("bare-number edits: a number with no unit, in an edit (P9)", () => {
-  for (
-    const t of [
-      "make it 7 instead",
-      "yes but make it 7",
-      "make it five",
-      "6 instead",
-      "change to 8",
-      "Make it 7.",
-    ]
-  ) {
-    assertEquals(bareNumberEdit(t), true, t);
-  }
-  for (
-    const t of ["7", "4", "make it 7 pm", "make it 7 people", "five people, not 5pm", "at 7", "make it 8:30"]
-  ) {
-    assertEquals(bareNumberEdit(t), false, t);
-  }
-});
-
-Deno.test("rewording keeps the user's limits and adds questions rather than swapping (P7, P10)", () => {
-  const q = { question: "Do you dry clean blazers, and is the price under Rs 300?" };
-  const open = { question: "Do you dry clean blazers? If yes, what is the price?" };
-  assertEquals(rewordingProblem(q, open, [])?.startsWith('question: the new text drops "300"'), true);
-  assertEquals(rewordingProblem(q, open, ["300"]), null);
-  assertEquals(rewordingProblem(q, { question: "Can you dry clean a blazer for under 300?" }, []), null);
-  const friday = { question: "Do you do pickup and delivery, ready by Friday?" };
-  assertEquals(
-    rewordingProblem(friday, { question: "Do you do pickup and delivery?" }, [])?.includes('"friday"'),
-    true,
-  );
-
-  const walk = { question: "Do you take walk-ins?" };
-  const insurance = { question: "Do you accept Star Health insurance?" };
-  assertEquals(rewordingProblem(walk, insurance, [])?.startsWith("question: this replaces"), true);
-  assertEquals(rewordingProblem(walk, insurance, ["question"]), null);
-  assertEquals(
-    rewordingProblem(walk, { question: "Do you take walk-ins, and accept Star Health insurance?" }, []),
-    null,
-  );
-  // A first question, or one cleared, has nothing to keep.
-  assertEquals(rewordingProblem({}, insurance, []), null);
-  assertEquals(rewordingProblem(walk, { question: null }, []), null);
-});
+import { checkSlots, collectingState, missing } from "./slots.ts";
 
 const now = new Date("2026-10-23T12:00:00+05:30");
+
+Deno.test("questions are a list: a follow-up is added, never swapped in (P7, P10)", () => {
+  const cur = { questions: ["Can you dry clean a blazer by Friday, for under Rs 300?"] };
+  assertEquals(checkSlots("question", cur, {}, now, { add: ["Do you do pickup?"] }), {
+    ok: true,
+    patch: { questions: ["Can you dry clean a blazer by Friday, for under Rs 300?", "Do you do pickup?"] },
+  });
+  // Rewording and removing name the question by number, so nothing else moves.
+  assertEquals(
+    checkSlots("question", cur, {}, now, { reword: [{ number: 1, text: "Blazer dry clean under Rs 300?" }] }),
+    { ok: true, patch: { questions: ["Blazer dry clean under Rs 300?"] } },
+  );
+  assertEquals(checkSlots("question", cur, {}, now, { remove: [1] }), {
+    ok: true,
+    patch: { questions: null },
+  });
+  assertEquals(checkSlots("question", cur, {}, now, { remove: [2] }).ok, false);
+  // The whole list can't be overwritten through fields.
+  assertEquals(checkSlots("question", cur, { questions: ["x"] }, now).ok, false);
+  assertEquals(checkSlots("question", cur, { question: "x" }, now).ok, false);
+  // An old single question is folded into the list.
+  assertEquals(checkSlots("question", { question: "Open Sunday?" }, {}, now, { add: ["Walk-ins?"] }), {
+    ok: true,
+    patch: { questions: ["Open Sunday?", "Walk-ins?"], question: null },
+  });
+  assertEquals(checkSlots("booking", {}, {}, now, { add: ["x"] }).ok, false);
+});
 
 Deno.test("valid booking slots pass and strings are trimmed", () => {
   assertEquals(
@@ -91,7 +73,7 @@ Deno.test("Luna cannot set code-only slots or another task's slots", () => {
   assertEquals(r.ok ? [] : r.errors, [
     "may_book: not a booking slot",
     "max_advance_rs: not a booking slot",
-    "question: not a booking slot",
+    "question: use add_questions, reword_questions or remove_questions",
   ]);
   assertEquals(checkSlots("question", {}, { party_size: 4 }, now).ok, false);
 });
@@ -112,22 +94,28 @@ Deno.test("an edit is checked against the merged fields", () => {
   });
 });
 
-Deno.test("missing slots and the collecting state", () => {
+Deno.test("what a plan still needs, and the collecting state", () => {
   const has = { business: false, booking: false };
   assertEquals(missing("booking", {}, has), [
-    "party_size or service",
-    "time (window_start and window_end, or exact_time)",
-    "customer_name",
-    "business",
+    "what to book (party_size or service)",
+    "when (exact_time, or window_start and window_end)",
+    "the name to book under",
+    "which business",
   ]);
+  // The profile name, or a call that doesn't book, means no name to ask for.
+  assertEquals(
+    missing("booking", {}, { ...has, profileName: true }).includes("the name to book under"),
+    false,
+  );
+  assertEquals(missing("booking", {}, { ...has, mayBook: false }).includes("the name to book under"), false);
   const f = { party_size: 4, exact_time: "2026-10-23T20:00:00+05:30", customer_name: "Ihaz" };
   assertEquals(collectingState("booking", f, has), "choosing_place");
   assertEquals(collectingState("booking", f, { ...has, business: true }), "confirming");
   assertEquals(collectingState("booking", { party_size: 4 }, has), "collecting");
   assertEquals(
-    collectingState("question", { question: "Size 32?" }, { ...has, business: true }),
+    collectingState("question", { questions: ["Size 32?"] }, { ...has, business: true }),
     "confirming",
   );
-  assertEquals(missing("cancel", {}, has), ["booking"]);
+  assertEquals(missing("cancel", {}, has), ["which booking"]);
   assertEquals(collectingState("cancel", {}, { business: true, booking: true }), "confirming");
 });

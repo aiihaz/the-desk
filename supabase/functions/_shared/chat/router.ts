@@ -77,17 +77,21 @@ export type Route = {
 };
 
 // Low confidence never blocks: only a clear off-scope or injection reads as redirect.
-// Recommendations always redirect for now: 2.4 is off for v1 (Ihaz, Oct 24), so Luna asks
-// for a place name instead.
+// Rated recommendations are off for v1 (Ihaz, Oct 24). With place_search_by_kind on,
+// "a dentist near me" is a search Luna runs, listing places unranked; with it off, a
+// recommendation redirects and Luna asks for a place name.
 export function decide(
   intent: ChoiceAnswer,
   injection: NoulAnswer,
   th: Thresholds,
+  redirectRecommendations = true,
 ): Pick<Route, "mode" | "why"> {
   if (injection.noul >= th.injection) return { mode: "redirect", why: "injection" };
   const offscope = intent.probabilities.off_scope ?? (intent.choice === "off_scope" ? intent.confidence : 0);
   if (intent.choice === "off_scope" && offscope >= th.offscope) return { mode: "redirect", why: "off_scope" };
-  if (intent.choice === "recommendation") return { mode: "redirect", why: "recommendation" };
+  if (intent.choice === "recommendation" && redirectRecommendations) {
+    return { mode: "redirect", why: "recommendation" };
+  }
   return { mode: "task", why: null };
 }
 
@@ -97,6 +101,7 @@ export async function route(
   state: JevState,
   th: Thresholds,
   timeoutMs: number,
+  redirectRecommendations = true,
 ): Promise<Route> {
   const t0 = performance.now();
   try {
@@ -107,7 +112,7 @@ export async function route(
       intent: intent.choice,
       probabilities: intent.probabilities,
       injection: injection.noul,
-      ...decide(intent, injection, th),
+      ...decide(intent, injection, th, redirectRecommendations),
       latencyMs: Math.round(performance.now() - t0),
       error: null,
     };

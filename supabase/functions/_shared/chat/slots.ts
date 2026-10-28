@@ -1,6 +1,8 @@
-// Slot values Luna proposes through set_slots, and what each task still needs.
+// Slot values Luna proposes through set_slots, and what each task needs before a plan.
 // Code checks every value (E4 design 2, L2 tool table); the database stores only
-// what passes. Times are ISO 8601 with an offset.
+// what passes. Times are ISO 8601 with an offset. Understanding what the user meant
+// (a time or a party size, a reworded question) is Luna's job; the plan shows the
+// result back to them before anything happens, so a misreading is caught there.
 import type { State, Task } from "./states.ts";
 
 export type Fields = {
@@ -12,17 +14,22 @@ export type Fields = {
   service?: string;
   customer_name?: string;
   max_price_rs?: number;
-  // Set by code from limits when the read-back is built, so the consent hash covers them.
+  // Set by code from limits when the plan is built, so the consent hash covers them.
   max_advance_rs?: number;
   may_book?: boolean;
+  // Question task: each thing to ask, in the user's terms. Edited one item at a time
+  // (questionOps), so a follow-up never replaces what they asked before.
+  questions?: string[];
+  // Before 0007 a question was one string; old rows still have it.
   question?: string;
-  // Booking: one extra thing to ask on the call ("do they have parking?"). In the read-back.
+  // Booking: one extra thing to ask on the call ("do they have parking?"). In the plan.
   also_ask?: string;
   // What the user called the place, for find_business.
   place_query?: string;
 };
 
-// Keys Luna may set for each task. max_advance_rs and may_book are code-only.
+// Keys Luna may set for each task. max_advance_rs and may_book are code-only; questions
+// change through questionOps.
 const ALLOWED: Record<Task, (keyof Fields)[]> = {
   booking: [
     "window_start",
@@ -36,16 +43,24 @@ const ALLOWED: Record<Task, (keyof Fields)[]> = {
     "also_ask",
     "place_query",
   ],
-  question: ["question", "place_query"],
+  question: ["place_query"],
   reschedule: ["window_start", "window_end", "exact_time", "tolerance_min"],
   cancel: [],
 };
 
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+const MAX_QUESTIONS = 4;
 
 export type SlotCheck =
   | { ok: true; patch: Partial<Record<keyof Fields, unknown>> }
   | { ok: false; errors: string[] };
+
+// Edits to the question list: add new ones, reword one (1-based), remove some.
+export type QuestionOps = {
+  add?: string[];
+  reword?: { number: number; text: string }[];
+  remove?: number[];
+};
 
 // Checks a proposed patch on its own and merged with the current fields.
 // A null value clears that slot. Errors are short and go back to Luna as the tool result.
@@ -54,6 +69,7 @@ export function checkSlots(
   current: Fields,
   patch: Record<string, unknown>,
   now: Date,
+  ops: QuestionOps = {},
 ): SlotCheck {
   const errors: string[] = [];
   const allowed = ALLOWED[task];
@@ -61,7 +77,11 @@ export function checkSlots(
 
   for (const [key, value] of Object.entries(patch)) {
     if (!allowed.includes(key as keyof Fields)) {
-      errors.push(`${key}: not a ${task} slot`);
+      errors.push(
+        key === "questions" || key === "question"
+          ? `${key}: use add_questions, reword_questions or remove_questions`
+          : `${key}: not a ${task} slot`,
+      );
       continue;
     }
     if (value === null) {
@@ -71,6 +91,17 @@ export function checkSlots(
     const err = checkValue(key as keyof Fields, value, now);
     if (err) errors.push(`${key}: ${err}`);
     else out[key] = typeof value === "string" ? value.trim() : value;
+  }
+
+  if (ops.add?.length || ops.reword?.length || ops.remove?.length) {
+    if (task !== "question") errors.push("questions: only a question errand has questions");
+    else {
+      const q = applyQuestionOps(currentQuestions(current), ops);
+      if (typeof q === "string") errors.push(q);
+      else out.questions = q.length ? q : null;
+      // An old single-string question is folded into the list.
+      if (current.question !== undefined) out.question = null;
+    }
   }
   if (errors.length) return { ok: false, errors };
 
@@ -87,6 +118,37 @@ export function checkSlots(
     }
   }
   return errors.length ? { ok: false, errors } : { ok: true, patch: out };
+}
+
+export function currentQuestions(f: Fields): string[] {
+  if (Array.isArray(f.questions)) return f.questions;
+  return f.question ? [f.question] : [];
+}
+
+// Numbers refer to the list as it stands; rewords and removals apply before adds.
+function applyQuestionOps(list: string[], ops: QuestionOps): string[] | string {
+  const out = [...list];
+  for (const n of ops.reword ?? []) {
+    if (!Number.isInteger(n.number) || n.number < 1 || n.number > out.length) {
+      return `reword_questions: there is no question ${n.number}`;
+    }
+    const err = text(n.text, 200);
+    if (err) return `reword_questions: ${err}`;
+    out[n.number - 1] = n.text.trim();
+  }
+  const drop = new Set<number>();
+  for (const n of ops.remove ?? []) {
+    if (!Number.isInteger(n) || n < 1 || n > out.length) return `remove_questions: there is no question ${n}`;
+    drop.add(n - 1);
+  }
+  const kept = out.filter((_, i) => !drop.has(i));
+  for (const q of ops.add ?? []) {
+    const err = text(q, 200);
+    if (err) return `add_questions: ${err}`;
+    kept.push(q.trim());
+  }
+  if (kept.length > MAX_QUESTIONS) return `questions: at most ${MAX_QUESTIONS} per call`;
+  return kept;
 }
 
 function checkValue(key: keyof Fields, v: unknown, now: Date): string | null {
@@ -114,9 +176,9 @@ function checkValue(key: keyof Fields, v: unknown, now: Date): string | null {
       return text(v, 100);
     case "customer_name":
       return text(v, 60);
-    // Room for two or three questions to one place ("walk-ins? and insurance?").
     case "question":
-      return text(v, 300);
+    case "questions":
+      return "set through the question edits";
     case "also_ask":
       return text(v, 150);
     case "place_query":
@@ -136,134 +198,52 @@ function text(v: unknown, max: number): string | null {
     : `1-${max} characters`;
 }
 
-// "make it 7", "yes but make it five", "6 instead": an edit with a number and no unit.
-// It could be a time or a number of people, in any task, so code makes Luna ask (P9).
-// A bare "4" answering "how many?" is not an edit, and "7 pm" or "7 people" has a unit.
-const NUM = "(?:\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)";
-const BARE_EDIT = new RegExp(
-  `^(?:(?:yes|ok|okay|sure|haan)\\s+)?(?:but\\s+|actually\\s+|no\\s+)?` +
-    `(?:(?:make|change|move|shift|switch)\\s+(?:it\\s+)?(?:to\\s+)?${NUM}(?:\\s+instead)?|${NUM}\\s+instead)$`,
-);
+export type Has = {
+  business: boolean;
+  booking: boolean;
+  // The profile has a name the plan can book under.
+  profileName?: boolean;
+  // The call will book (book_on_first_call), so it needs a name.
+  mayBook?: boolean;
+};
 
-export function bareNumberEdit(text: string): boolean {
-  return BARE_EDIT.test(text.toLowerCase().replace(/[.!,?]+/g, " ").replace(/\s+/g, " ").trim());
-}
-
-// Numbers and days in what the user asked ("under 300", "ready by Friday"). A rewording
-// of the question or also_ask must keep them (P10).
-const LIMIT =
-  /\d[\d,]*(?:[.:]\d+)?|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b(?:today|tomorrow|tonight|weekend)\b/gi;
-
-function limits(s: string): string[] {
-  return [...new Set((s.match(LIMIT) ?? []).map((m) => m.toLowerCase().replace(/,/g, "")))];
-}
-
-const COMMON = new Set([
-  "the",
-  "and",
-  "you",
-  "your",
-  "for",
-  "are",
-  "can",
-  "what",
-  "does",
-  "have",
-  "with",
-  "they",
-  "them",
-  "this",
-  "that",
-  "there",
-  "how",
-  "much",
-  "any",
-  "will",
-  "ask",
-  "yes",
-  "not",
-]);
-
-function words(s: string): string[] {
-  return s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2 && !COMMON.has(w));
-}
-
-// The new question keeps under half of the old one's words: it replaces the question
-// instead of rewording or adding to it. Long words match on their first five letters.
-function replaces(old: string, next: string): boolean {
-  const before = [...new Set(words(old))];
-  if (!before.length) return false;
-  const after = words(next);
-  const kept = before.filter((w) =>
-    after.some((x) => x === w || (w.length >= 5 && x.slice(0, 5) === w.slice(0, 5)))
-  );
-  return kept.length / before.length < 0.5;
-}
-
-// A set_slots patch that rewrites question or also_ask must keep what the user asked
-// for. drop lists what the user asked to remove: a limit ("300") or "question" for a
-// question they want replaced. Returns the problem for Luna, or null.
-export function rewordingProblem(
-  current: Fields,
-  patch: Record<string, unknown>,
-  drop: string[],
-): string | null {
-  const dropped = new Set(drop.flatMap(limits));
-  for (const key of ["question", "also_ask"] as const) {
-    const old = current[key];
-    const next = patch[key];
-    if (typeof old !== "string" || typeof next !== "string" || old === next) continue;
-    const keep = new Set(limits(next));
-    const lost = limits(old).filter((t) => !keep.has(t) && !dropped.has(t));
-    if (lost.length) {
-      const list = lost.map((t) => `"${t}"`).join(", ");
-      return `${key}: the new text drops ${list} from "${old}". Keep every limit the user gave; ` +
-        `only if they asked to remove it, call again with drop: [${list}]`;
-    }
-    if (key === "question" && !drop.includes("question") && replaces(old, next)) {
-      return `question: this replaces "${old}" instead of adding to it. If they want both asked, put ` +
-        `both in question; only if they want just the new one, call again with drop: ["question"]`;
-    }
-  }
-  return null;
-}
-
-// What the request still needs before a read-back. "business" and "booking" are
-// request columns (business_id, booking_id), the rest are fields.
-export function missing(task: Task, f: Fields, has: { business: boolean; booking: boolean }): string[] {
+// What the request still needs before a plan can be proposed. "business" and "booking"
+// are request columns (business_id, booking_id), the rest are fields. Not an order to
+// ask in: Luna asks for what matters next, in its own words, and only what it can't infer.
+export function missing(task: Task, f: Fields, has: Has): string[] {
   const out: string[] = [];
   const when = (f.window_start && f.window_end) || f.exact_time;
   switch (task) {
     case "booking":
-      if (!f.party_size && !f.service) out.push("party_size or service");
-      if (!when) out.push("time (window_start and window_end, or exact_time)");
-      if (!f.customer_name) out.push("customer_name");
-      if (!has.business) out.push("business");
+      if (!f.party_size && !f.service) out.push("what to book (party_size or service)");
+      if (!when) out.push("when (exact_time, or window_start and window_end)");
+      if (has.mayBook !== false && !f.customer_name && !has.profileName) out.push("the name to book under");
+      if (!has.business) out.push("which business");
       break;
     case "question":
-      if (!f.question) out.push("question");
-      if (!has.business) out.push("business");
+      if (!currentQuestions(f).length) out.push("what to ask");
+      if (!has.business) out.push("which business");
       break;
     case "reschedule":
-      if (!has.booking) out.push("booking");
-      if (!when) out.push("new time (window_start and window_end, or exact_time)");
+      if (!has.booking) out.push("which booking");
+      if (!when) out.push("the new time");
       break;
     case "cancel":
-      if (!has.booking) out.push("booking");
+      if (!has.booking) out.push("which booking");
       break;
   }
   return out;
 }
 
-// Where a request in the collecting states belongs: details first, then the place,
-// then a read-back. Reschedule and cancel take the business from the booking.
+// Where a request in the collecting states belongs. confirming means nothing is missing:
+// Luna may propose the plan when the conversation is ready for it.
 export function collectingState(
   task: Task,
   f: Fields,
-  has: { business: boolean; booking: boolean },
+  has: Has,
 ): Extract<State, "collecting" | "choosing_place" | "confirming"> {
   const m = missing(task, f, has);
   if (m.length === 0) return "confirming";
-  if (m.length === 1 && m[0] === "business") return "choosing_place";
+  if (m.length === 1 && m[0] === "which business") return "choosing_place";
   return "collecting";
 }

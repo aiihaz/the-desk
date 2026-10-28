@@ -100,9 +100,10 @@ export function parseWebhook(payload: Json): { messages: Inbound[]; statuses: St
           messageId: m.id,
           at: new Date(Number(m.timestamp) * 1000),
           type: m.type,
-          text: m.text?.body ?? reply?.title ?? m.button?.text ?? null,
+          // A reaction's emoji ("" when one is removed), and the message it reacts to.
+          text: m.text?.body ?? reply?.title ?? m.button?.text ?? m.reaction?.emoji ?? null,
           replyId: reply?.id ?? m.button?.payload ?? null,
-          quotedId: m.context?.id ?? null,
+          quotedId: m.context?.id ?? m.reaction?.message_id ?? null,
           raw: m,
         });
       }

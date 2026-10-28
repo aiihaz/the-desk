@@ -1,12 +1,13 @@
 // What Luna's action tools do (E4 design 2, L2). Luna proposes; this code checks,
-// stores through the SQL functions, moves the state, and sends the code-built
-// read-back once nothing is missing. The dev test page calls these directly.
+// stores through the SQL functions and moves the state. Nothing here sends a plan:
+// Luna asks for one with propose_plan when the conversation is ready (turn.ts).
+// The dev test page calls these directly.
 import type { User } from "../store.ts";
-import { checkSlots, collectingState, rewordingProblem } from "./slots.ts";
+import { errandRef } from "./cards.ts";
+import { checkSlots, collectingState, missing, type QuestionOps } from "./slots.ts";
 import { group, type Task, TASKS } from "./states.ts";
-import type { ActiveRequest, Refused } from "./store.ts";
-import { bookItPrompt } from "./readback.ts";
-import { presentReadback, type PromptDeps, sendPrompt } from "./turn.ts";
+import type { ActiveRequest } from "./store.ts";
+import type { PromptDeps } from "./turn.ts";
 
 export type ToolDeps = PromptDeps & { trace?: (event: string, data: unknown) => void };
 
@@ -15,16 +16,20 @@ export type ToolResult = { ok: true; [k: string]: unknown } | {
   ok: false;
   reason: string;
   errors?: string[];
+  [k: string]: unknown;
 };
 
-// Replacing drops what the user already gave, so code refuses unless Luna has asked
-// first (confirm_replace). A request with at most one detail, or one in flight (the new
-// one is queued), goes ahead without asking (E4 design 2.5).
+// mode "replace": the new errand takes the place of the current one, whose details are
+// dropped, so code refuses unless Luna has asked first (confirm_replace). A request with
+// at most one detail, or one in flight (the new one then waits), goes ahead without
+// asking (E4 design 2.5). mode "after": the new errand waits behind the current one,
+// keeping both (queue_request).
 export async function startNewRequest(
   deps: ToolDeps,
   user: User,
   task: Task,
   confirmReplace = false,
+  mode: "replace" | "after" = "replace",
 ): Promise<ToolResult> {
   if (!TASKS.includes(task)) {
     return {
@@ -33,115 +38,137 @@ export async function startNewRequest(
         "should contact the place directly. Don't collect details for it",
     };
   }
-  const { request } = await deps.store.active(user.id);
-  const cur = request ?? await deps.store.queued(user.id);
-  // Another place for the same task is the same request with a new business; a new
-  // request would drop the details they gave.
-  if (cur && cur.task === task && group(cur.state) === "before_consent") {
+  if (mode === "after") {
+    const res = await deps.store.queueRequest(user.id, task);
+    deps.trace?.("queue_request", res);
+    return res.ok ? { ok: true, errand: errandRef(res.request_id), state: res.state } : res;
+  }
+  const { request: cur } = await deps.store.active(user.id);
+  if (!confirmReplace && cur && wouldLose(cur)) {
+    const where = cur.businessId ? ` at ${(await deps.store.place(cur.businessId)).name}` : "";
     const res = {
       ok: false as const,
-      reason: `there is already an open ${task}. To change the place, find_business and choose_business ` +
-        "on it; to change details, set_slots. Its details stay. Only if they want to start over, " +
-        "cancel_request first",
+      reason: `this would drop the open ${cur.task}${where}. Ask what they want: drop it, keep it and do ` +
+        "this one after (mode after), or change it (set_slots, find_business). Call again with " +
+        "confirm_replace only if they say to drop it",
     };
-    deps.trace?.("same_task_guard", res);
+    deps.trace?.("replace_guard", res);
     return res;
-  }
-  if (!confirmReplace) {
-    if (cur && wouldLose(cur)) {
-      const where = cur.businessId ? ` at ${(await deps.store.place(cur.businessId)).name}` : "";
-      const res = {
-        ok: false as const,
-        reason: `this would drop the open ${cur.task}${where}. Ask the user first; call again with ` +
-          "confirm_replace only if they say to drop it",
-      };
-      deps.trace?.("replace_guard", res);
-      return res;
-    }
   }
   const res = await deps.store.startRequest(user.id, task);
   deps.trace?.("start_request", res);
-  return res;
+  return {
+    ok: true,
+    errand: errandRef(res.request_id),
+    state: res.state,
+    replaced: !!res.replaced_request_id,
+  };
 }
 
 function wouldLose(r: ActiveRequest): boolean {
   const g = group(r.state);
   if (g === "after_call_1" || r.state === "awaiting_yes") return true;
-  if (g !== "before_consent" && g !== "queued") return false;
+  if (g !== "before_consent") return false;
   return Object.keys(r.fields).length + (r.businessId ? 1 : 0) >= 2;
 }
 
-export async function cancelActive(deps: ToolDeps, user: User): Promise<ToolResult> {
+// The errand a tool acts on: the one named by ref, else the current one, else the
+// first waiting one.
+export async function target(deps: ToolDeps, user: User, ref?: string | null): Promise<ActiveRequest | null> {
   const { request } = await deps.store.active(user.id);
-  if (!request) return { ok: false, reason: "no_active_request" };
-  const res = await deps.store.cancelRequest(request.id);
-  deps.trace?.("cancel_request", res);
-  return res;
+  const waiting = await deps.store.queuedList(user.id);
+  if (ref) {
+    const want = ref.trim().toLowerCase().replace(/^r-/, "");
+    return [request, ...waiting].find((r) => r && r.id.toLowerCase().startsWith(want)) ?? null;
+  }
+  return request ?? waiting[0] ?? null;
 }
 
-// drop: what the user asked to remove from question or also_ask (rewordingProblem).
+const NO_ERRAND = { ok: false as const, reason: "no such errand; use the errand ref from the TASK card" };
+
+export async function cancelActive(deps: ToolDeps, user: User, ref?: string | null): Promise<ToolResult> {
+  const r = await target(deps, user, ref);
+  if (!r) return ref ? NO_ERRAND : { ok: false, reason: "no_active_request" };
+  const res = await deps.store.cancelRequest(r.id);
+  deps.trace?.("cancel_request", res);
+  if (!res.ok) return res;
+  // The next waiting errand, if any, becomes current.
+  const next = await deps.store.activateQueued(user.id);
+  deps.trace?.("activate_queued", next);
+  return next.request_id ? { ok: true, now_current: errandRef(next.request_id) } : { ok: true };
+}
+
 export async function setSlots(
   deps: ToolDeps,
   user: User,
   patch: Record<string, unknown>,
-  drop: string[] = [],
+  ops: QuestionOps = {},
+  ref?: string | null,
 ): Promise<ToolResult> {
-  const r = await current(deps, user);
-  if (!r) return { ok: false, reason: "no_active_request" };
-  const check = checkSlots(r.task, r.fields, patch, deps.now?.() ?? new Date());
+  const r = await target(deps, user, ref);
+  if (!r) return ref ? NO_ERRAND : { ok: false, reason: "no_active_request; start_new_request first" };
+  const check = checkSlots(r.task, r.fields, patch, deps.now?.() ?? new Date(), ops);
   deps.trace?.("check_slots", check);
   if (!check.ok) return { ok: false, reason: "invalid", errors: check.errors };
-  const reworded = rewordingProblem(r.fields, check.patch, drop);
-  if (reworded) {
-    deps.trace?.("reword_guard", reworded);
-    return { ok: false, reason: reworded };
-  }
   const res = await deps.store.updateSlots(r.id, check.patch);
   deps.trace?.("update_slots", res);
   if (!res.ok) return res;
   return settle(deps, user, r.id);
 }
 
-// After the user picks a place (find_business in step 3, or the dev page).
-export async function setBusiness(deps: ToolDeps, user: User, businessId: string): Promise<ToolResult> {
+// After the user picks a place (choose_business, or the dev page).
+export async function setBusiness(
+  deps: ToolDeps,
+  user: User,
+  businessId: string,
+  ref?: string | null,
+): Promise<ToolResult> {
   if (!UUID.test(businessId)) return { ok: false, reason: UNKNOWN_BUSINESS };
-  const r = await current(deps, user);
-  if (!r) return { ok: false, reason: "no_active_request" };
+  const r = await target(deps, user, ref);
+  if (!r) return ref ? NO_ERRAND : { ok: false, reason: "no_active_request" };
   const res = await deps.store.setBusiness(r.id, businessId);
   deps.trace?.("set_business", res);
   if (!res.ok) return res;
   return settle(deps, user, r.id);
 }
 
-// The queued request if one exists and nothing is active, else the active one.
-// A queued request still collects slots (2.5).
-async function current(deps: ToolDeps, user: User): Promise<ActiveRequest | null> {
-  const { request } = await deps.store.active(user.id);
-  return request ?? await deps.store.queued(user.id);
-}
-
-// Moves a collecting request to where its slots put it, and sends the read-back
-// when nothing is missing. A queued request is left alone until it activates.
+// Moves a collecting request to where its slots put it, and says what is still needed.
+// An edit to a plan already sent closes it (the version bump in update_slots), so the
+// user's next "ok" can't approve the old one; Luna proposes again when ready.
 async function settle(deps: ToolDeps, user: User, requestId: string): Promise<ToolResult> {
   const r = await deps.store.request(requestId);
-  if (group(r.state) !== "before_consent") return { ok: true, state: r.state };
-  const to = collectingState(r.task, r.fields, { business: !!r.businessId, booking: !!r.bookingId });
-  if (r.state !== "awaiting_yes" && r.state !== to) {
+  const errand = errandRef(r.id);
+  if (group(r.state) !== "before_consent") return { ok: true, errand, state: r.state };
+  const info = await deps.store.user(user.id);
+  const mayBook = r.task === "booking"
+    ? await deps.store.limitBool("book_on_first_call", user.id)
+    : undefined;
+  const has = { business: !!r.businessId, booking: !!r.bookingId, profileName: !!info.name, mayBook };
+  const to = collectingState(r.task, r.fields, has);
+  if (r.state !== to) {
     await deps.store.advance(r.id, to);
     deps.trace?.("advance", { from: r.state, to });
   }
-  if (to !== "confirming") return { ok: true, state: to };
-  if (r.state === "awaiting_yes") return { ok: true, state: r.state };
-  if (r.pausedAt) return { ok: true, state: to, paused: "no read-back until they say to carry on" };
-  const sent: { ok: true; promptId: string } | Refused = await presentReadback(deps, user, r.id);
-  deps.trace?.("read_back", sent);
-  return sent.ok ? { ok: true, state: "awaiting_yes", prompt_id: sent.promptId } : sent;
+  const need = missing(r.task, r.fields, has);
+  return {
+    ok: true,
+    errand,
+    state: to,
+    ...(need.length ? { still_needed: need } : { ready: "propose_plan when they have nothing more to add" }),
+    ...(r.state === "awaiting_yes" ? { plan: "the plan they saw is now out of date" } : {}),
+    ...(r.pausedAt ? { paused: "no plan until they say to carry on" } : {}),
+  };
 }
 
-// The user picked a place from find_business results. The id must exist; the
-// read-back names the place, so the user's YES confirms it. With no saved city yet,
-// the picked place's city becomes theirs, so the next search starts there.
-export async function chooseBusiness(deps: ToolDeps, user: User, businessId: string): Promise<ToolResult> {
+// The user picked a place from find_business results. The id must exist; the plan names
+// the place, so the user's approval covers it. With no saved city yet, the picked
+// place's city becomes theirs, so the next search starts there.
+export async function chooseBusiness(
+  deps: ToolDeps,
+  user: User,
+  businessId: string,
+  ref?: string | null,
+): Promise<ToolResult> {
   // Checked before the database: a made-up id ("PLACEHOLDER", a name) is not a uuid and
   // would fail the query, and with it the whole turn.
   if (!UUID.test(businessId) || !(await deps.store.businessExists(businessId))) {
@@ -154,27 +181,27 @@ export async function chooseBusiness(deps: ToolDeps, user: User, businessId: str
       deps.trace?.("set_city", { city, from: "picked place" });
     }
   }
-  return setBusiness(deps, user, businessId);
+  return setBusiness(deps, user, businessId, ref);
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UNKNOWN_BUSINESS = "unknown business_id; use one from find_business or my_places";
 
-// "Hang on, don't do anything yet": the read-back closes and nothing is sent or called
-// until resumeActive. A YES meanwhile gets the paused_hold template (gate).
+// "Hang on, don't do anything yet": the plan closes and nothing is proposed, approved or
+// called until resumeActive.
 export async function pauseActive(deps: ToolDeps, user: User): Promise<ToolResult> {
-  const r = await current(deps, user);
+  const r = await target(deps, user);
   if (!r) return { ok: false, reason: "no_active_request" };
   const res = await deps.store.pauseRequest(r.id);
   deps.trace?.("pause_request", res);
   return res.ok
-    ? { ok: true, state: res.state, paused: "nothing is sent or called until they're back" }
+    ? { ok: true, state: res.state, paused: "nothing is proposed or called until they're back" }
     : res;
 }
 
-// They're back: lift the pause, and send the read-back again if nothing is missing.
+// They're back: lift the pause. Luna proposes the plan again when they want to go on.
 export async function resumeActive(deps: ToolDeps, user: User): Promise<ToolResult> {
-  const r = await current(deps, user);
+  const r = await target(deps, user);
   if (!r) return { ok: false, reason: "no_active_request" };
   const res = await deps.store.resumeRequest(r.id);
   deps.trace?.("resume_request", res);
@@ -186,22 +213,6 @@ export async function resumeActive(deps: ToolDeps, user: User): Promise<ToolResu
 export async function myPlaces(deps: ToolDeps, user: User, label: string): Promise<ToolResult> {
   const hit = await deps.store.myPlace(user.id, label);
   return hit ? { ok: true, ...hit } : { ok: false, reason: "no saved place with that name" };
-}
-
-// "the second one" / "9:30 wala": code sends a Book-it button for that option.
-// Not a consent: the tap (or a typed YES) on that button is.
-export async function pickOption(deps: ToolDeps, user: User, number: number): Promise<ToolResult> {
-  const { request } = await deps.store.active(user.id);
-  if (!request || group(request.state) !== "after_call_1") {
-    return { ok: false, reason: "no options to pick from" };
-  }
-  const options = await deps.store.liveOptions(request.id);
-  const option = options[number - 1];
-  if (!option) return { ok: false, reason: `there are ${options.length} options` };
-  const place = await deps.store.place(request.businessId!);
-  const sent = await sendPrompt(deps, user, request.id, (id) => bookItPrompt(id, { place, option }));
-  deps.trace?.("book_it_prompt", sent);
-  return sent.ok ? { ok: true, sent: "Book-it button", option: option.label } : sent;
 }
 
 // Text from outside (search results now, call transcripts later) is data, not

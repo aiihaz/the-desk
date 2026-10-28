@@ -3,7 +3,17 @@ import type { Outbound } from "../whatsapp.ts";
 import type { OpenPrompt } from "./gate.ts";
 import type { Prompt } from "./readback.ts";
 import type { RouteLog } from "./router.ts";
-import type { ActiveRequest, ChatStore, ConsentStored, Refused, TurnClaim } from "./store.ts";
+import type {
+  ActiveRequest,
+  CallForReport,
+  CallSettlement,
+  ChatLine,
+  ChatStore,
+  ConsentStored,
+  LiveOption,
+  Refused,
+  TurnClaim,
+} from "./store.ts";
 
 export class FakeChatStore implements ChatStore {
   req: ActiveRequest | null = null;
@@ -42,8 +52,17 @@ export class FakeChatStore implements ChatStore {
   async request() {
     return this.req!;
   }
+  waiting: ActiveRequest[] = [];
   async queued() {
-    return null;
+    return this.waiting[0] ?? null;
+  }
+  async queuedList() {
+    return this.waiting;
+  }
+  // The user wrote again while the turn ran.
+  unhandled = false;
+  async hasUnhandledInbound() {
+    return this.unhandled;
   }
   async lastOutboundId() {
     return this.lastOut;
@@ -73,11 +92,19 @@ export class FakeChatStore implements ChatStore {
   async booking(): Promise<never> {
     throw new Error("not used");
   }
-  async history() {
-    return [];
+  // id: the line's WhatsApp message id, for linesAfter.
+  lines: (ChatLine & { id?: string })[] = [];
+  async history(_u: string, since: Date) {
+    return this.lines.filter((l) => l.at >= since);
   }
+  // Lines are in stored order; "after the plan" is after its line in the list.
+  async linesAfter(_u: string, wa: string) {
+    const i = this.lines.findIndex((l) => l.id === wa);
+    return i < 0 ? [] : this.lines.slice(i + 1);
+  }
+  options: LiveOption[] = [];
   async liveOptions() {
-    return [];
+    return this.options;
   }
   async recent() {
     return [];
@@ -153,6 +180,35 @@ export class FakeChatStore implements ChatStore {
     return { ok: true as const };
   }
   async touch() {}
+  queuedTasks: string[] = [];
+  queueResult: { ok: true; request_id: string; state: "queued" } | Refused = {
+    ok: true,
+    request_id: "q1000000-0000-4000-8000-000000000000",
+    state: "queued",
+  };
+  async queueRequest(_u: string, task: string) {
+    this.queuedTasks.push(task);
+    return this.queueResult;
+  }
+  activated: string | null = null;
+  async activateQueued() {
+    return { ok: true as const, request_id: this.activated };
+  }
+  call: CallForReport | null = null;
+  async callForReport() {
+    return this.call;
+  }
+  settled: CallSettlement[] = [];
+  settleResult: { ok: true; request_id: string; state: "done"; option_ids: string[] } | Refused = {
+    ok: true,
+    request_id: "r1",
+    state: "done",
+    option_ids: [],
+  };
+  async settleCall(_c: string, s: CallSettlement) {
+    this.settled.push(structuredClone(s));
+    return this.settleResult;
+  }
   async startRequest(): Promise<never> {
     throw new Error("not used");
   }
@@ -164,6 +220,8 @@ export class FakeChatStore implements ChatStore {
   }
   async updateSlots(_id: string, patch: Record<string, unknown>) {
     this.slotWrites.push(patch);
+    // Like bump_request: an edit closes the open plan.
+    this.prompt = null;
     this.req = { ...this.req!, fields: { ...this.req!.fields, ...patch }, state: "confirming" };
     return { ok: true as const, changed: true, state: this.req.state, version: this.req.version + 1 };
   }
@@ -177,6 +235,8 @@ export class FakeChatStore implements ChatStore {
       optionIds: p.optionIds,
       confirmWord: p.confirmWord,
       waMessageId: null,
+      sentAt: this.promptAt,
+      text: p.text,
       message: p.message,
     };
     return { ok: true as const };
@@ -190,8 +250,15 @@ export class FakeChatStore implements ChatStore {
   async promptMessage() {
     return this.prompt!.message;
   }
-  async recordConsent(promptId: string, optionId: string | null, word: string, wa: string) {
-    this.consents.push({ promptId, optionId, word, wa });
+  promptAt = new Date("2026-10-23T12:00:00+05:30");
+  async recordConsent(
+    promptId: string,
+    optionId: string | null,
+    word: string,
+    wa: string,
+    basis?: Record<string, unknown>,
+  ) {
+    this.consents.push({ promptId, optionId, word, wa, basis });
     return this.consentResult;
   }
 }

@@ -8,8 +8,9 @@ import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { deliver } from "../supabase/functions/_shared/deliver.ts";
 import { DbStore, type User } from "../supabase/functions/_shared/store.ts";
 import type { Inbound, Outbound } from "../supabase/functions/_shared/whatsapp.ts";
-import { profileCard, recentCard, taskCard } from "../supabase/functions/_shared/chat/cards.ts";
-import { optionsPrompt } from "../supabase/functions/_shared/chat/readback.ts";
+import { errandRef, profileCard, recentCard, taskCard } from "../supabase/functions/_shared/chat/cards.ts";
+import { reportCall } from "../supabase/functions/_shared/chat/report.ts";
+import type { CallResult } from "../supabase/functions/_shared/sarvam.ts";
 import { type ChatStore, DbChatStore } from "../supabase/functions/_shared/chat/store.ts";
 import { toolsFor } from "../supabase/functions/_shared/chat/states.ts";
 import {
@@ -19,7 +20,7 @@ import {
   startNewRequest,
   type ToolDeps,
 } from "../supabase/functions/_shared/chat/tools.ts";
-import { sendPrompt } from "../supabase/functions/_shared/chat/turn.ts";
+import { proposePlan } from "../supabase/functions/_shared/chat/turn.ts";
 import { type AgentDeps, handleInbound } from "../supabase/functions/_shared/chat/agent.ts";
 import { runCommand } from "../supabase/functions/_shared/chat/commands.ts";
 import { DbCallStore } from "../supabase/functions/_shared/call_store.ts";
@@ -29,6 +30,7 @@ import { responsesClient } from "../supabase/functions/_shared/openai.ts";
 import { jevClient } from "../supabase/functions/_shared/jev.ts";
 import { type PlaceHit, placesClient, type SearchPlaces } from "../supabase/functions/_shared/places.ts";
 import type { Task } from "../supabase/functions/_shared/chat/states.ts";
+import type { ConsentStored } from "../supabase/functions/_shared/chat/store.ts";
 
 await loadLocalEnv();
 const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
@@ -102,6 +104,9 @@ const WRITES = new Set([
   "pauseRequest",
   "resumeRequest",
   "callNotStarted",
+  "queueRequest",
+  "activateQueued",
+  "settleCall",
 ]);
 
 // Logs every ChatStore call with its arguments, result and time.
@@ -170,6 +175,30 @@ async function searchDevBusinesses({ text }: { text: string }): Promise<PlaceHit
     }));
 }
 
+const callStore = new DbCallStore(db);
+
+// After an approval, production calls dial (reserve_call → Sarvam). The bench shows the
+// variables the voice agent would get, marks the call as started, and places nothing.
+// Use Simulate to play the call's result back through the real report path.
+async function onApproved(_user: User, consent: ConsentStored): Promise<{ started: boolean }> {
+  const r = await store.request(consent.request_id);
+  const kind = consent.kind === "book" ? "booking" : r.task === "question" ? "question" : "first";
+  let variables: unknown;
+  try {
+    variables = callVariables(kind, await callStore.requestInputs(r.id, consent.option_id), false);
+  } catch (e) {
+    variables = { error: errText(e) };
+  }
+  emit("call", {
+    note: "Consent stored. Production now calls dial (reserve_call → Sarvam) with these variables. " +
+      "No call is placed here; use Simulate to fake the result.",
+    consent,
+    kind,
+    variables,
+  });
+  return { started: true };
+}
+
 const openaiKey = Deno.env.get("OPENAI_API_KEY");
 const typesafeKey = Deno.env.get("TYPESAFE_API_KEY");
 const lunaDeps: LunaDeps | null = openaiKey
@@ -179,11 +208,10 @@ const lunaDeps: LunaDeps | null = openaiKey
     create: responsesClient(openaiKey),
     jev: typesafeKey ? jevClient(typesafeKey) : undefined,
     searchPlaces,
+    onApproved,
     trace: (event, data) => emit(`decision:${event}`, data),
   }
   : null;
-
-const callStore = new DbCallStore(db);
 
 // The same entry as production (wa-inbound): debounce, one turn per user, real commands.
 // Only the call is faked: on a consent the bench shows the variables dial would send.
@@ -192,28 +220,11 @@ const turnDeps: AgentDeps = {
   send,
   isAdmin: (waId) => waId === DEV_WA_ID && Deno.env.get("DEV_ADMIN") === "1",
   trace: (event, data) => emit(`decision:${event}`, data),
-  luna: async (user, text, msg) => {
+  luna: async (user, _text, msg) => {
     if (!lunaDeps) {
       return emit("luna", { note: "OPENAI_API_KEY is not set in supabase/functions/.env; Luna is off." });
     }
-    await runLuna(lunaDeps, user, msg.at, msg.messageId, text);
-  },
-  onConsent: async (_user, consent) => {
-    const r = await store.request(consent.request_id);
-    const kind = consent.kind === "book" ? "booking" : r.task === "question" ? "question" : "first";
-    let variables: unknown;
-    try {
-      variables = callVariables(kind, await callStore.requestInputs(r.id, consent.option_id), false);
-    } catch (e) {
-      variables = { error: errText(e) };
-    }
-    emit("call", {
-      note: "Consent stored. Production now calls dial (reserve_call → Sarvam) with these variables. " +
-        "No call is placed here; use Simulate to fake the result.",
-      consent,
-      kind,
-      variables,
-    });
+    await runLuna(lunaDeps, user, msg.at, msg.messageId);
   },
   onCommand: (user, route) =>
     runCommand({ store, send, trace: (event, data) => emit(`decision:${event}`, data) }, user, route),
@@ -225,7 +236,7 @@ const turnDeps: AgentDeps = {
 async function cards(user: User) {
   const now = new Date();
   const info = await store.user(user.id);
-  const { request } = await store.active(user.id);
+  const { request, prompt } = await store.active(user.id);
   const r = request ?? await store.queued(user.id);
   const { data: places } = await db.from("user_places").select("label").eq("user_id", user.id);
   const { data: opts } = r
@@ -244,6 +255,7 @@ async function cards(user: User) {
     task: taskCard(
       r
         ? {
+          ref: errandRef(r.id),
           task: r.task,
           state: r.state,
           fields: r.fields,
@@ -253,6 +265,8 @@ async function cards(user: User) {
             label: o.label,
             detail: o.advance_required ? "advance" : null,
           })),
+          paused: !!r.pausedAt,
+          planSentAt: r.id === request?.id ? prompt?.sentAt ?? null : null,
         }
         : null,
       now,
@@ -324,7 +338,16 @@ async function onMessage(
     text: body.replyId ? body.title ?? null : body.text ?? null,
     replyId: body.replyId ?? null,
     quotedId: body.quotedId ?? null,
-    raw: { from: DEV_WA_ID, id, timestamp: Math.floor(Date.now() / 1000), type, dev: true, ...body },
+    raw: {
+      from: DEV_WA_ID,
+      id,
+      timestamp: Math.floor(Date.now() / 1000),
+      type,
+      dev: true,
+      ...body,
+      // Where Meta puts the id of a quoted message, so history shows what was quoted.
+      ...(body.quotedId ? { context: { id: body.quotedId } } : {}),
+    },
   };
   emit("whatsapp_in", msg);
   await waStore.saveInbound(user.id, msg);
@@ -341,8 +364,15 @@ async function onTool(body: { tool: string; args?: Record<string, unknown> }) {
       result = await startNewRequest(toolDeps, user, a.task as Task);
       break;
     case "set_slots":
-      result = await setSlots(toolDeps, user, a.fields as Record<string, unknown>);
+      result = await setSlots(toolDeps, user, (a.fields ?? {}) as Record<string, unknown>, {
+        add: a.add_questions as string[] | undefined,
+      });
       break;
+    case "propose_plan": {
+      const { request } = await store.active(user.id);
+      result = request ? await proposePlan(toolDeps, user, request.id) : { ok: false, reason: "no request" };
+      break;
+    }
     case "set_business":
       result = await setBusiness(toolDeps, user, a.business_id as string);
       break;
@@ -366,59 +396,54 @@ async function onSimulate(body: { action: string; args?: Record<string, unknown>
   const { request } = await store.active(user.id);
   const now = new Date();
   switch (body.action) {
-    case "call_1_options": {
-      if (request?.state !== "calling_1") return emit("simulate_refused", "needs a request in calling_1");
-      const caller = await db.from("caller_numbers").select("id").eq("e164", DEV_CALLER).single();
-      await db.from("calls").insert({
-        request_id: request.id,
-        user_id: user.id,
-        business_id: request.businessId,
-        caller_number_id: caller.data!.id,
-        kind: "first",
-        agent_version: "dev",
-        status: "completed",
-        outcome: "options_found",
-      });
-      await db.from("requests").update({ state: "options_ready" }).eq("id", request.id);
-      await rpc("bump_request", {
-        p_request_id: request.id,
-        p_reason: "options_changed",
-        p_now: now.toISOString(),
-      });
-      const labels = (a.labels as string[] | undefined) ?? ["9:30 pm", "9:45 pm"];
-      const { data: opts } = await db.from("options").insert(
-        labels.map((label, i) => ({
-          request_id: request.id,
-          label,
-          value: { label },
-          advance_required: i === 1,
-        })),
-      ).select("id, label, advance_required");
-      const place = await store.place(request.businessId!);
-      const res = await sendPrompt(
-        { store, send },
-        user,
-        request.id,
-        (pid) =>
-          optionsPrompt(pid, {
-            place,
-            options: opts!.map((o) => ({
-              id: o.id,
-              label: o.label,
-              detail: o.advance_required ? "Rs 500 advance" : null,
-            })),
-          }),
-      );
-      return emit("decision:options_prompt", res);
-    }
+    // A finished call, played through the real report path (report.ts → settle_call →
+    // WhatsApp). outputs are the voice agent's final_agent_variables (eng plan 3.4).
+    case "call_result":
+    case "call_1_options":
     case "call_booked": {
       if (!request || !["calling_1", "calling_2"].includes(request.state)) {
         return emit("simulate_refused", "needs a request in calling_1 or calling_2");
       }
-      await db.from("requests").update({ state: "done", end_reason: "done" }).eq("id", request.id);
-      await send(user, { kind: "text", body: "(simulated report) Booked." });
-      const act = await rpc("activate_queued", { p_user_id: user.id });
-      return emit("decision:activate_queued", act);
+      const preset: Record<string, unknown> = body.action === "call_1_options"
+        ? {
+          booking_status: "not_booked",
+          no_match_reason: "no_slot",
+          options: ((a.times as string[] | undefined) ?? [90, 135]).map((m) => ({
+            time: typeof m === "string" ? m : new Date(now.getTime() + Number(m) * 60_000).toISOString(),
+          })),
+        }
+        : body.action === "call_booked"
+        ? { booking_status: "booked", booked_time: request.fields.exact_time ?? request.fields.window_start }
+        : (a.outputs as Record<string, unknown>) ?? {};
+      const kind = request.state === "calling_2"
+        ? "booking"
+        : request.task === "question"
+        ? "question"
+        : "first";
+      const caller = await db.from("caller_numbers").select("id").eq("e164", DEV_CALLER).single();
+      const { data: call, error } = await db.from("calls").insert({
+        request_id: request.id,
+        user_id: user.id,
+        business_id: request.businessId,
+        caller_number_id: caller.data!.id,
+        kind,
+        agent_version: "dev",
+        status: "in_progress",
+      }).select("id").single();
+      if (error) throw error;
+      const result: CallResult = {
+        attemptId: `dev.${call.id}`,
+        callId: call.id,
+        status: (a.status as CallResult["status"]) ?? "completed",
+        durationS: 60,
+        interactionId: null,
+        failureReason: null,
+        outputs: preset,
+        transcript: null,
+        agentNumber: DEV_CALLER,
+      };
+      await callStore.finishCall(result);
+      return await reportCall(toolDeps, call.id, result);
     }
     case "expire": {
       const hours = Number(a.hours ?? 13);

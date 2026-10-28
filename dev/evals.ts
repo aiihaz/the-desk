@@ -1,4 +1,4 @@
-// Five live conversations against the test bench (review item 11: start at 5, then grow).
+// Live conversations against the test bench (review item 11: start at 5, then grow).
 // Each case resets the dev user, plays the user's messages through the real agent and
 // Luna, and checks the result from the event log. Costs a few OpenAI calls per case.
 //
@@ -30,8 +30,12 @@ async function events(): Promise<Event[]> {
 
 const outs = (ev: Event[]) => ev.filter((e) => e.type === "whatsapp_out").map((e) => e.data as Out);
 type Out = { id: string; msg: { kind: string; body?: string; buttons?: { id: string }[] } };
+// A plan: code-built text ending in a plain question (readback.ts). No buttons.
 const isReadback = (o: Out) =>
-  o.msg.kind === "buttons" && !!o.msg.buttons?.some((b) => /^(yes|cancel):/.test(b.id));
+  o.msg.kind === "text" &&
+  /\n\n(Shall I (go ahead|call them)|Do you still want me to cancel)\?$/.test(o.msg.body ?? "");
+const consented = (ev: Event[]) =>
+  ev.some((e) => e.type === "decision:consent" && (e.data as { ok: boolean }).ok);
 
 // Index (1-based) of the user message after which the first read-back arrived, or null.
 function userMsgsToReadback(ev: Event[]): number | null {
@@ -78,17 +82,17 @@ const CASES: Case[] = [
     },
   },
   {
-    name: "edit, side question, then a quoted YES",
+    name: "edit, side question, then a quoted yes",
     messages: [
       { text: tomorrowTable },
-      { text: "make it 5" },
+      { text: "make it 5 people" },
       { text: "do they have parking?" },
       { text: "yes", quoteLastPrompt: true },
     ],
     check: (r) => {
       const f: string[] = [];
       const rbs = outs(r.events).filter(isReadback);
-      if (rbs.length < 2 || !rbs.at(-1)!.msg.body!.includes("Table for 5")) f.push("no new read-back for 5");
+      if (rbs.length < 2 || !rbs.at(-1)!.msg.body!.includes("table for 5")) f.push("no new read-back for 5");
       const side = outs(r.events).filter((o) => o.msg.kind === "text").at(-1)?.msg.body ?? "";
       if (/parking (is|available)|they have parking|plenty of parking/i.test(side)) {
         f.push(`stated a parking fact it can't know: "${side}"`);
@@ -100,8 +104,34 @@ const CASES: Case[] = [
       if (promised && !inReadback) {
         f.push("promised to ask about parking, but the read-back doesn't include it");
       }
-      const consent = r.events.find((e) => e.type === "decision:consent" && (e.data as { ok: boolean }).ok);
-      if (!consent) f.push("the quoted YES did not store consent");
+      if (!consented(r.events)) f.push("the quoted yes did not store consent");
+      return f;
+    },
+  },
+  {
+    name: "plain-words approval in Hinglish starts the call",
+    messages: [{ text: tomorrowTable }, { text: "haan kar do" }],
+    check: (r) => (consented(r.events) ? [] : ["'haan kar do' after the plan did not store consent"]),
+  },
+  {
+    name: "a question after the plan is answered, not taken as approval",
+    messages: [{ text: tomorrowTable }, { text: "is it veg only there?" }],
+    check: (r) => {
+      const f: string[] = [];
+      if (consented(r.events)) f.push("a question was taken as approval");
+      const last = outs(r.events).at(-1)?.msg.body ?? "";
+      if (/\b(it is|they are|yes,? it'?s) veg/i.test(last)) f.push(`stated a fact it can't know: "${last}"`);
+      return f;
+    },
+  },
+  {
+    name: "yes with a change is an edit, not an approval",
+    messages: [{ text: tomorrowTable }, { text: "yes but make it 9pm" }],
+    check: (r) => {
+      const f: string[] = [];
+      if (consented(r.events)) f.push("approved the old plan");
+      const rbs = outs(r.events).filter(isReadback);
+      if (!rbs.at(-1)?.msg.body?.includes("9:00 pm")) f.push("no new plan at 9 pm");
       return f;
     },
   },

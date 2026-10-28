@@ -1,7 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1.0.8";
 import type { User } from "../store.ts";
 import { parsePlaces, type PlaceHit } from "../places.ts";
-import { findBusiness, type FindDeps, nameFits, sameCity, searchCity } from "./find.ts";
+import { findBusiness, type FindDeps, nameFits } from "./find.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
 
 const user: User = { id: "u1", waId: "919812345678", blocked: false };
@@ -25,94 +25,76 @@ function setup(hits: PlaceHit[] = fixture) {
   return { store, queries, deps };
 }
 
-Deno.test("two branches: both shown by area, no phone, closed and guesses dropped", async () => {
+type Match = { name: string; area: string | null; city: string | null; has_every_word_typed?: boolean };
+const matches = (r: { ok: boolean; [k: string]: unknown }) => (r.matches ?? []) as Match[];
+
+Deno.test("results are facts, not a script: callable places with name, area and city", async () => {
   const { store, queries, deps } = setup();
-  const r = await findBusiness(deps, user, { name: "navu", area: null, city: "Bangalore" });
-  // Old and short city names search under Google's name.
+  const r = await findBusiness(deps, user, { query: "navu", area: null, city: "Bengaluru", byKind: false });
   assertEquals(queries, ["navu, Bengaluru"]);
-  assertEquals(r.ok && (r.matches as { area: string | null }[]).map((m) => m.area), [
-    "Ashok Nagar",
-    "Indiranagar",
+  // No phone and permanently closed are dropped: they can't be called. Google's guess
+  // (Toit) stays, flagged, for Luna to weigh against what the user meant.
+  assertEquals(matches(r).map((m) => [m.name, m.area, m.has_every_word_typed]), [
+    ["Navu Bar & Kitchen", "Ashok Nagar", true],
+    ["Navu", "Indiranagar", true],
+    ["Toit Brewpub", null, false],
   ]);
-  assertEquals(r.ok && String(r.next).startsWith("more than one place"), true);
-  assertEquals(store.saved, ["test-place-mg-road", "test-place-indiranagar"]);
+  assertEquals(r.searched_in, "Bengaluru");
+  assertEquals("next" in r, false);
+  assertEquals(store.saved, ["test-place-mg-road", "test-place-indiranagar", "test-place-guess"]);
 });
 
-Deno.test("the saved city is used, and a named city doesn't overwrite it", async () => {
+Deno.test("the city is passed as Luna names it; the saved city fills in, and isn't overwritten", async () => {
   const { store, queries, deps } = setup(fixture.slice(1, 2));
-  const r = await findBusiness(deps, user, { name: "Navu", area: "Indiranagar", city: "Bengaluru" });
-  assertEquals(queries, ["Navu, Indiranagar, Bengaluru"]);
+  await findBusiness(deps, user, {
+    query: "Navu",
+    area: "Indiranagar",
+    city: "Thiruvananthapuram",
+    byKind: false,
+  });
+  assertEquals(queries, ["Navu, Indiranagar, Thiruvananthapuram"]);
   assertEquals(store.city, "Kozhikode");
-  assertEquals(r.ok && r.next, "one match: choose_business");
-
-  await findBusiness(deps, user, { name: "Navu", area: null, city: null });
+  await findBusiness(deps, user, { query: "Navu", area: null, city: null, byKind: false });
   assertEquals(queries[1], "Navu, Kozhikode");
 });
 
-Deno.test("no city known: all of India, the results say where; the first city named is saved", async () => {
+Deno.test("no city known: all of India; the first city named is saved", async () => {
   const { store, queries, deps } = setup();
   store.city = null;
-  const r = await findBusiness(deps, user, { name: "navu", area: null, city: null });
+  const r = await findBusiness(deps, user, { query: "navu", area: null, city: null, byKind: false });
   assertEquals(queries, ["navu"]);
-  assertEquals(
-    r.ok && r.next,
-    "more than one place: ask which one in a short line, telling them apart by area and saying they are in Bengaluru, then choose_business",
-  );
-  await findBusiness(deps, user, { name: "navu", area: null, city: "Bengaluru" });
+  assertEquals(String(r.searched_in).startsWith("all of India"), true);
+  assertEquals(store.city, null);
+  await findBusiness(deps, user, { query: "navu", area: null, city: "Bengaluru", byKind: false });
   assertEquals(store.city, "Bengaluru");
 });
 
-Deno.test("no city, one match: ask; with the area they picked: choose", async () => {
-  const { store, deps } = setup(fixture.slice(1, 2));
-  store.city = null;
-  const r = await findBusiness(deps, user, { name: "navu", area: null, city: null });
-  assertEquals(String(r.ok && r.next).startsWith("one match, in Bengaluru"), true);
-  const picked = await findBusiness(deps, user, { name: "navu", area: "Indiranagar", city: null });
-  assertEquals(picked.ok && picked.next, "one match: choose_business");
-});
-
-Deno.test("saved city with branches only elsewhere: say so first", async () => {
-  const { queries, deps } = setup();
-  const r = await findBusiness(deps, user, { name: "navu", area: null, city: null });
-  assertEquals(queries, ["navu, Kozhikode"]);
-  assertEquals(String(r.ok && r.next).startsWith("none in Kozhikode; these are in Bengaluru."), true);
-});
-
-Deno.test("one match with a different name is checked with the user", async () => {
-  const { deps } = setup(fixture.slice(4));
-  const r = await findBusiness(deps, user, { name: "navu", area: null, city: null });
-  assertEquals(
-    r.ok && r.next,
-    "one match, but the name is not what they typed: ask if that's the place before choose_business",
-  );
+Deno.test("search by kind: allowed by the limit, listed unranked; refused when it is off (P12)", async () => {
+  const { store, queries, deps } = setup(fixture.slice(0, 2));
+  store.limits.place_search_by_kind = true;
+  const r = await findBusiness(deps, user, {
+    query: "dentist",
+    area: "Koramangala",
+    city: "Bengaluru",
+    byKind: true,
+  });
+  assertEquals(queries, ["dentist, Koramangala, Bengaluru"]);
+  assertEquals(r.by_kind, true);
+  assertEquals(matches(r).every((m) => !("has_every_word_typed" in m)), true);
+  store.limits.place_search_by_kind = false;
+  const off = await findBusiness(deps, user, { query: "dentist", area: null, city: null, byKind: true });
+  assertEquals(off.ok, false);
+  assertEquals(queries.length, 1);
 });
 
 Deno.test("nothing callable, and a search error", async () => {
   const { deps } = setup(fixture.slice(2, 4));
-  const r = await findBusiness(deps, user, { name: "navu", area: null, city: null });
-  assertEquals(r.ok && (r.matches as unknown[]).length, 0);
-  assertEquals(r.ok && String(r.next).includes("no phone number"), true);
-
-  deps.searchPlaces = async () => {
-    throw new Error("places 500");
-  };
-  const e = await findBusiness(deps, user, { name: "navu", area: null, city: null });
+  const r = await findBusiness(deps, user, { query: "navu", area: null, city: null, byKind: false });
+  assertEquals(matches(r), []);
+  assertEquals(r.not_callable, "found, but no phone number listed");
+  const bad: FindDeps = { ...deps, searchPlaces: () => Promise.reject(new Error("quota")) };
+  const e = await findBusiness(bad, user, { query: "navu", area: null, city: null, byKind: false });
   assertEquals(e.ok, false);
-});
-
-Deno.test("a match in another city is checked; the saved city copied back isn't 'named'", async () => {
-  const { store, queries, deps } = setup(fixture.slice(0, 1));
-  store.city = "Calicut";
-  const r = await findBusiness(deps, user, { name: "navu", area: null, city: "Kozhikode" });
-  assertEquals(queries, ["navu, Kozhikode"]);
-  assertEquals(String(r.ok && r.next).startsWith("none in Calicut; it is in Bengaluru."), true);
-  assertEquals(sameCity("Bangalore", "Bengaluru"), true);
-  assertEquals(sameCity("TVM", "Thiruvananthapuram"), true);
-  assertEquals(searchCity("TVM"), "Thiruvananthapuram");
-  assertEquals(searchCity("new delhi"), "Delhi");
-  assertEquals(searchCity("Kannur"), "Kannur");
-  assertEquals(sameCity("New  Delhi", "Delhi"), true);
-  assertEquals(sameCity("Kochi", "Kozhikode"), false);
 });
 
 Deno.test("nameFits", () => {

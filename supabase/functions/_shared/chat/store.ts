@@ -49,16 +49,40 @@ export type ConsentStored = {
   option_id: string | null;
 };
 
-// One line of the WhatsApp conversation, as Luna sees it.
-export type ChatLine = { from: "user" | "desk"; text: string; at: Date };
+// One line of the WhatsApp conversation, as Luna sees it. quoted: the text of the
+// message a WhatsApp reply quotes, so "this one" means what the user pointed at.
+export type ChatLine = { from: "user" | "desk"; text: string; at: Date; quoted?: string };
+
+// A finished call, for the report to the user (report.ts).
+export type CallForReport = {
+  callId: string;
+  requestId: string;
+  userId: string;
+  waId: string;
+  kind: "first" | "booking" | "question" | "reschedule";
+  task: Task;
+  businessId: string;
+};
+
+// settle_call(): what a finished call did to its request (0007).
+export type CallSettlement = {
+  result: "done" | "options" | "back";
+  options?: { label: string; value: Record<string, unknown>; advance_required: boolean }[];
+  booking?: { time: string | null; reference: string | null } | null;
+  optOut?: boolean;
+};
 export type LiveOption = { id: string; label: string; detail: string | null };
 
 export interface ChatStore {
   user(userId: string): Promise<UserInfo>;
   // The user's active request (not queued, not ended) and its open prompt.
   active(userId: string): Promise<{ request: ActiveRequest | null; prompt: OpenPrompt | null }>;
-  // The user's queued request, if any (at most one; start_request replaces older ones).
+  // The oldest errand waiting behind the current one, if any.
   queued(userId: string): Promise<ActiveRequest | null>;
+  // Every waiting errand, oldest first.
+  queuedList(userId: string): Promise<ActiveRequest[]>;
+  // An inbound message no turn has taken yet: the user said more while this turn ran.
+  hasUnhandledInbound(userId: string): Promise<boolean>;
   request(requestId: string): Promise<ActiveRequest>;
   lastOutboundId(userId: string): Promise<string | null>;
   heldDeposit(userId: string): Promise<boolean>;
@@ -70,8 +94,11 @@ export interface ChatStore {
   template(key: string, language: string): Promise<string | null>;
   place(businessId: string): Promise<Place>;
   booking(bookingId: string): Promise<BookingSummary>;
-  // The last `limit` messages since `since`, oldest first.
+  // The last `limit` messages since `since`, oldest first, in the order the Desk stored
+  // them (messages.seq), not by timestamp: WhatsApp's clock and ours can disagree.
   history(userId: string, since: Date, limit: number): Promise<ChatLine[]>;
+  // Every message stored after this one (by seq), oldest first: what came after a plan.
+  linesAfter(userId: string, waMessageId: string, limit: number): Promise<ChatLine[]>;
   // Unvoided options of a request, oldest first (the order the user saw them).
   liveOptions(requestId: string): Promise<LiveOption[]>;
   // The last 3 finished requests (done, cancelled, expired).
@@ -107,6 +134,15 @@ export interface ChatStore {
     state: State;
     replaced_request_id: string | null;
   }>;
+  // A second errand behind the current one (queue_request).
+  queueRequest(userId: string, task: Task): Promise<{ ok: true; request_id: string; state: State } | Refused>;
+  // After an errand ends: the oldest waiting one becomes current.
+  activateQueued(userId: string): Promise<{ ok: true; request_id: string | null }>;
+  callForReport(callId: string): Promise<CallForReport | null>;
+  settleCall(
+    callId: string,
+    s: CallSettlement,
+  ): Promise<{ ok: true; request_id: string; state: State; option_ids: string[] } | Refused>;
   cancelRequest(requestId: string): Promise<{ ok: true } | Refused>;
   setBusiness(requestId: string, businessId: string): Promise<Changed | Refused>;
   updateSlots(requestId: string, patch: Record<string, unknown>): Promise<Changed | Refused>;
@@ -121,6 +157,7 @@ export interface ChatStore {
     optionId: string | null,
     word: "yes" | "cancel",
     waMessageId: string,
+    basis?: Record<string, unknown>,
   ): Promise<ConsentStored | Refused>;
 }
 
@@ -185,7 +222,7 @@ export class DbChatStore implements ChatStore {
     if (error) throw error;
     if (!data) return { request: null, prompt: null };
     const { data: p, error: e2 } = await this.db.from("consent_prompts")
-      .select("id, kind, option_ids, confirm_word, wa_message_id")
+      .select("id, kind, option_ids, confirm_word, wa_message_id, sent_at, text_shown")
       .eq("request_id", data.id).is("closed_at", null)
       .order("sent_at", { ascending: false }).limit(1).maybeSingle();
     if (e2) throw e2;
@@ -198,18 +235,32 @@ export class DbChatStore implements ChatStore {
           optionIds: p.option_ids,
           confirmWord: p.confirm_word,
           waMessageId: p.wa_message_id,
+          sentAt: new Date(p.sent_at),
+          text: p.text_shown,
         }
         : null,
     };
   }
 
   async queued(userId: string): Promise<ActiveRequest | null> {
+    return (await this.queuedList(userId))[0] ?? null;
+  }
+
+  async queuedList(userId: string): Promise<ActiveRequest[]> {
     const { data, error } = await this.db.from("requests")
       .select(REQUEST_COLUMNS)
       .eq("user_id", userId).eq("state", "queued")
-      .order("created_at", { ascending: false }).limit(1).maybeSingle();
+      .order("created_at", { ascending: true });
     if (error) throw error;
-    return data ? toRequest(data) : null;
+    return data.map(toRequest);
+  }
+
+  async hasUnhandledInbound(userId: string): Promise<boolean> {
+    const { count, error } = await this.db.from("messages")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId).eq("direction", "in").is("handled_at", null);
+    if (error) throw error;
+    return (count ?? 0) > 0;
   }
 
   async request(requestId: string): Promise<ActiveRequest> {
@@ -383,13 +434,47 @@ export class DbChatStore implements ChatStore {
     const { data, error } = await this.db.from("messages")
       .select("direction, body, at").eq("user_id", userId).gte("at", since.toISOString())
       .or("direction.eq.out,handled_at.not.is.null")
-      .order("at", { ascending: false }).order("seq", { ascending: false }).limit(limit);
+      .order("seq", { ascending: false }).limit(limit);
     if (error) throw error;
-    return data.reverse().map((m: Row) => ({
-      from: m.direction === "in" ? "user" as const : "desk" as const,
-      text: m.direction === "in" ? inboundText(m.body) : outboundText(m.body),
-      at: new Date(m.at),
-    }));
+    return this.lines(data);
+  }
+
+  async linesAfter(userId: string, waMessageId: string, limit: number): Promise<ChatLine[]> {
+    const { data: m, error: e1 } = await this.db.from("messages").select("seq")
+      .eq("user_id", userId).eq("wa_message_id", waMessageId).maybeSingle();
+    if (e1) throw e1;
+    if (!m) return [];
+    const { data, error } = await this.db.from("messages")
+      .select("direction, body, at").eq("user_id", userId).gt("seq", m.seq)
+      .or("direction.eq.out,handled_at.not.is.null")
+      .order("seq", { ascending: false }).limit(limit);
+    if (error) throw error;
+    return this.lines(data);
+  }
+
+  // Newest-first rows → chat lines, oldest first, with quoted messages filled in.
+  private async lines(data: Row[]): Promise<ChatLine[]> {
+    const quotedOf = (b: Row) => b?.context?.id ?? b?.reaction?.message_id;
+    const quotedIds = [...new Set(data.map((m: Row) => m.direction === "in" ? quotedOf(m.body) : null))]
+      .filter((id): id is string => typeof id === "string");
+    const quoted = new Map<string, string>();
+    if (quotedIds.length) {
+      const { data: q, error: e2 } = await this.db.from("messages")
+        .select("wa_message_id, direction, body").in("wa_message_id", quotedIds);
+      if (e2) throw e2;
+      for (const m of q) {
+        quoted.set(m.wa_message_id, m.direction === "in" ? inboundText(m.body) : outboundText(m.body));
+      }
+    }
+    return data.reverse().map((m: Row) => {
+      const q = m.direction === "in" ? quoted.get(quotedOf(m.body)) : undefined;
+      return {
+        from: m.direction === "in" ? "user" as const : "desk" as const,
+        text: m.direction === "in" ? inboundText(m.body) : outboundText(m.body),
+        at: new Date(m.at),
+        ...(q ? { quoted: q } : {}),
+      };
+    });
   }
 
   async liveOptions(requestId: string): Promise<LiveOption[]> {
@@ -479,6 +564,48 @@ export class DbChatStore implements ChatStore {
     );
   }
 
+  queueRequest(userId: string, task: Task) {
+    return this.rpc<{ ok: true; request_id: string; state: State } | Refused>("queue_request", {
+      p_user_id: userId,
+      p_task: task,
+    });
+  }
+
+  activateQueued(userId: string) {
+    return this.rpc<{ ok: true; request_id: string | null }>("activate_queued", { p_user_id: userId });
+  }
+
+  async callForReport(callId: string): Promise<CallForReport | null> {
+    const { data, error } = await this.db.from("calls")
+      .select("id, request_id, user_id, kind, business_id, requests(task), users(wa_id)").eq("id", callId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    const row = data as Row;
+    return {
+      callId: row.id,
+      requestId: row.request_id,
+      userId: row.user_id,
+      waId: row.users.wa_id,
+      kind: row.kind,
+      task: row.requests.task,
+      businessId: row.business_id,
+    };
+  }
+
+  settleCall(callId: string, s: CallSettlement) {
+    return this.rpc<{ ok: true; request_id: string; state: State; option_ids: string[] } | Refused>(
+      "settle_call",
+      {
+        p_call_id: callId,
+        p_result: s.result,
+        p_options: s.options ?? [],
+        p_booking: s.booking ?? null,
+        p_opt_out: s.optOut ?? false,
+      },
+    );
+  }
+
   cancelRequest(requestId: string) {
     return this.rpc<{ ok: true } | Refused>("cancel_request", { p_request_id: requestId });
   }
@@ -529,12 +656,19 @@ export class DbChatStore implements ChatStore {
     return data.message;
   }
 
-  recordConsent(promptId: string, optionId: string | null, word: "yes" | "cancel", waMessageId: string) {
+  recordConsent(
+    promptId: string,
+    optionId: string | null,
+    word: "yes" | "cancel",
+    waMessageId: string,
+    basis?: Record<string, unknown>,
+  ) {
     return this.rpc<ConsentStored | Refused>("record_consent", {
       p_prompt_id: promptId,
       p_option_id: optionId,
       p_word: word,
       p_wa_message_id: waMessageId,
+      p_basis: basis ?? null,
     });
   }
 }
@@ -547,11 +681,13 @@ export function inboundText(b: Row): string {
   if (reply?.title) return `[tapped: ${reply.title}]`;
   if (b?.button?.text) return `[tapped: ${b.button.text}]`;
   if (b?.replyId) return `[tapped: ${b.title ?? b.replyId}]`;
+  if (b?.type === "reaction") {
+    return b.reaction?.emoji ? `[reacted ${b.reaction.emoji}]` : "[removed a reaction]";
+  }
   return mediaMarker(b?.type ?? "unknown");
 }
 
-// Stored outbound bodies are our Outbound. Code-built prompts are marked so Luna
-// knows code sent them, and can refer to them without repeating them.
+// Stored outbound bodies are our Outbound. Plans are sent as text and shown as they are.
 function outboundText(b: Row): string {
   switch (b?.kind) {
     case "text":

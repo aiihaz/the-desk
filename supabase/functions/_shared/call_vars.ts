@@ -53,14 +53,19 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean)
       if (x.task !== "booking") missing.push(`a booking request (this is ${x.task})`);
       if (v.party_size === null && v.service === null) missing.push("party_size or service");
       if (v.exact_time === null && (v.window_start === null || v.window_end === null)) missing.push("time");
-      if (v.customer_name === null) missing.push("customer_name");
+      // A call that only asks gives no name or number (3.4), so it needs neither.
+      if (mayBook && v.customer_name === null) missing.push("customer_name");
       if (typeof f.may_book !== "boolean") missing.push("may_book");
       if (mayBook && v.customer_phone === null) missing.push("customer_phone");
       break;
     }
     case "question": {
-      // The question read-back promises no booking and no name or number.
-      v = { question: str("question") };
+      // The question plan promises no booking and no name or number. Several questions
+      // go as one numbered string; the agent's input is a single text variable.
+      const qs = Array.isArray(f.questions) ? f.questions.filter((q) => typeof q === "string") : [];
+      v = {
+        question: qs.length > 1 ? qs.map((q, i) => `${i + 1}) ${q}`).join(" ") : qs[0] ?? str("question"),
+      };
       if (x.task !== "question") missing.push(`a question request (this is ${x.task})`);
       if (v.question === null) missing.push("question");
       break;

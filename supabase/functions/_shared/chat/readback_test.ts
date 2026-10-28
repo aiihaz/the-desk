@@ -2,7 +2,6 @@ import { assertEquals } from "jsr:@std/assert@1.0.8";
 import { buildPayload } from "../whatsapp.ts";
 import {
   bookingReadback,
-  bookItPrompt,
   cancelReadback,
   fmtDay,
   fmtWhen,
@@ -38,8 +37,15 @@ Deno.test("days and windows in IST", () => {
   );
 });
 
-Deno.test("booking read-back leads with the plan, then what is shared and when it comes back", () => {
-  const p = bookingReadback("p1", {
+// No plan has a button or asks for a typed word: each ends with a plain question.
+function noButtonsNoYes(p: { text: string; message: { kind: string } }) {
+  assertEquals(p.message.kind, "text");
+  assertEquals(/\bYES\b|\btap\b|\breply\b/i.test(p.text), false, p.text);
+  buildPayload("919812345678", p.message as never);
+}
+
+Deno.test("booking plan: what will happen, what is shared, what isn't agreed, then a plain question", () => {
+  const p = bookingReadback({
     place: paragon,
     f: { ...tonight, may_book: true, max_advance_rs: 500 },
     customerPhone: "+919812345678",
@@ -47,62 +53,79 @@ Deno.test("booking read-back leads with the plan, then what is shared and when i
   });
   assertEquals(
     p.text,
-    "Paragon, Kannur Rd, Kozhikode\nTable for 4 · tonight (Fri 23 Oct), 7:30–9:00 pm\n\n" +
-      "I'll call and book it in your name (Ihaz, +91 98…). If they want an advance of up to Rs 500, " +
-      "I'll hold it and you pay them directly. If it isn't available, I'll come back with what they have." +
-      "\n\nTap YES to book.",
+    "I'll call Paragon, Kannur Rd, Kozhikode and book a table for 4, tonight (Fri 23 Oct), 7:30–9:00 pm, " +
+      "in your name (Ihaz, +91 98…). If they want an advance of up to Rs 500, I'll hold it and you pay them " +
+      "directly. If that isn't free, I won't book anything else; I'll come back to you with what they have." +
+      "\n\nShall I go ahead?",
   );
-  assertEquals(p.text.length <= 300, true);
-  assertEquals(p.message.kind === "buttons" && p.message.buttons, [{ id: "yes:p1", title: "YES, book it" }]);
-  buildPayload("919812345678", p.message); // within Meta's limits
+  assertEquals(p.kind, "ask");
+  noButtonsNoYes(p);
 });
 
-Deno.test("with book_on_first_call off, the read-back promises no booking", () => {
-  const p = bookingReadback("p1", {
+Deno.test("a note from Luna goes before the plan", () => {
+  const p = bookingReadback({
     place: paragon,
-    f: { ...tonight, may_book: false },
+    f: { ...tonight, may_book: true, max_advance_rs: 0 },
     customerPhone: null,
     now,
+    note: "Found it.",
   });
+  assertEquals(p.text.startsWith("Found it.\n\nI'll call Paragon"), true);
+});
+
+Deno.test("with book_on_first_call off, the plan promises no booking and shares nothing", () => {
+  const p = bookingReadback({ place: paragon, f: { ...tonight, may_book: false }, customerPhone: null, now });
   assertEquals(
     p.text,
-    "Paragon, Kannur Rd, Kozhikode\nTable for 4 · tonight (Fri 23 Oct), 7:30–9:00 pm\n\n" +
-      "I'll call and ask what they have, then check with you before booking anything.\n\nTap YES to call.",
+    "I'll call Paragon, Kannur Rd, Kozhikode and ask if they can do a table for 4, tonight (Fri 23 Oct), " +
+      "7:30–9:00 pm. I won't book anything or give your name or number yet; I'll come back to you with " +
+      "what they say.\n\nShall I call them?",
   );
+  noButtonsNoYes(p);
 });
 
-Deno.test("an extra question for the call is in the read-back, so the YES covers it", () => {
-  const p = bookingReadback("p1", {
+Deno.test("an extra question for the call is in the plan, so the approval covers it", () => {
+  const p = bookingReadback({
     place: paragon,
-    f: { ...tonight, may_book: true, max_advance_rs: 500, also_ask: "Do you have parking?" },
+    f: { ...tonight, may_book: true, max_advance_rs: 0, also_ask: "Do you have parking?" },
     customerPhone: null,
     now,
   });
-  assertEquals(
-    p.text.endsWith(`what they have. I'll also ask: "Do you have parking?"\n\nTap YES to book.`),
-    true,
-  );
+  assertEquals(p.text.includes(`I'll also ask: "Do you have parking?".`), true);
 });
 
-Deno.test("with no advance allowed, the read-back says it won't agree to one", () => {
-  const p = bookingReadback("p1", {
+Deno.test("with no advance allowed, the plan says it won't agree to one (P5)", () => {
+  const p = bookingReadback({
     place: paragon,
     f: { ...tonight, may_book: true, max_advance_rs: 0 },
     customerPhone: null,
     now,
   });
-  assertEquals(p.text.includes("in your name (Ihaz). If they want an advance, I won't agree to it"), true);
+  assertEquals(p.text.includes("in your name (Ihaz). If they want an advance, I won't agree to it."), true);
+  assertEquals(p.text.includes("Rs"), false);
 });
 
-Deno.test("question read-back shares nothing", () => {
-  const p = questionReadback("p1", {
-    place: { name: "Zudio", address: "Mavoor Rd, Kozhikode", city: null },
-    f: { question: "Do you have the black jeans in size 32?" },
+Deno.test("question plan: one question quoted, several numbered; nothing shared", () => {
+  const zudio = { name: "Zudio", address: "Mavoor Rd, Kozhikode", city: null };
+  const one = questionReadback({
+    place: zudio,
+    f: { questions: ["Do you have the black jeans in size 32?"] },
   });
   assertEquals(
-    p.text,
-    'Zudio, Mavoor Rd, Kozhikode\nI\'ll call and ask: "Do you have the black jeans in size 32?"\n' +
-      "I won't book anything or share your name or number.\n\nTap YES to call.",
+    one.text,
+    'I\'ll call Zudio, Mavoor Rd, Kozhikode and ask: "Do you have the black jeans in size 32?"\n\n' +
+      "I won't book anything or share your name or number.\n\nShall I call them?",
+  );
+  noButtonsNoYes(one);
+  const two = questionReadback({
+    place: zudio,
+    f: { questions: ["Walk-ins today?", "Do you take insurance?"] },
+  });
+  assertEquals(two.text.includes("ask: \n1. Walk-ins today?\n2. Do you take insurance?"), true);
+  // A row stored before 0007 still reads.
+  assertEquals(
+    questionReadback({ place: zudio, f: { question: "Open Sunday?" } }).text.includes('"Open Sunday?"'),
+    true,
   );
 });
 
@@ -115,8 +138,8 @@ const booking = {
   knownFeeRs: null,
 };
 
-Deno.test("reschedule read-back asks to move, never to cancel", () => {
-  const p = rescheduleReadback("p1", {
+Deno.test("reschedule plan asks to move, never to cancel", () => {
+  const p = rescheduleReadback({
     booking,
     f: { window_start: "2026-10-23T21:00:00+05:30", window_end: "2026-10-23T21:30:00+05:30", may_book: true },
     now,
@@ -125,48 +148,42 @@ Deno.test("reschedule read-back asks to move, never to cancel", () => {
     p.text,
     "Paragon · your table for 4, tonight 8:15 pm (Ihaz)\nI'll call and ask to move it to tonight " +
       "(Fri 23 Oct), 9:00–9:30 pm. If they can, I'll move it. If not, I'll ask them to keep 8:15 pm " +
-      "and check with you.\n\nTap YES to call.",
+      "and check with you.\n\nShall I call them?",
   );
+  noButtonsNoYes(p);
 });
 
-Deno.test("cancel read-back: YES with no known loss, CANCEL with a deposit", () => {
-  const free = cancelReadback("p1", { booking, now });
+Deno.test("cancel plan: a known loss needs the user to accept it in so many words", () => {
+  const free = cancelReadback({ booking, now });
   assertEquals(free.confirmWord, "yes");
-  assertEquals(
-    free.text,
-    "Paragon · your table for 4, tonight 8:15 pm (Ihaz)\nI'll call and cancel it. If they mention a " +
-      "charge, I won't agree to it; I'll check with you first.\n\nTap YES to cancel.",
-  );
-  const paid = cancelReadback("p1", { booking: { ...booking, depositRs: 500 }, now });
+  noButtonsNoYes(free);
+  const paid = cancelReadback({ booking: { ...booking, depositRs: 500 }, now });
   assertEquals(paid.confirmWord, "cancel");
-  assertEquals(paid.message.kind === "buttons" && paid.message.buttons, [{
-    id: "cancel:p1",
-    title: "CANCEL",
-  }]);
   assertEquals(
     paid.text,
     "Paragon · your table for 4, tonight 8:15 pm (Ihaz)\nYou paid a Rs 500 advance, and they may keep " +
-      "it. I'll ask about a refund, but cancelling could mean losing it.\n\nReply CANCEL to go ahead.",
+      "it. I'll ask about a refund, but cancelling could mean losing it.\n\nDo you still want me to cancel?",
   );
+  noButtonsNoYes(paid);
 });
 
-Deno.test("option list and Book-it prompt carry the prompt id in every row", () => {
+Deno.test("options after a call: numbered text, picked in words", () => {
   const opts = [
     { id: "o1", label: "9:30 pm", detail: null },
-    { id: "o2", label: "9:45 pm", detail: "Rs 500 advance" },
+    { id: "o2", label: "9:45 pm", detail: "they want an advance" },
   ];
-  const list = optionsPrompt("p2", { place: paragon, options: opts });
+  const list = optionsPrompt({
+    place: paragon,
+    options: opts,
+    lead: "Paragon offered:",
+    customerName: "Ihaz",
+  });
   assertEquals(
     list.text,
-    "Paragon can do:\n1. 9:30 pm\n2. 9:45 pm (Rs 500 advance)\n" +
-      "Tap one or reply its number, and I'll call back to book it in your name.",
+    "Paragon offered:\n1. 9:30 pm\n2. 9:45 pm (they want an advance)\n\nTell me which one and I'll call " +
+      "back to book it in your name (Ihaz). If one needs an advance, I won't agree to it without checking with you.",
   );
-  assertEquals(list.message.kind === "list" && list.message.rows.map((r) => r.id), [
-    "pick:p2:o1",
-    "pick:p2:o2",
-  ]);
-  buildPayload("919812345678", list.message);
-  const one = bookItPrompt("p3", { place: paragon, option: opts[0] });
-  assertEquals(one.text, "Book 9:30 pm at Paragon in your name?");
-  assertEquals(one.optionIds, ["o1"]);
+  assertEquals(list.kind, "options");
+  assertEquals(list.optionIds, ["o1", "o2"]);
+  noButtonsNoYes(list);
 });

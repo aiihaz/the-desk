@@ -7,7 +7,7 @@ import { callAfterConsent } from "./calls.ts";
 import { runCommand } from "./commands.ts";
 import { inbound } from "./gate_test.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
-import { presentReadback } from "./turn.ts";
+import { proposePlan } from "./turn.ts";
 
 const user: User = { id: "u1", waId: "919812345678", blocked: false };
 const now = new Date("2026-10-23T12:00:00+05:30");
@@ -26,7 +26,6 @@ function setup() {
     },
     isAdmin: () => false,
     luna: async (_u, text) => void calls.push(`luna:${text}`),
-    onConsent: async (_u, c) => void calls.push(`consent:${c.consent_id}`),
     onCommand: (u, r) => runCommand(deps, u, r),
     onPayment: async () => {},
     now: () => now,
@@ -87,7 +86,7 @@ Deno.test("an edit then YES in one burst: the YES is not consent (P6)", async ()
     createdAt: now,
     pausedAt: null,
   };
-  await presentReadback(deps, user, "r1");
+  await proposePlan(deps, user, "r1");
   store.req = { ...store.req!, state: "awaiting_yes" };
   store.claims = [{ status: "claimed", batch: ["make it 7 pm", "yes"] }];
   await handleInbound(user, inbound({ text: "yes", messageId: "m2" }), deps);
@@ -111,13 +110,13 @@ Deno.test("after STOP a YES does nothing; START turns the Desk back on (P1)", as
     task: "question",
     state: "confirming",
     version: 1,
-    fields: { question: "Do you dry clean blazers?" },
+    fields: { questions: ["Do you dry clean blazers?"] },
     businessId: "b1",
     bookingId: null,
     createdAt: now,
     pausedAt: null,
   };
-  await presentReadback(deps, user, "r1");
+  await proposePlan(deps, user, "r1");
   await handleInbound(user, inbound({ text: "stop", messageId: "m1" }), deps);
   await handleInbound(user, inbound({ text: "yes", messageId: "m2" }), deps);
   assertEquals(store.consents, []);
@@ -145,8 +144,8 @@ Deno.test("delete my data: stops, records the request, says so", async () => {
   assertEquals(sent, [{ kind: "text", body: "[delete_requested]" }]);
 });
 
-Deno.test("paused: a YES gets the hold message, not a consent (P3)", async () => {
-  const { store, sent, deps } = setup();
+Deno.test("paused: a yes goes to Luna, which has no approve_plan while paused (P3)", async () => {
+  const { store, calls, deps } = setup();
   store.req = {
     id: "r1",
     task: "booking",
@@ -161,7 +160,7 @@ Deno.test("paused: a YES gets the hold message, not a consent (P3)", async () =>
   store.claims = [{ status: "claimed", batch: ["yes"] }];
   await handleInbound(user, inbound({ text: "yes", messageId: "m1" }), deps);
   assertEquals(store.consents, []);
-  assertEquals(sent, [{ kind: "text", body: "[paused_hold]" }]);
+  assertEquals(calls, ["luna:yes"]);
 });
 
 function consentSetup(res: DialResult) {
@@ -171,7 +170,7 @@ function consentSetup(res: DialResult) {
     task: "question",
     state: "calling_1",
     version: 2,
-    fields: { question: "Do you dry clean blazers?" },
+    fields: { questions: ["Do you dry clean blazers?"] },
     businessId: "b1",
     bookingId: null,
     createdAt: now,
@@ -200,14 +199,14 @@ Deno.test("a consent starts the call its request allows; the kind comes from the
     attempt_id: "a1",
     flags: [],
   });
-  await callAfterConsent(deps, user, consent);
+  assertEquals(await callAfterConsent(deps, user, consent), { started: true });
   assertEquals(dialed, [{ requestId: "r1", kind: "question", optionId: null, isRetry: false }]);
   assertEquals([store.notStarted, sent], [[], []]);
 });
 
 Deno.test("a refused call ends the request and tells the user why, in plain words", async () => {
   const { store, sent, deps } = consentSetup({ ok: false, error: "refused", reason: "business_closed" });
-  await callAfterConsent(deps, user, consent);
+  assertEquals(await callAfterConsent(deps, user, consent), { started: false });
   assertEquals(store.notStarted, ["r1"]);
   assertEquals(sent, [{ kind: "text", body: "[call_not_started]" }]);
 
