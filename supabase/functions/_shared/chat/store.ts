@@ -62,13 +62,19 @@ export type CallForReport = {
   kind: "first" | "booking" | "question" | "reschedule";
   task: Task;
   businessId: string;
+  // The business's number, for "please check with them".
+  phone: string;
+  // Booking calls: the option the user picked.
+  option: { label: string; value: Record<string, unknown> } | null;
 };
 
 // settle_call(): what a finished call did to its request (0007).
 export type CallSettlement = {
   result: "done" | "options" | "back";
   options?: { label: string; value: Record<string, unknown>; advance_required: boolean }[];
-  booking?: { time: string | null; reference: string | null } | null;
+  // verified: all three checks of eng plan 3.5 agreed (verify.ts); otherwise the booking
+  // is stored as probably_booked and flagged, with the problems, for review.
+  booking?: { time: string | null; reference: string | null; verified: boolean; problems: string[] } | null;
   optOut?: boolean;
 };
 export type LiveOption = { id: string; label: string; detail: string | null };
@@ -577,7 +583,10 @@ export class DbChatStore implements ChatStore {
 
   async callForReport(callId: string): Promise<CallForReport | null> {
     const { data, error } = await this.db.from("calls")
-      .select("id, request_id, user_id, kind, business_id, requests(task), users(wa_id)").eq("id", callId)
+      .select(
+        "id, request_id, user_id, kind, business_id, requests(task), users(wa_id), businesses(phone_e164), " +
+          "options!calls_option_id_fkey(label, value)",
+      ).eq("id", callId)
       .maybeSingle();
     if (error) throw error;
     if (!data) return null;
@@ -590,6 +599,8 @@ export class DbChatStore implements ChatStore {
       kind: row.kind,
       task: row.requests.task,
       businessId: row.business_id,
+      phone: row.businesses.phone_e164,
+      option: row.options ? { label: row.options.label, value: row.options.value ?? {} } : null,
     };
   }
 

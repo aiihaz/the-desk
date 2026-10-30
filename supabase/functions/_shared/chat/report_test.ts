@@ -3,6 +3,7 @@ import type { CallResult } from "../sarvam.ts";
 import type { Outbound } from "../whatsapp.ts";
 import { readOutcome, reportCall, type ReportDeps } from "./report.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
+import type { BookingCheck, Verification } from "./verify.ts";
 
 const now = new Date("2026-10-23T12:00:00+05:30");
 
@@ -16,6 +17,8 @@ function setup(kind: "first" | "booking" | "question" = "first") {
     kind,
     task: kind === "question" ? "question" : "booking",
     businessId: "b1",
+    phone: "+919800000901",
+    option: null,
   };
   store.req = {
     id: "r1",
@@ -53,8 +56,15 @@ const result = (status: CallResult["status"], outputs: Record<string, unknown> |
 });
 const body = (m: Outbound) => (m as { body: string }).body;
 
-Deno.test("booked: said as the business confirmed it on the call, and the errand is done", async () => {
+const passes = (checks: BookingCheck[]) => async (c: BookingCheck): Promise<Verification> => {
+  checks.push(c);
+  return { verified: true, problems: [], verdict: null };
+};
+
+Deno.test("booked and verified: said as the business confirmed it on the call, and the errand is done", async () => {
   const { store, sent, deps } = setup();
+  const checks: BookingCheck[] = [];
+  deps.verify = passes(checks);
   await reportCall(
     deps,
     "c1",
@@ -66,13 +76,72 @@ Deno.test("booked: said as the business confirmed it on the call, and the errand
   );
   assertEquals(store.settled[0], {
     result: "done",
-    booking: { time: "2026-10-23T20:00:00+05:30", reference: "T12" },
+    booking: { time: "2026-10-23T20:00:00+05:30", reference: "T12", verified: true, problems: [] },
     optOut: false,
   });
+  assertEquals(checks[0].kind, "first");
+  assertEquals(checks[0].bookedTime, "2026-10-23T20:00:00+05:30");
+  assertEquals(checks[0].defaultToleranceMin, 15);
   assertEquals(
     body(sent[0]),
     "Paragon confirmed it on the call, tonight (Fri 23 Oct) at 8:00 pm, in your name. Reference: T12.",
   );
+});
+
+Deno.test("booked but not verified: probably booked, check with them, and flagged with the problems", async () => {
+  const { store, sent, deps } = setup();
+  deps.verify = async () => ({
+    verified: false,
+    problems: ["transcript: unclear (no read-back)"],
+    verdict: null,
+  });
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", { booking_status: "booked", booked_time: "2026-10-23T20:00:00+05:30" }),
+  );
+  assertEquals(store.settled[0].booking, {
+    time: "2026-10-23T20:00:00+05:30",
+    reference: null,
+    verified: false,
+    problems: ["transcript: unclear (no read-back)"],
+  });
+  assertEquals(
+    body(sent[0]),
+    "Paragon said it's booked, tonight (Fri 23 Oct) at 8:00 pm, but I couldn't confirm that from the call, " +
+      "so please check with them yourself: +919800000901.",
+  );
+});
+
+Deno.test("booked with no verifier wired: never reported as confirmed", async () => {
+  const { store, sent, deps } = setup();
+  await reportCall(deps, "c1", result("completed", { booking_status: "booked" }));
+  assertEquals(store.settled[0].booking?.verified, false);
+  assertEquals(body(sent[0]).includes("please check with them yourself"), true);
+});
+
+Deno.test("call 2: the check gets the picked option", async () => {
+  const { store, deps } = setup("booking");
+  store.call!.option = { label: "8:30 pm", value: { time: "2026-10-23T20:30:00+05:30" } };
+  const checks: BookingCheck[] = [];
+  deps.verify = passes(checks);
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", { outcome: "booked", booked_time: "2026-10-23T20:30:00+05:30" }),
+  );
+  assertEquals(checks[0].kind, "booking");
+  assertEquals(checks[0].option, store.call!.option);
+  assertEquals(store.settled[0].booking?.verified, true);
+});
+
+Deno.test("the Genie contract: outcome options_found on call 1 becomes options", () => {
+  const o = readOutcome("first", {
+    outcome: "options_found",
+    no_match_reason: "several_options",
+    options: JSON.stringify([{ time: "2026-10-24T20:30:00+05:30", details: "table for 4" }]),
+  }, now);
+  assertEquals(o.kind, "options");
 });
 
 Deno.test("no answer, busy, failed: nothing is done, and the approval is spent", async () => {
@@ -86,7 +155,9 @@ Deno.test("no answer, busy, failed: nothing is done, and the approval is spent",
 
 Deno.test("anything the outputs don't make clear is never reported as booked", async () => {
   for (
-    const out of [null, {}, { booking_status: "maybe" }, { outcome: "booked" }, { booking_status: "BOOKED" }]
+    const out of [null, {}, { booking_status: "maybe" }, { outcome: "voicemail" }, {
+      booking_status: "BOOKED",
+    }]
   ) {
     const { store, sent, deps } = setup();
     await reportCall(deps, "c1", result("completed", out));

@@ -1,6 +1,6 @@
 // Sarvam result webhook: check the token, store the raw event, close the call row,
-// hand off, return 200 fast (eng plan 3.1). E6 fills in the hand-off: map the outputs,
-// verify any booking, save options and send the next message.
+// hand off, return 200 fast (eng plan 3.1). The hand-off (chat/report.ts) maps the
+// outputs, verifies any booking, saves options and sends the next message.
 import type { CallStore } from "../_shared/call_store.ts";
 import { type CallResult, parseWebhook, verifyWebhookToken } from "../_shared/sarvam.ts";
 

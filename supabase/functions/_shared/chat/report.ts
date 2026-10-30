@@ -19,11 +19,17 @@
 import type { CallResult } from "../sarvam.ts";
 import type { User } from "../store.ts";
 import { fmtDayFull, fmtTime, optionsPrompt, placeName } from "./readback.ts";
-import type { CallSettlement } from "./store.ts";
+import type { CallForReport, CallSettlement } from "./store.ts";
+import { readOutputs } from "./outputs.ts";
 import { cleanField } from "./tools.ts";
 import { type PromptDeps, sendPrompt } from "./turn.ts";
+import type { Verification, Verify } from "./verify.ts";
 
-export type ReportDeps = PromptDeps & { trace?: (event: string, data: unknown) => void };
+export type ReportDeps = PromptDeps & {
+  // Booking verification (verify.ts). Without it no booking is reported as verified.
+  verify?: Verify;
+  trace?: (event: string, data: unknown) => void;
+};
 
 type Option = { label: string; value: Record<string, unknown>; advance_required: boolean };
 
@@ -46,8 +52,9 @@ const REASONS: Record<string, string> = {
   new_condition: "they had a condition I couldn't agree to for you",
 };
 
-export function readOutcome(kind: string, out: Json, now: Date): Outcome {
-  if (!out || typeof out !== "object") return { kind: "unclear" };
+export function readOutcome(kind: string, raw: Json, now: Date): Outcome {
+  const out = readOutputs(kind, raw);
+  if (!out) return { kind: "unclear" };
   if (kind === "question") {
     const answer = cleanField(out.answer, 500);
     return answer ? { kind: "answered", answer } : { kind: "unclear" };
@@ -63,18 +70,14 @@ export function readOutcome(kind: string, out: Json, now: Date): Outcome {
   if (status === "held_pending_deposit") {
     return {
       kind: "needs_advance",
-      amountRs: Number.isFinite(out.advance_amount) ? out.advance_amount : null,
+      amountRs: out.advance_amount ?? null,
     };
   }
-  if (["not_booked", "option_gone", "not_available"].includes(status)) {
-    const raw = Array.isArray(out.options)
-      ? out.options
-      : Array.isArray(out.alternatives)
-      ? out.alternatives
-      : [];
-    const options = raw.slice(0, 3).map((o: Json) => option(o, now)).filter((o: Option | null): o is Option =>
-      !!o
-    );
+  if (status && ["not_booked", "option_gone", "not_available"].includes(status)) {
+    const offered = (kind === "booking" ? out.alternatives : out.options) ?? out.options ?? [];
+    const options = offered.slice(0, 3).map((o: Json) => option(o, now)).filter((
+      o: Option | null,
+    ): o is Option => !!o);
     const reason = typeof out.no_match_reason === "string" ? REASONS[out.no_match_reason] ?? null : null;
     return options.length ? { kind: "options", options, reason } : { kind: "not_available", reason };
   }
@@ -98,6 +101,29 @@ function option(o: Json, now: Date): Option | null {
   if (time) value.time = time;
   if (Number.isInteger(o.party_size)) value.party_size = o.party_size;
   return { label, value, advance_required: o.advance_required === true };
+}
+
+async function verifyCall(
+  deps: ReportDeps,
+  call: CallForReport,
+  bookedTime: string | null,
+  r: CallResult,
+): Promise<Verification> {
+  if (call.kind !== "first" && call.kind !== "booking") {
+    return { verified: false, problems: [`no verification for ${call.kind} calls`], verdict: null };
+  }
+  if (!deps.verify) return { verified: false, problems: ["no verifier"], verdict: null };
+  const req = await deps.store.request(call.requestId);
+  const tol = (await deps.store.limitInt("match_tolerance_minutes", call.userId)) ?? 15;
+  return await deps.verify({
+    kind: call.kind,
+    fields: req.fields as Record<string, unknown>,
+    option: call.option,
+    bookedTime,
+    transcript: r.transcript,
+    defaultToleranceMin: tol,
+    maxAdvanceRs: typeof req.fields.max_advance_rs === "number" ? req.fields.max_advance_rs : 0,
+  }, call.userId);
 }
 
 export async function reportCall(deps: ReportDeps, callId: string, r: CallResult): Promise<void> {
@@ -131,9 +157,17 @@ export async function reportCall(deps: ReportDeps, callId: string, r: CallResult
     case "booked": {
       const o = outcome as Extract<Outcome, { kind: "booked" }>;
       const when = o.time ? `, ${fmtDayFull(new Date(o.time), now)} at ${fmtTime(new Date(o.time))}` : "";
-      settle = { result: "done", booking: { time: o.time, reference: o.reference } };
-      text = `${place.name} confirmed it on the call${when}, in your name.` +
-        (o.reference ? ` Reference: ${o.reference}.` : "");
+      const v = await verifyCall(deps, call, o.time, r);
+      deps.trace?.("verify", v);
+      settle = {
+        result: "done",
+        booking: { time: o.time, reference: o.reference, verified: v.verified, problems: v.problems },
+      };
+      text = v.verified
+        ? `${place.name} confirmed it on the call${when}, in your name.` +
+          (o.reference ? ` Reference: ${o.reference}.` : "")
+        : `${place.name} said it's booked${when}, but I couldn't confirm that from the call, so please ` +
+          `check with them yourself: ${call.phone}.`;
       break;
     }
     case "needs_advance": {

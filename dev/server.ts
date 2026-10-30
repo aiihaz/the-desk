@@ -10,6 +10,7 @@ import { DbStore, type User } from "../supabase/functions/_shared/store.ts";
 import type { Inbound, Outbound } from "../supabase/functions/_shared/whatsapp.ts";
 import { errandRef, profileCard, recentCard, taskCard } from "../supabase/functions/_shared/chat/cards.ts";
 import { reportCall } from "../supabase/functions/_shared/chat/report.ts";
+import { verifier } from "../supabase/functions/_shared/chat/verify.ts";
 import type { CallResult } from "../supabase/functions/_shared/sarvam.ts";
 import { type ChatStore, DbChatStore } from "../supabase/functions/_shared/chat/store.ts";
 import { toolsFor } from "../supabase/functions/_shared/chat/states.ts";
@@ -415,18 +416,39 @@ async function onSimulate(body: { action: string; args?: Record<string, unknown>
         : body.action === "call_booked"
         ? { booking_status: "booked", booked_time: request.fields.exact_time ?? request.fields.window_start }
         : (a.outputs as Record<string, unknown>) ?? {};
+      // Verification reads the transcript: pass args.transcript ([{role, en_text}], role
+      // "agent" or "user" for the business) to play a call; call_booked plays a clean one.
+      const transcript = (a.transcript as CallResult["transcript"]) ?? (body.action === "call_booked"
+        ? [
+          { role: "agent", en_text: "Hello, I'm calling on behalf of a customer to book a table." },
+          { role: "user", en_text: "Yes, tell me." },
+          {
+            role: "agent",
+            en_text: `So that's a table for ${request.fields.party_size ?? 2} at ${preset.booked_time}, ` +
+              `name ${request.fields.customer_name ?? "the customer"}. Is that confirmed?`,
+          },
+          { role: "user", en_text: "Yes, confirmed. See you then." },
+        ]
+        : null);
       const kind = request.state === "calling_2"
         ? "booking"
         : request.task === "question"
         ? "question"
         : "first";
       const caller = await db.from("caller_numbers").select("id").eq("e164", DEV_CALLER).single();
+      // Call 2 books the option the user picked (consent #2).
+      const picked = kind === "booking"
+        ? (await db.from("consents").select("option_id").eq("request_id", request.id).eq("kind", "book")
+          .is("voided_at", null).order("at", { ascending: false }).limit(1).maybeSingle()).data?.option_id ??
+          null
+        : null;
       const { data: call, error } = await db.from("calls").insert({
         request_id: request.id,
         user_id: user.id,
         business_id: request.businessId,
         caller_number_id: caller.data!.id,
         kind,
+        option_id: picked,
         agent_version: "dev",
         status: "in_progress",
       }).select("id").single();
@@ -439,11 +461,15 @@ async function onSimulate(body: { action: string; args?: Record<string, unknown>
         interactionId: null,
         failureReason: null,
         outputs: preset,
-        transcript: null,
+        transcript,
         agentNumber: DEV_CALLER,
       };
       await callStore.finishCall(result);
-      return await reportCall(toolDeps, call.id, result);
+      return await reportCall(
+        { ...toolDeps, verify: openaiKey ? verifier(store, responsesClient(openaiKey)) : undefined },
+        call.id,
+        result,
+      );
     }
     case "expire": {
       const hours = Number(a.hours ?? 13);
