@@ -13,6 +13,7 @@ import { handleScreenshot } from "../_shared/chat/payment.ts";
 import { jevClient } from "../_shared/jev.ts";
 import { responsesClient } from "../_shared/openai.ts";
 import { placesClient, type SearchPlaces } from "../_shared/places.ts";
+import { serperClient, withWebPhones } from "../_shared/serper.ts";
 import { sarvamConfigFromEnv, startCall } from "../_shared/sarvam.ts";
 import { DbStore, type User } from "../_shared/store.ts";
 import {
@@ -33,9 +34,13 @@ const env = (k: string) => Deno.env.get(k) ?? "";
 
 const send = (user: User, msg: Outbound) => deliver(store, (to, m) => waSend(wa, to, m), user, msg);
 
-const searchPlaces: SearchPlaces = env("GOOGLE_MAPS_API_KEY")
+// Google Places, then a web lookup for places listed with no phone (eng plan 3.3).
+const places: SearchPlaces = env("GOOGLE_MAPS_API_KEY")
   ? placesClient(env("GOOGLE_MAPS_API_KEY"))
   : () => Promise.reject(new Error("GOOGLE_MAPS_API_KEY is not set"));
+const searchPlaces: SearchPlaces = env("SERPER_API_KEY")
+  ? withWebPhones(places, serperClient(env("SERPER_API_KEY")))
+  : places;
 
 // After an approval: reserve_call() and Sarvam, through dial().
 const dialer = (a: DialArgs) => dial({ store: calls, start: (c) => startCall(sarvam, c) }, a);

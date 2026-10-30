@@ -33,6 +33,7 @@ import { type LunaDeps, runLuna } from "../supabase/functions/_shared/chat/luna.
 import { responsesClient } from "../supabase/functions/_shared/openai.ts";
 import { jevClient } from "../supabase/functions/_shared/jev.ts";
 import { type PlaceHit, placesClient, type SearchPlaces } from "../supabase/functions/_shared/places.ts";
+import { serperClient, withWebPhones } from "../supabase/functions/_shared/serper.ts";
 import type { Task } from "../supabase/functions/_shared/chat/states.ts";
 import type { ConsentStored } from "../supabase/functions/_shared/chat/store.ts";
 
@@ -161,7 +162,10 @@ const toolDeps: ToolDeps = { store, send, trace: (event, data) => emit(`decision
 // find_business uses real Google Places when GOOGLE_MAPS_API_KEY is set (results are
 // saved as businesses; calls stay fake). Without it, it searches the three dev businesses.
 const mapsKey = Deno.env.get("GOOGLE_MAPS_API_KEY");
-const searchPlaces: SearchPlaces = mapsKey ? placesClient(mapsKey) : searchDevBusinesses;
+const serperKey = Deno.env.get("SERPER_API_KEY");
+const searchPlaces: SearchPlaces = mapsKey
+  ? (serperKey ? withWebPhones(placesClient(mapsKey), serperClient(serperKey)) : placesClient(mapsKey))
+  : searchDevBusinesses;
 
 async function searchDevBusinesses({ text }: { text: string }): Promise<PlaceHit[]> {
   const words = text.toLowerCase().split(/[^a-z0-9&]+/).filter((w) => w.length > 2);

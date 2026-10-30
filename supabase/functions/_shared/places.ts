@@ -1,6 +1,6 @@
 // Google Places API (New) Text Search (eng plan 3, step 2 FIND). Only what find_business
 // needs: up to 5 places with a phone number, address, city and opening hours.
-// Places with no phone can't be called; Serper fills that gap later.
+// Places with no phone can't be called; serper.ts looks those up on the web.
 
 export type PlaceHit = {
   placeId: string;
@@ -10,6 +10,8 @@ export type PlaceHit = {
   area: string | null;
   city: string | null;
   phone: string | null;
+  // The phone came from a web search (serper.ts), not Google Maps.
+  phoneFromWeb?: boolean;
   // regularOpeningHours as Places returns it (periods with day/hour/minute).
   openingHours: unknown;
   closed: boolean;

@@ -9,7 +9,14 @@ import { currentQuestions, type Fields } from "./slots.ts";
 
 const TZ = "Asia/Kolkata";
 
-export type Place = { name: string; address: string | null; city: string | null };
+// webNumber: the phone came from a web search, not Google Maps (eng plan 3.3).
+export type Place = { name: string; address: string | null; city: string | null; webNumber?: boolean };
+
+// Who a plan will call. A number found on the web is said, so the user can stop a call
+// to the wrong number.
+function callee(p: Place): string {
+  return placeName(p) + (p.webNumber ? " (on a number I found on the web, not on Google Maps)" : "");
+}
 
 export type Prompt = {
   kind: "ask" | "options";
@@ -141,7 +148,7 @@ export function bookingReadback(
   if (!f.may_book) {
     return ask(withNote(
       x.note,
-      `I'll call ${placeName(place)} and ask if they can do ${what_}. I won't book anything or give ` +
+      `I'll call ${callee(place)} and ask if they can do ${what_}. I won't book anything or give ` +
         `your name or number yet; I'll come back to you with what they say.${also}\n\nShall I call them?`,
     ));
   }
@@ -151,7 +158,7 @@ export function bookingReadback(
     : "If they want an advance, I won't agree to it.";
   return ask(withNote(
     x.note,
-    `I'll call ${placeName(place)} and book ${what_}, in your name (${who}). ${advance} ` +
+    `I'll call ${callee(place)} and book ${what_}, in your name (${who}). ${advance} ` +
       `If that isn't free, I won't book anything else; I'll come back to you with what they have.${also}` +
       "\n\nShall I go ahead?",
   ));
@@ -162,7 +169,7 @@ export function questionReadback(x: { place: Place; f: Fields; note?: string | n
   const asks = qs.length === 1 ? `"${qs[0]}"` : qs.map((q, i) => `\n${i + 1}. ${q}`).join("");
   return ask(withNote(
     x.note,
-    `I'll call ${placeName(x.place)} and ask: ${asks}\n\nI won't book anything or share your name or ` +
+    `I'll call ${callee(x.place)} and ask: ${asks}\n\nI won't book anything or share your name or ` +
       "number.\n\nShall I call them?",
   ));
 }

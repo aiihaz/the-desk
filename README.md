@@ -10,7 +10,8 @@ A WhatsApp calling and booking agent for India. Plan: `../the-desk-plan.md`, eng
 | E2 Schema, `limits`, `check_dial()`, pgTAP | done |
 | E3 WhatsApp in/out | built and tested locally; live round trip needs the Meta test number |
 | E4 Chat state machine, Luna, business search | built and tested locally (Places search live on the bench); Jev router and L3 Jev check built (shadow by default, needs `jev_model` pinned); L3 facts check still to do |
-| E5/E6 Sarvam plumbing (client, `dial`, `sarvam-webhook`) | built and tested locally, ahead of E4; agent, mapping and verification still to do |
+| E5/E6 Sarvam plumbing (client, `dial`, `sarvam-webhook`) | built and tested locally; outputs read in the eng plan 3.4 or the Genie brief contract; booking verification (3.5) built. The Sarvam agent itself and a live two-call run still to do |
+| E7 jobs, admin, advances, booking changes | built and tested locally: stale options, expiry, reconcile, retention (pg_cron), admin commands, alerts, health; advance holds, screenshot check, confirm call; cancel and reschedule of Desk bookings; Serper fallback. Live runs need WhatsApp and Sarvam |
 
 ## Run the tests locally
 
@@ -61,6 +62,22 @@ Same place as the Sarvam ones: `supabase/functions/.env` locally, `supabase secr
 | `OPENAI_API_KEY` | platform.openai.com → API keys (project key) |
 | `TYPESAFE_API_KEY` | console.typesafe.ai → API keys (Jev router and output check, E4 design 3) |
 | `GOOGLE_MAPS_API_KEY` | Google Cloud console → APIs & Services → Credentials (Places API (New) enabled; restrict the key to that API) |
+| `SERPER_API_KEY` | serper.dev → API key. Optional: without it, places Google lists with no phone stay uncallable |
+
+## Scheduled jobs
+
+`0009_jobs.sql` schedules them with pg_cron when the migrations run: stale options (every 5 min), request expiry and `reconcile` (every 15 min), retention (daily, 03:00 IST). `reconcile` is an edge function that pg_cron calls through pg_net, using two Vault secrets you set once in the SQL editor:
+
+```
+select vault.create_secret('https://<project-ref>.supabase.co', 'desk_project_url');
+select vault.create_secret('<service role key>', 'desk_service_key');
+```
+
+`.github/workflows/daily.yml` calls `health` every morning. It needs the repo secrets `SUPABASE_PROJECT_URL` and `SUPABASE_SERVICE_ROLE_KEY`, and fails (GitHub emails you) when an alert couldn't reach WhatsApp.
+
+## Admin on WhatsApp
+
+From a wa_id in `DESK_ADMIN_WA_IDS`: `status`, `review`, `resolve <id>`, `stop all`, `resume`, `credit <rs>`, `optout <+91…>`, `limits`, `set limit <key> <value> [for <wa_id>]`, `numbers`, `number off|on <number or id>`. Alerts (an unverified booking, a call with no result, an unconfirmed payment, a failed redial) come to the same chat every 15 minutes. An admin must have messaged the Desk in the last 24 hours to receive them.
 
 ## Where things are
 
@@ -81,10 +98,16 @@ Same place as the Sarvam ones: `supabase/functions/.env` locally, `supabase secr
 - `supabase/functions/_shared/sarvam.ts`: Instant Outbound request, webhook parsing, token check
 - `supabase/functions/dial/` and `_shared/dial.ts`: internal; `reserve_call()` first, then Sarvam. The only way to start a call. The voice agent's variables are built from the request's stored, consented fields (`_shared/call_vars.ts`); a request body carrying `variables` is refused
 - `supabase/functions/sarvam-webhook/`: token check, raw event stored, call row closed once, hand-off to `chat/report.ts`
+- `supabase/migrations/0008_verification.sql` and `_shared/chat/verify.ts`: booking verification (eng plan 3.5). A booking is stored as booked only when the time matches what the user approved and a separate model pass finds the business's own words of confirmation in the transcript; otherwise probably booked, the user asked to check with the business, and an alert raised. Cancels and confirm calls get the same transcript check (`checkClaim`)
+- `_shared/chat/outputs.ts`: reads the caller's outputs in either contract, including strings for numbers and JSON-string lists
+- `supabase/migrations/0009_jobs.sql`, `_shared/reconcile.ts`, `functions/reconcile/`, `functions/health/`: the scheduled jobs above
+- `supabase/migrations/0010_admin.sql`, `_shared/chat/admin.ts`, `_shared/alerts.ts`: admin commands and alerts
+- `supabase/migrations/0011_booking_changes.sql`: advances (hold → screenshot → confirm call, eng plan 2.2), cancel and reschedule of Desk bookings (E4 design 2.7, 2.9). `_shared/chat/payment.ts` reads the screenshot with a model and checks it in code; `find_booking` in `chat/tools.ts`
+- `_shared/serper.ts`: phone numbers for places Google lists without one, taken only from a result whose name fits, and said in the read-back as found on the web
 
 ## What the chat side reads from the caller
 
-`report.ts` reads these from Sarvam's `final_agent_variables` (eng plan 3.4). Anything else, or a value it doesn't recognise, is reported to the user as "no clear answer" and nothing is treated as done.
+`report.ts` reads these from Sarvam's `final_agent_variables` (eng plan 3.4), through `outputs.ts`, which also accepts the Genie brief's names (`outcome`, `advance_amount_rs`, options with `details`, `summary`). Anything else, or a value it doesn't recognise, is reported to the user as "no clear answer" and nothing is treated as done.
 
 | Output | Call kinds | Values |
 |---|---|---|
@@ -94,6 +117,11 @@ Same place as the Sarvam ones: `supabase/functions/.env` locally, `supabase secr
 | `no_match_reason` | first | `no_slot`, `several_options`, `advance`, `price`, `new_condition`, `unclear` |
 | `advance_amount` | first, booking | rupees |
 | `answer` | question | what the business said, in English. **Not in eng plan 3.4 yet**: the caller needs to produce it |
+| `upi_id`, `payee_name`, `payment_deadline` | first, booking | for a hold within `max_advance_rs` |
+| `payment_status` | payment_confirm | `received`, `not_seen`, `wrong_amount`, `disputed`, `unclear` |
+| `cancel_status`, `cancel_charge_rs`, `refund_stated` | cancel | `cancelled`, `charge_pending`, `not_cancelled`, `unclear`; rupees; their words |
+| `original_booking_status` | reschedule | `moved`, `kept`, `cancelled`, `unclear` |
+| `summary` | all | 2-3 factual sentences; quoted to the user when a payment or change isn't confirmed |
 | `opt_out_requested` | all | `yes` / `no` |
 
 The `question` input is one string; several questions go as `1) ... 2) ...`.

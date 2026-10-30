@@ -378,9 +378,9 @@ export class DbChatStore implements ChatStore {
 
   async place(businessId: string): Promise<Place> {
     const { data, error } = await this.db.from("businesses")
-      .select("name, address, city").eq("id", businessId).single();
+      .select("name, address, city, source").eq("id", businessId).single();
     if (error) throw error;
-    return { name: data.name, address: data.address, city: data.city };
+    return { name: data.name, address: data.address, city: data.city, webNumber: data.source === "serper" };
   }
 
   async booking(bookingId: string): Promise<BookingSummary> {
@@ -599,7 +599,7 @@ export class DbChatStore implements ChatStore {
       city: p.city,
       phone_e164: p.phone,
       opening_hours: p.openingHours,
-      source: p.placeId.startsWith("dev/") ? "user" : "places",
+      source: p.placeId.startsWith("dev/") ? "user" : p.phoneFromWeb ? "serper" : "places",
       updated_at: new Date().toISOString(),
     }, { onConflict: "place_id" }).select("id").single();
     if (error) throw error;
