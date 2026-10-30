@@ -62,9 +62,9 @@ export type Tool =
   | "resume_request"
   | "find_booking";
 
-// Reschedule and cancel need Desk bookings, which come with E6. Until then neither is
-// offered, so Luna says so once instead of collecting details for a request that can't finish.
-export const BOOKING_CHANGES = false;
+// Reschedule and cancel a Desk booking (E4 design 2.7, 2.9). Off: Luna says once that it
+// can't change bookings, instead of collecting details for a request that can't finish.
+export const BOOKING_CHANGES = true;
 export const TASKS: Task[] = BOOKING_CHANGES
   ? ["booking", "question", "reschedule", "cancel"]
   : ["booking", "question"];

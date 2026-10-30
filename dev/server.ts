@@ -10,8 +10,8 @@ import { DbStore, type User } from "../supabase/functions/_shared/store.ts";
 import type { Inbound, Outbound } from "../supabase/functions/_shared/whatsapp.ts";
 import { errandRef, profileCard, recentCard, taskCard } from "../supabase/functions/_shared/chat/cards.ts";
 import { reportCall } from "../supabase/functions/_shared/chat/report.ts";
-import { verifier } from "../supabase/functions/_shared/chat/verify.ts";
-import type { CallResult } from "../supabase/functions/_shared/sarvam.ts";
+import { claimChecker, verifier } from "../supabase/functions/_shared/chat/verify.ts";
+import type { CallKind, CallResult } from "../supabase/functions/_shared/sarvam.ts";
 import { type ChatStore, DbChatStore } from "../supabase/functions/_shared/chat/store.ts";
 import { toolsFor } from "../supabase/functions/_shared/chat/states.ts";
 import {
@@ -24,6 +24,8 @@ import {
 import { proposePlan } from "../supabase/functions/_shared/chat/turn.ts";
 import { type AgentDeps, handleInbound } from "../supabase/functions/_shared/chat/agent.ts";
 import { runCommand } from "../supabase/functions/_shared/chat/commands.ts";
+import { callKind } from "../supabase/functions/_shared/chat/calls.ts";
+import { handleScreenshot } from "../supabase/functions/_shared/chat/payment.ts";
 import { DbAdminStore } from "../supabase/functions/_shared/chat/admin.ts";
 import { DbCallStore } from "../supabase/functions/_shared/call_store.ts";
 import { callVariables } from "../supabase/functions/_shared/call_vars.ts";
@@ -184,7 +186,7 @@ const callStore = new DbCallStore(db);
 // Use Simulate to play the call's result back through the real report path.
 async function onApproved(_user: User, consent: ConsentStored): Promise<{ started: boolean }> {
   const r = await store.request(consent.request_id);
-  const kind = consent.kind === "book" ? "booking" : r.task === "question" ? "question" : "first";
+  const kind = callKind(consent.kind, r.task);
   let variables: unknown;
   try {
     variables = callVariables(kind, await callStore.requestInputs(r.id, consent.option_id), false);
@@ -234,8 +236,39 @@ const turnDeps: AgentDeps = {
       user,
       route,
     ),
-  onPayment: async (_user, route) =>
-    emit("payment", { note: "Screenshot check is E7; nothing done.", route }),
+  // The real screenshot check. The bench has no WhatsApp media, so an image reads from
+  // raw.dataUrl when the page sends one; the confirm call is shown, not placed.
+  onPayment: (user, route, msg) =>
+    handleScreenshot(
+      {
+        store,
+        send,
+        create: responsesClient(openaiKey ?? ""),
+        trace: (event, data) => emit(`decision:${event}`, data),
+        image: async (raw) => {
+          // deno-lint-ignore no-explicit-any
+          const url = (raw as any)?.dataUrl;
+          if (typeof url !== "string" || !url.startsWith("data:")) return null;
+          const [head, b64] = url.split(",");
+          return {
+            mime: head.slice(5).split(";")[0],
+            bytes: Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)),
+          };
+        },
+        dial: async (a) => {
+          const variables = callVariables(a.kind, await callStore.requestInputs(a.requestId, null), false);
+          emit("call", {
+            note: "Payment passed: production now places the confirm call.",
+            args: a,
+            variables,
+          });
+          return { ok: true, call_id: "dev", attempt_id: "dev", flags: [] };
+        },
+      },
+      user,
+      msg.raw,
+      route.typed,
+    ),
 };
 
 // The cards Luna would see on this turn (E4 design 1.1).
@@ -407,8 +440,11 @@ async function onSimulate(body: { action: string; args?: Record<string, unknown>
     case "call_result":
     case "call_1_options":
     case "call_booked": {
-      if (!request || !["calling_1", "calling_2"].includes(request.state)) {
-        return emit("simulate_refused", "needs a request in calling_1 or calling_2");
+      if (!request || !["calling_1", "calling_2", "verifying"].includes(request.state)) {
+        return emit(
+          "simulate_refused",
+          "needs a request in calling_1, calling_2 or verifying (confirm call)",
+        );
       }
       const preset: Record<string, unknown> = body.action === "call_1_options"
         ? {
@@ -435,7 +471,11 @@ async function onSimulate(body: { action: string; args?: Record<string, unknown>
           { role: "user", en_text: "Yes, confirmed. See you then." },
         ]
         : null);
-      const kind = request.state === "calling_2"
+      const kind: CallKind = request.state === "verifying"
+        ? "payment_confirm"
+        : request.task === "cancel" || request.task === "reschedule"
+        ? request.task
+        : request.state === "calling_2"
         ? "booking"
         : request.task === "question"
         ? "question"
@@ -471,7 +511,11 @@ async function onSimulate(body: { action: string; args?: Record<string, unknown>
       };
       await callStore.finishCall(result);
       return await reportCall(
-        { ...toolDeps, verify: openaiKey ? verifier(store, responsesClient(openaiKey)) : undefined },
+        {
+          ...toolDeps,
+          verify: openaiKey ? verifier(store, responsesClient(openaiKey)) : undefined,
+          checkClaim: openaiKey ? claimChecker(store, responsesClient(openaiKey)) : undefined,
+        },
         call.id,
         result,
       );

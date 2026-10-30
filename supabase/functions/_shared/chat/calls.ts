@@ -4,6 +4,8 @@
 // The result comes back through sarvam-webhook to report.ts.
 import type { DialArgs, DialResult } from "../dial.ts";
 import type { User } from "../store.ts";
+import type { CallKind } from "../sarvam.ts";
+import type { Task } from "./states.ts";
 import type { ConsentStored } from "./store.ts";
 import type { PromptDeps } from "./turn.ts";
 
@@ -27,8 +29,27 @@ const WHY: Record<string, string> = {
   limit_request: "This request has used all its calls.",
   limit_availability_calls: "This request has used all its calls.",
   limit_booking_calls: "This request has used all its calls.",
+  limit_retries: "I've already tried them again and they didn't pick up; you could call them yourself.",
+  retry_too_soon: "I only just tried them; give it a few minutes and ask me again.",
 };
 const OUR_SIDE = "Calls aren't working on my side right now; please try again later.";
+
+// The call a consent allows: the pick books (or, for a reschedule, moves to) one option;
+// the screenshot allows the confirm call; a plan's YES allows the task's call.
+export function callKind(consent: ConsentStored["kind"], task: Task): CallKind {
+  if (consent === "pay") return "payment_confirm";
+  if (consent === "book") return task === "reschedule" ? "reschedule" : "booking";
+  switch (task) {
+    case "question":
+      return "question";
+    case "reschedule":
+      return "reschedule";
+    case "cancel":
+      return "cancel";
+    default:
+      return "first";
+  }
+}
 
 // started: the call is dialing. false: the request has ended and the user has been told why.
 export async function callAfterConsent(
@@ -37,11 +58,15 @@ export async function callAfterConsent(
   c: ConsentStored,
 ): Promise<{ started: boolean }> {
   const r = await deps.store.request(c.request_id);
+  const kind = callKind(c.kind, r.task);
+  // Calling again after no answer or busy is a retry: it counts against
+  // max_retries_no_answer and waits retry_delay_minutes, not against the request's calls.
+  const last = await deps.store.lastCall(c.request_id);
   const args: DialArgs = {
     requestId: c.request_id,
-    kind: c.kind === "book" ? "booking" : r.task === "question" ? "question" : "first",
+    kind,
     optionId: c.option_id,
-    isRetry: false,
+    isRetry: !!last && last.kind === kind && (last.status === "no_answer" || last.status === "busy"),
   };
   const res = await deps.dial(args);
   deps.trace?.("dial", { args, res });

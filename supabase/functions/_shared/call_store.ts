@@ -78,7 +78,7 @@ export class DbCallStore implements CallStore, ReconcileStore {
   // The same inputs for a request with no call yet (the dev bench shows what a call would get).
   async requestInputs(requestId: string, optionId: string | null): Promise<CallInputs> {
     const { data, error } = await this.db.from("requests")
-      .select("task, fields, businesses(name), users(phone_e164)").eq("id", requestId).single();
+      .select("task, fields, booking_id, businesses(name), users(phone_e164)").eq("id", requestId).single();
     if (error) throw error;
     // deno-lint-ignore no-explicit-any
     const row = data as any;
@@ -93,13 +93,17 @@ export class DbCallStore implements CallStore, ReconcileStore {
       .eq("request_id", requestId).eq("kind", "first").eq("status", "completed")
       .order("created_at", { ascending: false }).limit(1).maybeSingle();
     if (e3) throw e3;
+    const change = await this.bookingInputs(requestId, row.booking_id);
     return {
       task: row.task,
       fields: row.fields ?? {},
       businessName: row.businesses?.name ?? "",
       customerPhone: row.users?.phone_e164 ?? null,
       option,
-      prev: first
+      booking: change.booking,
+      payment: change.payment,
+      approvedLossRs: change.approvedLossRs,
+      prev: change.prev ?? (first
         ? {
           at: first.created_at,
           contactName: typeof first.outputs?.contact_name === "string" ? first.outputs.contact_name : null,
@@ -109,6 +113,68 @@ export class DbCallStore implements CallStore, ReconcileStore {
             : typeof first.outputs?.notes === "string"
             ? first.outputs.notes
             : null,
+        }
+        : null),
+    };
+  }
+
+  // The booking a call is about: the one being rescheduled or cancelled (booking_id), else
+  // the request's held one (payment confirm), with its payment and the call that made it.
+  private async bookingInputs(requestId: string, bookingId: string | null): Promise<{
+    booking: CallInputs["booking"];
+    payment: CallInputs["payment"];
+    approvedLossRs: number;
+    prev: CallInputs["prev"];
+  }> {
+    const q = this.db.from("bookings")
+      .select(
+        "id, time, reference, deposit_amount, known_fee_rs, call_id, requests!bookings_request_id_fkey(fields), " +
+          "calls!bookings_call_id_fkey(created_at, outputs)",
+      );
+    const { data: b, error } =
+      await (bookingId
+        ? q.eq("id", bookingId)
+        : q.eq("request_id", requestId).eq("status", "held_pending_deposit").order("created_at", {
+          ascending: false,
+        })
+          .limit(1)).maybeSingle();
+    if (error) throw error;
+    if (!b) return { booking: null, payment: null, approvedLossRs: 0, prev: null };
+    // deno-lint-ignore no-explicit-any
+    const row = b as any;
+    const booking = {
+      time: row.time,
+      reference: row.reference,
+      customerName: row.requests?.fields?.customer_name ?? null,
+      depositRs: row.deposit_amount === null ? null : Number(row.deposit_amount),
+      knownFeeRs: row.known_fee_rs === null ? null : Number(row.known_fee_rs),
+    };
+    const { data: p } = await this.db.from("payments").select("amount_rs, utr, paid_at, payee")
+      .eq("booking_id", row.id).eq("passed", true).order("at", { ascending: false }).limit(1).maybeSingle();
+    // A CANCEL answer to a read-back that named the loss accepts it (E4 design 2.9).
+    const { data: k } = await this.db.from("consents").select("consent_prompts(confirm_word)")
+      .eq("request_id", requestId).eq("kind", "ask").is("voided_at", null).order("at", { ascending: false })
+      .limit(1).maybeSingle();
+    // deno-lint-ignore no-explicit-any
+    const word = (k as any)?.consent_prompts?.confirm_word;
+    return {
+      booking,
+      payment: p
+        ? {
+          amountRs: Number(p.amount_rs),
+          ref: String(p.utr ?? "").slice(-6),
+          paidAt: p.paid_at,
+          payee: p.payee,
+        }
+        : null,
+      approvedLossRs: word === "cancel" ? booking.depositRs ?? booking.knownFeeRs ?? 0 : 0,
+      prev: bookingId && row.calls
+        ? {
+          at: row.calls.created_at,
+          contactName: typeof row.calls.outputs?.contact_name === "string"
+            ? row.calls.outputs.contact_name
+            : null,
+          summary: typeof row.calls.outputs?.summary === "string" ? row.calls.outputs.summary : null,
         }
         : null,
     };

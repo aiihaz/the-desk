@@ -46,6 +46,9 @@ export class FakeCallStore implements CallStore {
     customerPhone: "+919812345678",
     option: null,
     prev: null,
+    booking: null,
+    payment: null,
+    approvedLossRs: 0,
   };
   async callInputs() {
     return this.inputs;

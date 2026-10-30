@@ -37,13 +37,13 @@ Deno.test("task card: the errand ref, what is known, what a plan still needs, an
       "known: party_size=4; place_query=paragon",
       "still needed for a plan: when (exact_time, or window_start and window_end), which business",
       "business: not picked",
-      "tools: reply, set_slots, find_business, choose_business, my_places, propose_plan, pause_request, " +
+      "tools: reply, set_slots, find_business, choose_business, my_places, find_booking, propose_plan, pause_request, " +
       "cancel_request, start_new_request",
     ].join("\n"),
   );
   assertEquals(
     taskCard(null, now),
-    "TASK\nnone active\ntools: reply, start_new_request, set_slots, find_business, choose_business, my_places",
+    "TASK\nnone active\ntools: reply, start_new_request, set_slots, find_business, choose_business, my_places, find_booking",
   );
 });
 

@@ -19,7 +19,7 @@ export type Deps = {
   start: (call: StartCall) => Promise<string>;
 };
 
-const KINDS = ["first", "booking", "question", "reschedule"];
+const KINDS = ["first", "booking", "question", "reschedule", "payment_confirm", "cancel"];
 
 export async function handle(req: Request, deps: Deps): Promise<Response> {
   if (req.method !== "POST") return new Response("method not allowed", { status: 405 });

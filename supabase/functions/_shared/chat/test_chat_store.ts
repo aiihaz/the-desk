@@ -1,4 +1,5 @@
 // In-memory ChatStore for the chat-agent tests. The real rules live in SQL (chat_test.sql).
+import type { CallKind } from "../sarvam.ts";
 import type { Outbound } from "../whatsapp.ts";
 import type { OpenPrompt } from "./gate.ts";
 import type { Prompt } from "./readback.ts";
@@ -10,9 +11,11 @@ import type {
   ChatLine,
   ChatStore,
   ConsentStored,
+  HeldBooking,
   LiveOption,
   Refused,
   TurnClaim,
+  UpcomingBooking,
 } from "./store.ts";
 
 export class FakeChatStore implements ChatStore {
@@ -197,6 +200,29 @@ export class FakeChatStore implements ChatStore {
   call: CallForReport | null = null;
   async callForReport() {
     return this.call;
+  }
+  last: { kind: CallKind; status: string } | null = null;
+  async lastCall() {
+    return this.last;
+  }
+  bookings: UpcomingBooking[] = [];
+  async upcomingBookings() {
+    return this.bookings;
+  }
+  bookingSet: string[] = [];
+  async setRequestBooking(_r: string, bookingId: string) {
+    this.bookingSet.push(bookingId);
+    return { ok: true as const, changed: true, state: "collecting" as const, version: 2 };
+  }
+  payments: { passed: boolean; payment: Record<string, unknown> }[] = [];
+  paymentResult: { ok: true; consent_id: string | null } | Refused = { ok: true, consent_id: "k9" };
+  async recordPayment(_r: string, passed: boolean, payment: Record<string, unknown>) {
+    this.payments.push({ passed, payment });
+    return passed ? this.paymentResult : { ok: true as const, consent_id: null };
+  }
+  held: HeldBooking | null = null;
+  async heldBooking() {
+    return this.held;
   }
   settled: CallSettlement[] = [];
   settleResult: { ok: true; request_id: string; state: "done"; option_ids: string[] } | Refused = {

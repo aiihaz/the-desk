@@ -1,6 +1,7 @@
 // Database access for the chat agent. Every state change is an RPC into 0004_chat.sql,
 // so version bumps, prompt closing and voiding happen in one transaction.
 // The interface lets tests use a fake.
+import type { CallKind } from "../sarvam.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2.45.4";
 import type { PlaceHit } from "../places.ts";
 import { serviceClient } from "../store.ts";
@@ -44,7 +45,7 @@ export type Changed = { ok: true; changed: boolean; state: State; version: numbe
 export type ConsentStored = {
   ok: true;
   consent_id: string;
-  kind: "ask" | "book";
+  kind: "ask" | "book" | "pay";
   request_id: string;
   option_id: string | null;
 };
@@ -59,24 +60,64 @@ export type CallForReport = {
   requestId: string;
   userId: string;
   waId: string;
-  kind: "first" | "booking" | "question" | "reschedule";
+  kind: CallKind;
   task: Task;
+  // A redial (no answer, or a confirm call's second try).
+  isRetry: boolean;
   businessId: string;
   // The business's number, for "please check with them".
   phone: string;
   // Booking calls: the option the user picked.
   option: { label: string; value: Record<string, unknown> } | null;
+  // Payment confirm: the held booking's time. Cancel, reschedule: the booking's time.
+  bookingTime: string | null;
 };
 
 // settle_call(): what a finished call did to its request (0007).
 export type CallSettlement = {
-  result: "done" | "options" | "back";
+  // held, retry, unconfirmed, cancelled: advances and booking changes (0011).
+  result: "done" | "options" | "back" | "held" | "retry" | "unconfirmed" | "cancelled";
   options?: { label: string; value: Record<string, unknown>; advance_required: boolean }[];
-  // verified: all three checks of eng plan 3.5 agreed (verify.ts); otherwise the booking
-  // is stored as probably_booked and flagged, with the problems, for review.
-  booking?: { time: string | null; reference: string | null; verified: boolean; problems: string[] } | null;
+  // done: verified means all three checks of eng plan 3.5 agreed (verify.ts); otherwise
+  // the booking is stored as probably_booked and flagged, with the problems, for review.
+  // held: the hold's payment details. back: fee_rs, a cancellation charge they stated.
+  booking?: {
+    time?: string | null;
+    reference?: string | null;
+    verified?: boolean;
+    problems?: string[];
+    amount_rs?: number | null;
+    upi_id?: string | null;
+    payee_name?: string | null;
+    deadline?: string | null;
+    fee_rs?: number | null;
+    said?: string | null;
+  } | null;
   optOut?: boolean;
 };
+
+export type UpcomingBooking = {
+  id: string;
+  status: string;
+  time: Date | null;
+  place: string;
+  what: string | null;
+  reference: string | null;
+};
+
+export type HeldBooking = {
+  bookingId: string;
+  requestId: string;
+  businessId: string;
+  amountRs: number | null;
+  upiId: string | null;
+  payeeName: string | null;
+  deadline: Date | null;
+  // When the hold call was made: a payment before it can't be for this hold.
+  heldAt: Date;
+  time: Date | null;
+};
+
 export type LiveOption = { id: string; label: string; detail: string | null };
 
 export interface ChatStore {
@@ -145,6 +186,19 @@ export interface ChatStore {
   // After an errand ends: the oldest waiting one becomes current.
   activateQueued(userId: string): Promise<{ ok: true; request_id: string | null }>;
   callForReport(callId: string): Promise<CallForReport | null>;
+  // The request's latest call, for telling a retry from a new call.
+  lastCall(requestId: string): Promise<{ kind: CallKind; status: string } | null>;
+  // This user's upcoming Desk bookings (booked or held), soonest first.
+  upcomingBookings(userId: string): Promise<UpcomingBooking[]>;
+  setRequestBooking(requestId: string, bookingId: string): Promise<Changed | Refused>;
+  // A payment screenshot's check result (record_payment, 0011).
+  recordPayment(
+    requestId: string,
+    passed: boolean,
+    payment: Record<string, unknown>,
+  ): Promise<{ ok: true; consent_id: string | null } | Refused>;
+  // The held booking waiting for this user's payment, with what the hold call said.
+  heldBooking(userId: string): Promise<HeldBooking | null>;
   settleCall(
     callId: string,
     s: CallSettlement,
@@ -332,7 +386,7 @@ export class DbChatStore implements ChatStore {
   async booking(bookingId: string): Promise<BookingSummary> {
     const { data, error } = await this.db.from("bookings")
       .select(
-        "time, deposit_amount, requests!bookings_request_id_fkey(fields, businesses(name, address, city))",
+        "time, deposit_amount, known_fee_rs, requests!bookings_request_id_fkey(fields, businesses(name, address, city))",
       )
       .eq("id", bookingId).single();
     if (error) throw error;
@@ -344,8 +398,8 @@ export class DbChatStore implements ChatStore {
       time: new Date(r.time),
       customerName: fields.customer_name ?? "",
       depositRs: r.deposit_amount === null ? null : Number(r.deposit_amount),
-      // Fees stated on the booking call come with E6's output mapping.
-      knownFeeRs: null,
+      // A charge the business stated on an earlier cancel call (settle_call, 0011).
+      knownFeeRs: r.known_fee_rs === null ? null : Number(r.known_fee_rs),
     };
   }
 
@@ -584,23 +638,106 @@ export class DbChatStore implements ChatStore {
   async callForReport(callId: string): Promise<CallForReport | null> {
     const { data, error } = await this.db.from("calls")
       .select(
-        "id, request_id, user_id, kind, business_id, requests(task), users(wa_id), businesses(phone_e164), " +
+        "id, request_id, user_id, kind, is_retry, business_id, requests(task), users(wa_id), " +
+          "businesses(phone_e164), " +
           "options!calls_option_id_fkey(label, value)",
       ).eq("id", callId)
       .maybeSingle();
     if (error) throw error;
     if (!data) return null;
     const row = data as Row;
+    let bookingTime: string | null = null;
+    if (["payment_confirm", "cancel", "reschedule"].includes(row.kind)) {
+      const { data: r } = await this.db.from("requests").select("booking_id").eq("id", row.request_id)
+        .single();
+      const q = this.db.from("bookings").select("time");
+      const { data: b } = await (r?.booking_id
+        ? q.eq("id", r.booking_id)
+        : q.eq("request_id", row.request_id).order("created_at", { ascending: false }).limit(1))
+        .maybeSingle();
+      bookingTime = b?.time ?? null;
+    }
     return {
+      bookingTime,
       callId: row.id,
       requestId: row.request_id,
       userId: row.user_id,
       waId: row.users.wa_id,
       kind: row.kind,
       task: row.requests.task,
+      isRetry: row.is_retry,
       businessId: row.business_id,
       phone: row.businesses.phone_e164,
       option: row.options ? { label: row.options.label, value: row.options.value ?? {} } : null,
+    };
+  }
+
+  async lastCall(requestId: string) {
+    const { data, error } = await this.db.from("calls").select("kind, status").eq("request_id", requestId)
+      .order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (error) throw error;
+    return data as { kind: CallKind; status: string } | null;
+  }
+
+  async upcomingBookings(userId: string): Promise<UpcomingBooking[]> {
+    const { data, error } = await this.db.from("bookings")
+      .select(
+        "id, status, time, reference, requests!bookings_request_id_fkey!inner(user_id, fields, businesses(name))",
+      )
+      .eq("requests.user_id", userId).in("status", ["booked", "held_pending_deposit"])
+      .or(`time.is.null,time.gt.${new Date().toISOString()}`).order("time").limit(10);
+    if (error) throw error;
+    return data.map((b: Row) => ({
+      id: b.id,
+      status: b.status,
+      time: b.time ? new Date(b.time) : null,
+      place: b.requests.businesses?.name ?? "",
+      what: typeof b.requests.fields?.party_size === "number"
+        ? `table for ${b.requests.fields.party_size}`
+        : b.requests.fields?.service ?? null,
+      reference: b.reference,
+    }));
+  }
+
+  setRequestBooking(requestId: string, bookingId: string) {
+    return this.rpc<Changed | Refused>("set_request_booking", {
+      p_request_id: requestId,
+      p_booking_id: bookingId,
+    });
+  }
+
+  recordPayment(requestId: string, passed: boolean, payment: Record<string, unknown>) {
+    return this.rpc<{ ok: true; consent_id: string | null } | Refused>("record_payment", {
+      p_request_id: requestId,
+      p_passed: passed,
+      p_payment: payment,
+    });
+  }
+
+  async heldBooking(userId: string): Promise<HeldBooking | null> {
+    const { data, error } = await this.db.from("bookings")
+      .select(
+        "id, request_id, time, deposit_amount, upi_id, payee_name, payment_deadline, " +
+          "calls!bookings_call_id_fkey(created_at), requests!bookings_request_id_fkey!inner(user_id, state, business_id)",
+      )
+      .eq("requests.user_id", userId).eq("requests.state", "awaiting_payment").eq(
+        "status",
+        "held_pending_deposit",
+      )
+      .order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    const b = data as Row;
+    return {
+      bookingId: b.id,
+      requestId: b.request_id,
+      businessId: b.requests.business_id,
+      amountRs: b.deposit_amount === null ? null : Number(b.deposit_amount),
+      upiId: b.upi_id,
+      payeeName: b.payee_name,
+      deadline: b.payment_deadline ? new Date(b.payment_deadline) : null,
+      heldAt: new Date(b.calls.created_at),
+      time: b.time ? new Date(b.time) : null,
     };
   }
 

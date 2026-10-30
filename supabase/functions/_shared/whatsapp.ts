@@ -219,3 +219,29 @@ export async function send(cfg: WaConfig, to: string, msg: Outbound): Promise<st
   }
   return body.messages?.[0]?.id;
 }
+
+// An inbound image's bytes (payment screenshots, eng plan 2.2): the media id gives a
+// short-lived URL, fetched with the same token. Nothing is written to disk or storage.
+export async function downloadMedia(
+  cfg: WaConfig,
+  mediaId: string,
+): Promise<{ mime: string; bytes: Uint8Array }> {
+  const meta = await fetch(`https://graph.facebook.com/${cfg.graphVersion}/${mediaId}`, {
+    headers: { Authorization: `Bearer ${cfg.token}` },
+  });
+  const m = await meta.json().catch(() => ({}));
+  if (!meta.ok || typeof m.url !== "string") throw new Error(`media ${mediaId}: ${meta.status}`);
+  const res = await fetch(m.url, { headers: { Authorization: `Bearer ${cfg.token}` } });
+  if (!res.ok) throw new Error(`media download ${mediaId}: ${res.status}`);
+  return {
+    mime: String(m.mime_type ?? res.headers.get("content-type") ?? "image/jpeg"),
+    bytes: new Uint8Array(await res.arrayBuffer()),
+  };
+}
+
+// The media id of an inbound image message, from the stored webhook message.
+export function imageId(raw: unknown): string | null {
+  // deno-lint-ignore no-explicit-any
+  const id = (raw as any)?.image?.id;
+  return typeof id === "string" ? id : null;
+}

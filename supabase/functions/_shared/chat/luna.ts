@@ -31,6 +31,7 @@ import { findBusiness, type FindDeps } from "./find.ts";
 import {
   cancelActive,
   chooseBusiness,
+  findBooking,
   myPlaces,
   pauseActive,
   resumeActive,
@@ -92,6 +93,9 @@ Changing course
 - Another place for the same errand ("try another laundry", "the Indiranagar one instead") keeps the errand and its details: find_business, then choose_business.
 - A different errand while one is open: if the current one is still useful, ask whether to do the new one after it or drop the current one. "after" queues it (start_new_request mode after) and both are kept; you can fill in its details now with set_slots and its errand ref. Only say something is lined up after code confirms it. Replace (mode replace) only when they say to drop the current one; code refuses if details would be lost, until they confirm (confirm_replace).
 - While a call is in progress it can't change. Say so plainly; you can still set up the next errand.
+- Moving or cancelling a booking the Desk made: start_new_request with task reschedule or cancel, then find_booking with their words for it ("my Paragon table", "tonight's"). One match is set on the errand; several come back listed, so ask which, by place and time, and call find_booking again with its ref. For a reschedule, set the new time with set_slots. Then propose_plan. Only bookings the Desk made can be changed: for any other, say so and offer to book fresh.
+- Cancelling never pays or agrees a fee: if the plan says they could lose money, they must say clearly that they accept it.
+- A held booking waits for their payment screenshot: if they ask, tell them to pay the business from their own UPI app and send the screenshot here.
 
 Places
 - find_business with what they called the place in query, plus the area and city if known. city: the city's name as Google Maps knows it, in full ("Thiruvananthapuram" for TVM or Trivandrum, "Bengaluru" for BLR, "Mumbai" for Bombay). Only a city they named in the chat, or one that is clearly theirs from the chat; leave it out to use their saved city, or to search all of India when there is none. Never assume a city.
@@ -766,8 +770,7 @@ async function runTool(
       return approvePlan(deps, user, option, waMessageId);
     }
     case "find_booking":
-      // Reschedule and cancel need Desk bookings, which come with E6.
-      return { ok: false, reason: "finding bookings is not available yet; say so plainly" };
+      return findBooking(deps, user, str(a.hint) ?? "");
     case "reply":
       return { ok: false, reason: "handled separately" };
   }

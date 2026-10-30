@@ -25,7 +25,8 @@ export type GateContext = {
 };
 
 export type Route =
-  | { kind: "screenshot" }
+  // typed: "paid" in words while a deposit is held; the screenshot is what's needed.
+  | { kind: "screenshot"; typed?: boolean }
   | { kind: "command"; command: "stop" | "start" | "delete_data" | "admin"; text: string }
   // Anything but START while stopped: say how to turn the Desk back on.
   | { kind: "stopped" }
@@ -34,6 +35,10 @@ export type Route =
   | { kind: "luna"; text: string };
 
 const START = new Set(["start", "resume"]);
+
+// "paid", "done, paid it", "payment done": a payment claimed in words.
+const PAID =
+  /^(i )?(have |'ve )?(paid|payment (is )?(done|sent|made)|done,? paid( it)?|paid it|sent the money|money sent)$/;
 
 // Whole words only, so an admin's "status of my booking?" is still a conversation.
 const ADMIN =
@@ -73,6 +78,9 @@ export function classify(msg: Inbound, ctx: GateContext): Route {
 
   // 3. A screenshot while a deposit is held goes to the payment check.
   if (msg.type === "image" && ctx.heldDeposit) return { kind: "screenshot" };
+  if (msg.type === "text" && ctx.heldDeposit && PAID.test(normalise(msg.text ?? ""))) {
+    return { kind: "screenshot", typed: true };
+  }
 
   // 4. Everything else is conversation. A tap on a button from an older message reads
   //    as its title, so Luna sees what was tapped.

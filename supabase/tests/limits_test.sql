@@ -7,7 +7,7 @@ insert into users (id, wa_id, name) values
   ('a0000000-0000-0000-0000-000000000001', '919800000001', 'Ihaz');
 
 -- Seed
-select is((select count(*)::int from limits), 46, 'all limit keys are seeded');
+select is((select count(*)::int from limits), 49, 'all limit keys are seeded');
 select is(limit_int('max_calls_per_request'), 4, 'placeholder default is readable');
 select is(limit_int('max_calls_per_business_per_day'), null, 'business limit is off by default');
 select is(limit_bool('book_on_first_call'), true, 'book_on_first_call defaults to true');

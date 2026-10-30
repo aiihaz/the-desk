@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1.0.8";
-import type { CallResult } from "../sarvam.ts";
+import type { CallKind, CallResult } from "../sarvam.ts";
 import type { Outbound } from "../whatsapp.ts";
 import { readOutcome, reportCall, type ReportDeps } from "./report.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
@@ -7,7 +7,7 @@ import type { BookingCheck, Verification } from "./verify.ts";
 
 const now = new Date("2026-10-23T12:00:00+05:30");
 
-function setup(kind: "first" | "booking" | "question" = "first") {
+function setup(kind: CallKind = "first") {
   const store = new FakeChatStore();
   store.call = {
     callId: "c1",
@@ -19,6 +19,8 @@ function setup(kind: "first" | "booking" | "question" = "first") {
     businessId: "b1",
     phone: "+919800000901",
     option: null,
+    isRetry: false,
+    bookingTime: null,
   };
   store.req = {
     id: "r1",
@@ -251,4 +253,147 @@ Deno.test("readOutcome: options in the past or without a time or label are dropp
     options: [{ time: "2026-10-23T09:00:00+05:30" }, {}, { label: "Sat lunch" }],
   }, now);
   assertEquals(o.kind === "options" && o.options.map((x) => x.label), ["Sat lunch"]);
+});
+
+// Advances, confirm calls, cancels and reschedules (0011) -------------------------------
+
+const ok = async (): Promise<Verification> => ({ verified: true, problems: [], verdict: null });
+
+Deno.test("an advance within the approved cap, with UPI details: held, and the user told how to pay", async () => {
+  const { store, sent, deps } = setup();
+  store.req!.fields = { ...store.req!.fields, max_advance_rs: 500 };
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", {
+      booking_status: "held_pending_deposit",
+      advance_amount: 300,
+      upi_id: "paragon@okhdfc",
+      payee_name: "Paragon Restaurant",
+      payment_deadline: "2026-10-23T19:30:00+05:30",
+      booked_time: "2026-10-23T20:15:00+05:30",
+    }),
+  );
+  assertEquals(store.settled[0].result, "held");
+  assertEquals(store.settled[0].booking?.amount_rs, 300);
+  assertEquals(store.settled[0].booking?.upi_id, "paragon@okhdfc");
+  const text = body(sent[0]);
+  assertEquals(text.includes("Rs 300 advance, to be paid by 7:30 pm"), true);
+  assertEquals(text.includes("Pay paragon@okhdfc (Paragon Restaurant)"), true);
+  assertEquals(text.includes("send me the payment screenshot"), true);
+});
+
+Deno.test("an advance over the cap, or with nowhere to pay, is not held", async () => {
+  for (const out of [{ advance_amount: 800, upi_id: "p@ok" }, { advance_amount: 300 }]) {
+    const { store, deps } = setup();
+    store.req!.fields = { ...store.req!.fields, max_advance_rs: 500 };
+    await reportCall(deps, "c1", result("completed", { booking_status: "held_pending_deposit", ...out }));
+    assertEquals(store.settled[0].result, "back", JSON.stringify(out));
+  }
+});
+
+Deno.test("confirm call: received and booked, verified against the held booking's time", async () => {
+  const { store, sent, deps } = setup("payment_confirm");
+  store.call!.bookingTime = "2026-10-23T20:15:00+05:30";
+  const checks: BookingCheck[] = [];
+  deps.verify = passes(checks);
+  await reportCall(deps, "c1", result("completed", { payment_status: "received", booking_status: "booked" }));
+  assertEquals(checks[0].kind, "booking");
+  assertEquals(checks[0].option?.value.time, "2026-10-23T20:15:00+05:30");
+  assertEquals(checks[0].bookedTime, "2026-10-23T20:15:00+05:30");
+  assertEquals(store.settled[0].result, "done");
+  assertEquals(body(sent[0]).startsWith("Paragon confirmed they got your payment, and it's booked"), true);
+});
+
+Deno.test("confirm call: not seen → one redial; not seen again → unconfirmed, with their number", async () => {
+  const first = setup("payment_confirm");
+  first.store.limits.payment_confirm_retry_minutes = 30;
+  await reportCall(first.deps, "c1", result("completed", { payment_status: "not_seen" }));
+  assertEquals(first.store.settled[0].result, "retry");
+  assertEquals(
+    body(first.sent[0]),
+    "Paragon hasn't seen your payment yet. I'll call them again in about 30 minutes.",
+  );
+
+  const second = setup("payment_confirm");
+  second.store.call!.isRetry = true;
+  await reportCall(second.deps, "c1", result("completed", { outcome: "payment_not_seen" }));
+  assertEquals(second.store.settled[0].result, "unconfirmed");
+  assertEquals(body(second.sent[0]).endsWith("+919800000901."), true);
+});
+
+Deno.test("confirm call: wrong amount or an expired hold: nothing agreed, no refund promised", async () => {
+  const { store, sent, deps } = setup("payment_confirm");
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", { payment_status: "wrong_amount", summary: "We got Rs 50, not Rs 500." }),
+  );
+  assertEquals(store.settled[0].result, "unconfirmed");
+  const text = body(sent[0]);
+  assertEquals(text.includes('They said: "We got Rs 50, not Rs 500."'), true);
+  assertEquals(/refund/i.test(text), false);
+});
+
+Deno.test("cancel: cancelled only when the business's words confirm it; a refund only as their words", async () => {
+  const { store, sent, deps } = setup("cancel");
+  store.call!.bookingTime = "2026-10-23T20:15:00+05:30";
+  deps.checkClaim = ok;
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", { cancel_status: "cancelled", refund_stated: "advance back to UPI in 2 days" }),
+  );
+  assertEquals(store.settled[0].result, "cancelled");
+  assertEquals(
+    body(sent[0]),
+    "Cancelled: your tonight (Fri 23 Oct) at 8:15 pm booking at Paragon. About the advance they said: " +
+      '"advance back to UPI in 2 days".',
+  );
+
+  const unsure = setup("cancel");
+  await reportCall(unsure.deps, "c1", result("completed", { cancel_status: "cancelled" }));
+  assertEquals(unsure.store.settled[0].result, "unconfirmed");
+});
+
+Deno.test("cancel: a charge is kept for the next plan, and the booking still stands", async () => {
+  const { store, sent, deps } = setup("cancel");
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", { cancel_status: "charge_pending", cancel_charge_rs: "200" }),
+  );
+  assertEquals(store.settled[0], { result: "back", booking: { fee_rs: 200 }, optOut: false });
+  assertEquals(body(sent[0]).includes("cancelling costs Rs 200. I didn't agree to it"), true);
+});
+
+Deno.test("reschedule: moved (verified), kept with other times, or unclear", async () => {
+  const moved = setup("reschedule");
+  moved.deps.verify = passes([]);
+  await reportCall(
+    moved.deps,
+    "c1",
+    result("completed", { original_booking_status: "moved", booked_time: "2026-10-23T21:00:00+05:30" }),
+  );
+  assertEquals(moved.store.settled[0].result, "done");
+  assertEquals(body(moved.sent[0]), "Moved: Paragon, now tonight (Fri 23 Oct) at 9:00 pm.");
+
+  const kept = setup("reschedule");
+  kept.store.settleResult = { ok: true, request_id: "r1", state: "done", option_ids: ["o1"] };
+  kept.store.options = [{ id: "o1", label: "tonight (Fri 23 Oct), 9:45 pm", detail: null }];
+  await reportCall(
+    kept.deps,
+    "c1",
+    result("completed", { outcome: "kept", options: [{ time: "2026-10-23T21:45:00+05:30" }] }),
+  );
+  assertEquals(kept.store.settled[0].result, "options");
+  assertEquals(
+    kept.store.prompt!.text.startsWith("Paragon can't move it, and said your booking stands."),
+    true,
+  );
+
+  const unclear = setup("reschedule");
+  await reportCall(unclear.deps, "c1", result("completed", { outcome: "uncertain" }));
+  assertEquals(unclear.store.settled[0].result, "unconfirmed");
+  assertEquals(body(unclear.sent[0]).includes("it's not clear what they did"), true);
 });

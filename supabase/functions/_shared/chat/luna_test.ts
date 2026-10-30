@@ -63,6 +63,7 @@ Deno.test("Luna sees the clock and the cards, and only this state's tools", asyn
     "find_business",
     "choose_business",
     "my_places",
+    "find_booking",
   ]);
 });
 

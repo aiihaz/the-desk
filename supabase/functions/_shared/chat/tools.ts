@@ -84,6 +84,48 @@ export async function target(deps: ToolDeps, user: User, ref?: string | null): P
   return request ?? waiting[0] ?? null;
 }
 
+// Reschedule and cancel (E4 design 2.7, 2.9): the Desk booking the user means. One match
+// is set on the current change errand; several are listed with refs to choose by.
+export async function findBooking(deps: ToolDeps, user: User, hint: string): Promise<ToolResult> {
+  const all = await deps.store.upcomingBookings(user.id);
+  if (!all.length) {
+    return {
+      ok: false,
+      reason:
+        "they have no upcoming bookings made by the Desk. Only those can be changed; offer to book fresh",
+    };
+  }
+  const h = hint.toLowerCase();
+  const words = h.split(/[^a-z0-9&]+/).filter((w) => w.length > 2);
+  const hits = all.filter((b) =>
+    b.id.startsWith(h.trim()) || b.reference?.toLowerCase() === h.trim() ||
+    words.some((w) => b.place.toLowerCase().includes(w) || (b.what ?? "").toLowerCase().includes(w))
+  );
+  const list = hits.length ? hits : all;
+  const show = (b: (typeof all)[number]) => ({
+    ref: b.id.slice(0, 8),
+    place: b.place,
+    what: b.what,
+    time: b.time?.toISOString() ?? null,
+    held_for_payment: b.status === "held_pending_deposit",
+  });
+  const { request } = await deps.store.active(user.id);
+  const change = request && (request.task === "reschedule" || request.task === "cancel") ? request : null;
+  if (list.length === 1 && change) {
+    const res = await deps.store.setRequestBooking(change.id, list[0].id);
+    deps.trace?.("set_request_booking", res);
+    if (!res.ok) return { ok: false, reason: `that booking can't be changed (${res.reason})` };
+    return { ok: true, booking: show(list[0]), set_on: errandRef(change.id) };
+  }
+  return {
+    ok: true,
+    bookings: list.map(show),
+    next: change
+      ? "ask which one, then find_booking with its ref"
+      : "start a reschedule or cancel errand first",
+  };
+}
+
 const NO_ERRAND = { ok: false as const, reason: "no such errand; use the errand ref from the TASK card" };
 
 export async function cancelActive(deps: ToolDeps, user: User, ref?: string | null): Promise<ToolResult> {

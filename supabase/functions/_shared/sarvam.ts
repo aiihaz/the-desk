@@ -2,7 +2,7 @@
 // Pure functions except startCall(); the edge functions wire them to the database.
 // API: https://docs.sarvam.ai/voice-agents/api/instant-outbound/create
 
-export type CallKind = "first" | "booking" | "question" | "reschedule";
+export type CallKind = "first" | "booking" | "question" | "reschedule" | "payment_confirm" | "cancel";
 
 // Values Sarvam accepts for app_overrides.initial_language_name.
 export const LANGUAGES = [

@@ -15,6 +15,9 @@ const base: CallInputs = {
   customerPhone: "+919812345678",
   option: null,
   prev: null,
+  booking: null,
+  payment: null,
+  approvedLossRs: 0,
 };
 
 Deno.test("first call, may_book off: no customer number goes to the business", () => {

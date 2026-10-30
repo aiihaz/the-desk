@@ -8,13 +8,20 @@ import { type AgentDeps, handleInbound } from "../_shared/chat/agent.ts";
 import { type LunaDeps, runLuna } from "../_shared/chat/luna.ts";
 import { DbChatStore } from "../_shared/chat/store.ts";
 import { deliver } from "../_shared/deliver.ts";
-import { dial } from "../_shared/dial.ts";
+import { dial, type DialArgs } from "../_shared/dial.ts";
+import { handleScreenshot } from "../_shared/chat/payment.ts";
 import { jevClient } from "../_shared/jev.ts";
 import { responsesClient } from "../_shared/openai.ts";
 import { placesClient, type SearchPlaces } from "../_shared/places.ts";
 import { sarvamConfigFromEnv, startCall } from "../_shared/sarvam.ts";
 import { DbStore, type User } from "../_shared/store.ts";
-import { type Outbound, send as waSend, waConfigFromEnv } from "../_shared/whatsapp.ts";
+import {
+  downloadMedia,
+  imageId,
+  type Outbound,
+  send as waSend,
+  waConfigFromEnv,
+} from "../_shared/whatsapp.ts";
 import { handle } from "./handler.ts";
 
 const store = new DbStore();
@@ -31,12 +38,9 @@ const searchPlaces: SearchPlaces = env("GOOGLE_MAPS_API_KEY")
   : () => Promise.reject(new Error("GOOGLE_MAPS_API_KEY is not set"));
 
 // After an approval: reserve_call() and Sarvam, through dial().
+const dialer = (a: DialArgs) => dial({ store: calls, start: (c) => startCall(sarvam, c) }, a);
 const onApproved: LunaDeps["onApproved"] = (user, consent) =>
-  callAfterConsent(
-    { store: chat, send, dial: (a) => dial({ store: calls, start: (c) => startCall(sarvam, c) }, a) },
-    user,
-    consent,
-  );
+  callAfterConsent({ store: chat, send, dial: dialer }, user, consent);
 
 const luna: LunaDeps | null = env("OPENAI_API_KEY")
   ? {
@@ -65,8 +69,23 @@ const agent: AgentDeps = {
     if (tpl) await send(user, { kind: "text", body: tpl });
   },
   onCommand: (user, route) => runCommand({ store: chat, send, admin: adminStore }, user, route),
-  // The screenshot check is E7 (eng plan 2.2). No booking holds a deposit before then.
-  onPayment: async (_user, route) => console.warn("payment check is E7; nothing done", route.kind),
+  // The payment screenshot check (eng plan 2.2), then the confirm call.
+  onPayment: (user, route, msg) =>
+    handleScreenshot(
+      {
+        store: chat,
+        send,
+        dial: dialer,
+        create: responsesClient(env("OPENAI_API_KEY")),
+        image: async (raw) => {
+          const id = imageId(raw);
+          return id ? await downloadMedia(wa, id) : null;
+        },
+      },
+      user,
+      msg.raw,
+      route.typed,
+    ),
 };
 
 Deno.serve((req) =>

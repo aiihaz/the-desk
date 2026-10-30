@@ -1,7 +1,7 @@
 import { DbCallStore } from "../_shared/call_store.ts";
 import { reportCall } from "../_shared/chat/report.ts";
 import { DbChatStore } from "../_shared/chat/store.ts";
-import { verifier } from "../_shared/chat/verify.ts";
+import { claimChecker, verifier } from "../_shared/chat/verify.ts";
 import { deliver } from "../_shared/deliver.ts";
 import { responsesClient } from "../_shared/openai.ts";
 import { DbStore } from "../_shared/store.ts";
@@ -12,7 +12,9 @@ const store = new DbCallStore();
 const chat = new DbChatStore();
 const wa = waConfigFromEnv();
 const waStore = new DbStore();
-const verify = verifier(chat, responsesClient(Deno.env.get("OPENAI_API_KEY") ?? ""));
+const openai = responsesClient(Deno.env.get("OPENAI_API_KEY") ?? "");
+const verify = verifier(chat, openai);
+const checkClaim = claimChecker(chat, openai);
 
 Deno.serve((req) =>
   handle(req, {
@@ -27,6 +29,7 @@ Deno.serve((req) =>
         {
           store: chat,
           verify,
+          checkClaim,
           send: (user, msg) => deliver(waStore, (to, m) => waSend(wa, to, m), user, msg),
         },
         callId,
