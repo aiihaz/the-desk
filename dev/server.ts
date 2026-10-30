@@ -24,6 +24,7 @@ import {
 import { proposePlan } from "../supabase/functions/_shared/chat/turn.ts";
 import { type AgentDeps, handleInbound } from "../supabase/functions/_shared/chat/agent.ts";
 import { runCommand } from "../supabase/functions/_shared/chat/commands.ts";
+import { DbAdminStore } from "../supabase/functions/_shared/chat/admin.ts";
 import { DbCallStore } from "../supabase/functions/_shared/call_store.ts";
 import { callVariables } from "../supabase/functions/_shared/call_vars.ts";
 import { type LunaDeps, runLuna } from "../supabase/functions/_shared/chat/luna.ts";
@@ -228,7 +229,11 @@ const turnDeps: AgentDeps = {
     await runLuna(lunaDeps, user, msg.at, msg.messageId);
   },
   onCommand: (user, route) =>
-    runCommand({ store, send, trace: (event, data) => emit(`decision:${event}`, data) }, user, route),
+    runCommand(
+      { store, send, admin: new DbAdminStore(db), trace: (event, data) => emit(`decision:${event}`, data) },
+      user,
+      route,
+    ),
   onPayment: async (_user, route) =>
     emit("payment", { note: "Screenshot check is E7; nothing done.", route }),
 };
@@ -477,6 +482,14 @@ async function onSimulate(body: { action: string; args?: Record<string, unknown>
       return emit("decision:expire_requests", {
         at,
         expired: await rpc("expire_requests", { p_now: at.toISOString() }),
+      });
+    }
+    // The option hold passing: mark_stale_options as if args.minutes (default 61) went by.
+    case "stale": {
+      const at = new Date(now.getTime() + Number(a.minutes ?? 61) * 60_000);
+      return emit("decision:mark_stale_options", {
+        at,
+        stale: await rpc("mark_stale_options", { p_now: at.toISOString() }),
       });
     }
     case "reopen": {

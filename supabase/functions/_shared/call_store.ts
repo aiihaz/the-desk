@@ -37,9 +37,15 @@ export interface CallStore {
   finishCall(result: CallResult): Promise<string | null>;
 }
 
+// What reconcile needs on top of the CallStore.
+export interface ReconcileStore {
+  openCalls(before: Date): Promise<{ id: string; attemptId: string | null; createdAt: Date }[]>;
+  timeoutCall(callId: string): Promise<boolean>;
+}
+
 const OPEN = ["queued", "dialing", "in_progress"];
 
-export class DbCallStore implements CallStore {
+export class DbCallStore implements CallStore, ReconcileStore {
   constructor(private db: SupabaseClient = serviceClient()) {}
 
   async reserveCall(requestId: string, kind: CallKind, optionId: string | null, isRetry: boolean) {
@@ -97,7 +103,12 @@ export class DbCallStore implements CallStore {
         ? {
           at: first.created_at,
           contactName: typeof first.outputs?.contact_name === "string" ? first.outputs.contact_name : null,
-          summary: typeof first.outputs?.notes === "string" ? first.outputs.notes : null,
+          // summary in the Genie contract, notes in eng plan 3.4.
+          summary: typeof first.outputs?.summary === "string"
+            ? first.outputs.summary
+            : typeof first.outputs?.notes === "string"
+            ? first.outputs.notes
+            : null,
         }
         : null,
     };
@@ -143,5 +154,23 @@ export class DbCallStore implements CallStore {
       .select("id");
     if (error) throw error;
     return data[0]?.id ?? null;
+  }
+
+  async openCalls(before: Date) {
+    const { data, error } = await this.db.from("calls").select("id, provider_call_id, created_at")
+      .in("status", OPEN).lt("created_at", before.toISOString()).order("created_at").limit(200);
+    if (error) throw error;
+    // deno-lint-ignore no-explicit-any
+    return data.map((c: any) => ({
+      id: c.id,
+      attemptId: c.provider_call_id,
+      createdAt: new Date(c.created_at),
+    }));
+  }
+
+  async timeoutCall(callId: string): Promise<boolean> {
+    const { data, error } = await this.db.rpc("timeout_call", { p_call_id: callId });
+    if (error) throw error;
+    return data === true;
   }
 }

@@ -152,7 +152,11 @@ export async function reportCall(deps: ReportDeps, callId: string, r: CallResult
       break;
     case "failed":
       settle = { result: "back" };
-      text = `The call to ${where} didn't go through, so nothing is done yet. Want me to try again?`;
+      // reconcile: the call may have happened, but no result ever came back.
+      text = r.failureReason === "no_result"
+        ? `I didn't get a result back from my call to ${where}, so I can't tell you what they said. ` +
+          `Please check with them directly: ${call.phone}.`
+        : `The call to ${where} didn't go through, so nothing is done yet. Want me to try again?`;
       break;
     case "booked": {
       const o = outcome as Extract<Outcome, { kind: "booked" }>;

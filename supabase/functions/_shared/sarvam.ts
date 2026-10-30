@@ -168,3 +168,82 @@ const E164 = /^\+[1-9][0-9]{6,14}$/;
 function check(cond: boolean, message: string): asserts cond {
   if (!cond) throw new Error(`sarvam: ${message}`);
 }
+
+// Analytics (reconcile): what Sarvam knows about attempts whose webhook never came.
+// https://docs.sarvam.ai/voice-agents/api/analytics/attempts
+export type Attempt = {
+  attempt_id: string;
+  interaction_id: string | null;
+  connectivity_status: string;
+  failure_reason: string | null;
+  duration_in_seconds: number | null;
+  agent_variables: Record<string, unknown> | null;
+  bot_contact_identifier: string | null;
+};
+
+// Every attempt of the Desk's agent between from and to (both inclusive), all pages.
+export async function listAttempts(cfg: SarvamConfig, from: Date, to: Date): Promise<Attempt[]> {
+  const out: Attempt[] = [];
+  const base = `${cfg.baseUrl}/analytics/v1/${cfg.orgId}/${cfg.workspaceId}/${cfg.appId}/attempts`;
+  for (let offset = 0;; offset += 1000) {
+    const q = new URLSearchParams({
+      start_datetime: from.toISOString(),
+      end_datetime: to.toISOString(),
+      limit: "1000",
+      offset: String(offset),
+    });
+    const res = await fetch(`${base}?${q}`, { headers: { "X-API-Key": cfg.apiKey } });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`sarvam attempts failed ${res.status}: ${JSON.stringify(body?.detail ?? body)}`);
+    }
+    const items: Attempt[] = Array.isArray(body.items) ? body.items : [];
+    out.push(...items);
+    if (items.length < 1000 || !body.next_page_uri) return out;
+  }
+}
+
+// The transcript in the webhook's shape. Analytics says "assistant" where the webhook
+// says "agent", and gives the text as spoken (content), not an English rendering.
+export async function getTranscript(
+  cfg: SarvamConfig,
+  interactionId: string,
+): Promise<{ role: string; en_text: string }[]> {
+  const res = await fetch(
+    `${cfg.baseUrl}/analytics/v1/${cfg.orgId}/${cfg.workspaceId}/${cfg.appId}/transcripts/${
+      encodeURIComponent(interactionId)
+    }`,
+    { headers: { "X-API-Key": cfg.apiKey } },
+  );
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`sarvam transcript failed ${res.status}: ${JSON.stringify(body?.detail ?? body)}`);
+  }
+  const msgs = Array.isArray(body.messages) ? body.messages : [];
+  return msgs.map((m: Json) => ({
+    role: m.role === "assistant" ? "agent" : String(m.role ?? ""),
+    en_text: String(m.content ?? ""),
+  }));
+}
+
+// An attempt with a final status, as the webhook would have reported it; null while the
+// attempt is still going (or its status is one we don't know).
+export function attemptResult(
+  a: Attempt,
+  callId: string,
+  transcript: CallResult["transcript"],
+): CallResult | null {
+  const status = STATUS[a.connectivity_status];
+  if (!status) return null;
+  return {
+    attemptId: a.attempt_id,
+    callId,
+    status,
+    durationS: typeof a.duration_in_seconds === "number" ? Math.round(a.duration_in_seconds) : null,
+    interactionId: a.interaction_id ?? null,
+    failureReason: a.failure_reason && a.failure_reason !== "NO_FAILURE_REASON" ? a.failure_reason : null,
+    outputs: a.agent_variables ?? null,
+    transcript,
+    agentNumber: a.bot_contact_identifier ?? null,
+  };
+}

@@ -1,0 +1,24 @@
+name: daily
+
+# Keeps the free Supabase project awake and is the backup alert channel (eng plan 3.1):
+# the job fails, and GitHub emails, when an alert couldn't reach WhatsApp.
+# Secrets: SUPABASE_PROJECT_URL (https://<ref>.supabase.co), SUPABASE_SERVICE_ROLE_KEY.
+on:
+  schedule:
+    - cron: "30 3 * * *" # 09:00 IST
+  workflow_dispatch:
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call health
+        env:
+          URL: ${{ secrets.SUPABASE_PROJECT_URL }}
+          KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$URL" ] || [ -z "$KEY" ]; then echo "secrets not set; skipping"; exit 0; fi
+          body=$(curl -sS --fail-with-body -X POST "$URL/functions/v1/health" -H "Authorization: Bearer $KEY")
+          echo "$body"
+          echo "$body" | jq -e '.ok == true' > /dev/null || { echo "::error::alerts not delivered to WhatsApp"; exit 1; }
+          echo "$body" | jq -e '.open_alerts == 0' > /dev/null || echo "::warning::open alerts: send 'review' on WhatsApp"

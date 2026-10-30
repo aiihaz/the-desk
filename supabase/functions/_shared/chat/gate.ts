@@ -35,7 +35,9 @@ export type Route =
 
 const START = new Set(["start", "resume"]);
 
-const ADMIN = /^(status|review|stop all|resume|credit\b|optout\b|limits|set limit\b|numbers|number off\b)/;
+// Whole words only, so an admin's "status of my booking?" is still a conversation.
+const ADMIN =
+  /^(status|review|stop all|resume|limits|numbers)$|^(credit|optout|set limit|number (on|off)|resolve) /;
 
 // Lower-case, trim, collapse spaces, drop trailing punctuation: "Stop!" → "stop".
 export function normalise(text: string): string {

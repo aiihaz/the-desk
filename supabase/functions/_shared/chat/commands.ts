@@ -2,10 +2,15 @@
 // the work (stop_user and friends in 0006), so a STOP also holds against a turn that is
 // already running: no prompt opens, no consent is stored and no call is reserved until START.
 import type { User } from "../store.ts";
+import { type AdminStore, runAdmin } from "./admin.ts";
 import type { Route } from "./gate.ts";
 import { type PromptDeps, sendTemplate } from "./turn.ts";
 
-export type CommandDeps = PromptDeps & { trace?: (event: string, data: unknown) => void };
+export type CommandDeps = PromptDeps & {
+  // Admin commands (admin.ts); without it they say they aren't available.
+  admin?: AdminStore;
+  trace?: (event: string, data: unknown) => void;
+};
 
 export async function runCommand(
   deps: CommandDeps,
@@ -32,8 +37,12 @@ export async function runCommand(
       deps.trace?.("start", res);
       return sendTemplate(deps, user, "started");
     }
-    case "admin":
-      // Admin commands come with E7 (eng plan 8). Say so rather than stay silent.
-      return sendTemplate(deps, user, "admin_not_built");
+    case "admin": {
+      if (!deps.admin) return sendTemplate(deps, user, "admin_not_built");
+      const body = await runAdmin(deps.admin, route.text, user.waId);
+      deps.trace?.("admin", { command: route.text, reply: body });
+      await deps.send(user, { kind: "text", body });
+      return;
+    }
   }
 }

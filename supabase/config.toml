@@ -428,3 +428,10 @@ verify_jwt = true
 # Sarvam sends no JWT or signature; the handler checks the ?token= in the URL instead.
 [functions.sarvam-webhook]
 verify_jwt = false
+
+# pg_cron calls these with the service role key (0009_jobs.sql), GitHub calls health.
+[functions.reconcile]
+verify_jwt = true
+
+[functions.health]
+verify_jwt = true

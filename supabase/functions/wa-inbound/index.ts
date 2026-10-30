@@ -2,6 +2,7 @@
 // (chat/agent.ts). DESK_ECHO=1 swaps the agent for an echo, for the WhatsApp round-trip test.
 import { DbCallStore } from "../_shared/call_store.ts";
 import { callAfterConsent } from "../_shared/chat/calls.ts";
+import { DbAdminStore } from "../_shared/chat/admin.ts";
 import { runCommand } from "../_shared/chat/commands.ts";
 import { type AgentDeps, handleInbound } from "../_shared/chat/agent.ts";
 import { type LunaDeps, runLuna } from "../_shared/chat/luna.ts";
@@ -48,7 +49,8 @@ const luna: LunaDeps | null = env("OPENAI_API_KEY")
   }
   : null;
 
-// Comma-separated wa_ids (no +). Admin commands themselves are E7.
+// Comma-separated wa_ids (no +), allowed the admin commands (chat/admin.ts).
+const adminStore = new DbAdminStore();
 const admins = new Set(env("DESK_ADMIN_WA_IDS").split(",").map((s) => s.trim()).filter(Boolean));
 
 const agent: AgentDeps = {
@@ -62,7 +64,7 @@ const agent: AgentDeps = {
     const tpl = await chat.template("fallback_generic", (await chat.user(user.id)).language);
     if (tpl) await send(user, { kind: "text", body: tpl });
   },
-  onCommand: (user, route) => runCommand({ store: chat, send }, user, route),
+  onCommand: (user, route) => runCommand({ store: chat, send, admin: adminStore }, user, route),
   // The screenshot check is E7 (eng plan 2.2). No booking holds a deposit before then.
   onPayment: async (_user, route) => console.warn("payment check is E7; nothing done", route.kind),
 };
