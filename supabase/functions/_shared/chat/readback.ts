@@ -83,6 +83,12 @@ export function fmtDay(d: Date, now: Date): string {
   return `${t.wd} ${t.day} ${t.mon}`;
 }
 
+// "Sat 8 Nov 2026, 7:30 pm": what a follow-up call reads out, so the year is never left out.
+export function fmtFull(d: Date): string {
+  const t = ist(d);
+  return `${t.wd} ${t.day} ${t.mon} ${t.y}, ${fmtTime(d)}`;
+}
+
 // "tomorrow (Sun 25 Oct)": the relative day plus the date, so a read-back is never ambiguous.
 export function fmtDayFull(d: Date, now: Date): string {
   const rel = fmtDay(d, now);
@@ -135,9 +141,11 @@ function withNote(note: string | null | undefined, text: string): string {
   return note?.trim() ? `${note.trim()}\n\n${text}` : text;
 }
 
-// Plans lead with what will happen (place, what, when), then what will be shared and
-// what the Desk won't agree to, then one plain question. f.may_book and f.max_advance_rs
-// must already be set from limits, so the consent covers them.
+// Plans lead with what will happen (place, what, when), then what will be shared, then
+// one plain question. Money comes up only when the user is approving some: with no
+// approved advance the call still agrees to none (max_advance_rs 0), but a plan doesn't
+// say so every time. f.may_book and f.max_advance_rs must already be set from limits, so
+// the consent covers them.
 export function bookingReadback(
   x: { place: Place; f: Fields; customerPhone: string | null; now: Date; note?: string | null },
 ): Prompt {
@@ -154,30 +162,40 @@ export function bookingReadback(
   }
   const who = x.customerPhone ? `${f.customer_name}, ${maskPhone(x.customerPhone)}` : f.customer_name;
   const advance = f.max_advance_rs
-    ? `If they want an advance of up to ${rs(f.max_advance_rs)}, I'll hold it and you pay them directly.`
-    : "If they want an advance, I won't agree to it.";
+    ? ` If they want an advance of up to ${rs(f.max_advance_rs)}, I'll hold it and you pay them directly.`
+    : "";
   return ask(withNote(
     x.note,
-    `I'll call ${callee(place)} and book ${what_}, in your name (${who}). ${advance} ` +
+    `I'll call ${callee(place)} and book ${what_}, in your name (${who}).${advance} ` +
       `If that isn't free, I won't book anything else; I'll come back to you with what they have.${also}` +
       "\n\nShall I go ahead?",
   ));
 }
 
-export function questionReadback(x: { place: Place; f: Fields; note?: string | null }): Prompt {
+export function questionReadback(
+  x: { place: Place; f: Fields; customerPhone?: string | null; note?: string | null },
+): Prompt {
   const qs = currentQuestions(x.f);
   const asks = qs.length === 1 ? `"${qs[0]}"` : qs.map((q, i) => `\n${i + 1}. ${q}`).join("");
+  const name = x.f.share_name ? `your name (${x.f.customer_name})` : null;
+  const phone = x.f.share_phone && x.customerPhone ? `your number (${maskPhone(x.customerPhone)})` : null;
+  const shared = [name, phone].filter(Boolean).join(" and ");
+  const who = shared
+    ? `I'll give them ${shared} so they know who's asking, and I won't book anything.`
+    : "I won't book anything or share your name or number.";
   return ask(withNote(
     x.note,
-    `I'll call ${callee(x.place)} and ask: ${asks}\n\nI won't book anything or share your name or ` +
-      "number.\n\nShall I call them?",
+    `I'll call ${callee(x.place)} and ask: ${asks}\n\n${who} If they offer to book, I'll check with ` +
+      "you first.\n\nShall I call them?",
   ));
 }
 
 export type BookingSummary = {
   place: Place;
   f: Fields;
-  time: Date;
+  // Null when the call gave no time; date then says the day, if it gave one.
+  time: Date | null;
+  date?: string | null;
   customerName: string;
   depositRs: number | null;
   knownFeeRs: number | null;
@@ -185,9 +203,17 @@ export type BookingSummary = {
 
 // "Paragon · your table for 4, tonight 8:15 pm (Ihaz)"
 function bookingLine(b: BookingSummary, now: Date): string {
-  return `${b.place.name} · ${what(b.f, "your")}, ${fmtDay(b.time, now)} ${
-    fmtTime(b.time)
-  } (${b.customerName})`;
+  const at = b.time
+    ? `${fmtDay(b.time, now)} ${fmtTime(b.time)}`
+    : b.date
+    ? `${fmtDate(b.date, now)}, no time confirmed`
+    : "no time confirmed";
+  return `${b.place.name} · ${what(b.f, "your")}, ${at} (${b.customerName})`;
+}
+
+// A date with no time: "tomorrow (Sat 8 Nov)". Noon, so no timezone moves the day.
+export function fmtDate(date: string, now: Date): string {
+  return fmtDayFull(new Date(`${date}T12:00:00+05:30`), now);
 }
 
 export function rescheduleReadback(x: { booking: BookingSummary; f: Fields; now: Date }): Prompt {
@@ -197,7 +223,8 @@ export function rescheduleReadback(x: { booking: BookingSummary; f: Fields; now:
     : "If they can, I'll check with you before moving it.";
   return ask(
     `${bookingLine(b, x.now)}\nI'll call and ask to move it to ${fmtWhen(x.f, x.now, true)}. ${ifCan} ` +
-      `If not, I'll ask them to keep ${fmtTime(b.time)} and check with you.\n\nShall I call them?`,
+      `If not, I'll ask them to keep ${b.time ? fmtTime(b.time) : "it as it is"} and check with you.` +
+      "\n\nShall I call them?",
   );
 }
 
@@ -235,13 +262,11 @@ export function optionsPrompt(
 ): Prompt {
   const numbered = x.options.map((o, i) => `${i + 1}. ${o.label}${o.detail ? ` (${o.detail})` : ""}`);
   const who = x.customerName ? ` in your name (${x.customerName})` : "";
-  const text = [
-    x.lead,
-    ...numbered,
-    "",
-    `Tell me which one and I'll call back to book it${who}. If one needs an advance, I won't agree to ` +
-    "it without checking with you.",
-  ].join("\n");
+  const advance = x.options.some((o) => o.detail === "advance")
+    ? " I won't agree to an advance without checking with you."
+    : "";
+  const text = [x.lead, ...numbered, "", `Tell me which one and I'll call back to book it${who}.${advance}`]
+    .join("\n");
   return {
     kind: "options",
     optionIds: x.options.map((o) => o.id),

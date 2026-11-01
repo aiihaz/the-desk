@@ -3,6 +3,11 @@
 // checked against the consent), the business, the user and the picked option. Nothing a
 // caller sends reaches the agent. Every variable for the call kind is present: an
 // unknown value is null, and a missing required one stops the call before Sarvam.
+//
+// Names follow the Genie brief (section 4). The older names of eng plan 3.4 go along too,
+// until the agent is built, so either contract works. Every call also gets the resolved
+// errand: what's decided, what's flexible, what the caller may accept and what already
+// happened, worked out here so the agent never has to.
 import type { CallKind } from "./sarvam.ts";
 
 export type CallInputs = {
@@ -22,28 +27,57 @@ export type CallInputs = {
   payment: { amountRs: number; ref: string; paidAt: string | null; payee: string | null } | null;
   // Cancel: the loss the user accepted by answering CANCEL to a read-back that named it.
   approvedLossRs: number;
+  // The profile name, for a booking call that grew out of a question call.
+  profileName?: string | null;
 };
 
 export type BookingInput = {
   time: string | null;
+  // The day, when the call that made it gave no time.
+  date?: string | null;
   reference: string | null;
   customerName: string | null;
   depositRs: number | null;
   knownFeeRs: number | null;
 };
 
-// "Fri 24 Oct 2026, 20:15 IST, table for 4, name Ihaz, ref T12": what the agent reads
-// out to identify a booking.
+const TZ = "Asia/Kolkata";
+
+// "Sat, 24 Oct 2026, 8:15 pm": always with the year, so a follow-up call can't carry a
+// wrong one past the business unnoticed.
+function fullTime(iso: string): string {
+  return new Date(iso).toLocaleString("en-IN", {
+    timeZone: TZ,
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function fullDay(iso: string): string {
+  return new Date(iso).toLocaleString("en-IN", {
+    timeZone: TZ,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
+
+function clock(iso: string): string {
+  return new Date(iso).toLocaleTimeString("en-IN", { timeZone: TZ, hour: "numeric", minute: "2-digit" });
+}
+
+// "Sat, 24 Oct 2026, 8:15 pm, table for 4, name Ihaz, ref T12": what the agent reads out
+// to identify a booking.
 function describeBooking(b: BookingInput, f: Record<string, unknown>): string {
   const when = b.time
-    ? new Date(b.time).toLocaleString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      weekday: "short",
-      day: "numeric",
-      month: "short",
-      hour: "numeric",
-      minute: "2-digit",
-    })
+    ? fullTime(b.time)
+    : b.date
+    ? `${fullDay(`${b.date}T12:00:00+05:30`)}, time not confirmed`
     : "time not recorded";
   const what = typeof f.party_size === "number"
     ? `table for ${f.party_size}`
@@ -67,7 +101,103 @@ export class MissingCallInput extends Error {
 
 type Vars = Record<string, string | number | boolean | null>;
 
-export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean): Vars {
+function requestWhat(f: Record<string, unknown>): string | null {
+  return typeof f.party_size === "number" && typeof f.service === "string"
+    ? `${f.service} for ${f.party_size}`
+    : typeof f.party_size === "number"
+    ? `table for ${f.party_size}`
+    : typeof f.service === "string"
+    ? f.service
+    : null;
+}
+
+// "Saturday, 8 November 2026, 7:30 pm to 8:30 pm IST": no relative words, no arithmetic
+// left for the agent.
+function resolvedWhen(f: Record<string, unknown>, o: CallInputs["option"]): string | null {
+  const t = typeof o?.value.time === "string"
+    ? o.value.time
+    : typeof f.exact_time === "string"
+    ? f.exact_time
+    : null;
+  if (t) return `${fullDay(t)}, ${clock(t)} IST`;
+  if (typeof f.window_start === "string" && typeof f.window_end === "string") {
+    return `${fullDay(f.window_start)}, ${clock(f.window_start)} to ${clock(f.window_end)} IST`;
+  }
+  return null;
+}
+
+// The errand as settled before the call. Every line comes from what the user approved.
+function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars {
+  const f = x.fields;
+  const o = x.option;
+  const when = resolvedWhen(f, o);
+  const what = requestWhat(f);
+  const picked = !!o;
+  const mayBook = picked || (kind !== "question" && v.may_book === true);
+  const cap = typeof v.max_advance_rs === "number" ? v.max_advance_rs : 0;
+  const conditions = typeof o?.value.conditions === "string" ? o.value.conditions : null;
+
+  const decided = kind === "question"
+    ? `Only asking: ${v.question_text}`
+    : kind === "cancel"
+    ? `Cancel this booking: ${v.existing_booking}`
+    : kind === "payment_confirm"
+    ? `Confirm the payment for: ${v.held_booking}`
+    : [
+      what,
+      kind === "reschedule" ? `move from: ${v.existing_booking}` : null,
+      picked ? `the option picked: ${o.label}` : when,
+      typeof v.customer_name === "string" ? `under the name ${v.customer_name}` : null,
+    ].filter(Boolean).join("; ");
+
+  const flexible = picked || !when || kind === "question" || kind === "cancel" || kind === "payment_confirm"
+    ? "Nothing."
+    : typeof f.exact_time === "string"
+    ? (f.tolerance_min
+      ? `Up to ${f.tolerance_min} minutes either way of the time.`
+      : "Nothing: that exact time.")
+    : "Any time inside the window.";
+
+  const accept = kind === "question"
+    ? "Take the answer down. If they offer to book or hold, thank them, get the times, price and conditions, and say you'll check with the customer. Accept nothing."
+    : kind === "cancel"
+    ? (x.approvedLossRs
+      ? `A loss of up to Rs ${x.approvedLossRs}. Anything more: don't cancel, come back.`
+      : "No charge. If there is one: don't cancel, come back.")
+    : kind === "payment_confirm"
+    ? "Only their word that it was received. Agree nothing new."
+    : mayBook
+    ? [
+      `Book only what is decided above${
+        typeof f.max_price_rs === "number" ? `, up to Rs ${f.max_price_rs}` : ""
+      }.`,
+      conditions ? `The customer accepted: ${conditions}.` : null,
+      cap ? `An advance of up to Rs ${cap} makes it a hold, paid by the customer.` : "No advance.",
+      "Anything else: don't accept, come back with it.",
+    ].filter(Boolean).join(" ")
+    : "Nothing yet: ask what's possible and come back.";
+
+  const prev = typeof v.prev_summary === "string"
+    ? `Called earlier${
+      typeof v.prev_contact_name === "string" ? `, spoke to ${v.prev_contact_name}` : ""
+    }: ${v.prev_summary}`
+    : x.prev
+    ? "Called earlier about this."
+    : "Nothing yet: this is the first call.";
+
+  return {
+    call_date: fullDay(now.toISOString()),
+    timezone: TZ,
+    resolved_when: when,
+    request_summary: kind === "question" ? null : [what, when].filter(Boolean).join(", ") || null,
+    decided,
+    flexible,
+    may_accept: accept,
+    already_happened: prev,
+  };
+}
+
+export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean, now = new Date()): Vars {
   const f = x.fields;
   const str = (k: string) => (typeof f[k] === "string" ? f[k] as string : null);
   const num = (k: string) => (typeof f[k] === "number" ? f[k] as number : null);
@@ -85,42 +215,52 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean)
         party_size: num("party_size"),
         service: str("service"),
         max_price: num("max_price_rs"),
+        max_price_rs: num("max_price_rs"),
         may_book: mayBook,
         max_advance_rs: num("max_advance_rs") ?? 0,
-        customer_name: str("customer_name"),
-        // The number is given only when booking on this call (3.4: otherwise never).
+        // Name and number go only when booking on this call: the plan for a call that
+        // only asks tells the user neither is shared.
+        customer_name: mayBook ? str("customer_name") : null,
         customer_phone: mayBook ? x.customerPhone : null,
         also_ask: str("also_ask"),
       };
       if (x.task !== "booking") missing.push(`a booking request (this is ${x.task})`);
       if (v.party_size === null && v.service === null) missing.push("party_size or service");
       if (v.exact_time === null && (v.window_start === null || v.window_end === null)) missing.push("time");
-      // A call that only asks gives no name or number (3.4), so it needs neither.
       if (mayBook && v.customer_name === null) missing.push("customer_name");
       if (typeof f.may_book !== "boolean") missing.push("may_book");
       if (mayBook && v.customer_phone === null) missing.push("customer_phone");
       break;
     }
     case "question": {
-      // The question plan promises no booking and no name or number. Several questions
-      // go as one numbered string; the agent's input is a single text variable.
+      // No booking. Name and number go only if the plan said so, for an errand about
+      // something of the user's own. Several questions go as one numbered string; the
+      // agent's input is a single text variable.
       const qs = Array.isArray(f.questions) ? f.questions.filter((q) => typeof q === "string") : [];
-      v = {
-        question: qs.length > 1 ? qs.map((q, i) => `${i + 1}) ${q}`).join(" ") : qs[0] ?? str("question"),
-      };
+      const question = qs.length > 1
+        ? qs.map((q, i) => `${i + 1}) ${q}`).join(" ")
+        : qs[0] ?? str("question");
+      v = { question, question_text: question };
+      if (f.share_name === true) v.customer_name = str("customer_name");
+      if (f.share_phone === true) v.customer_phone = x.customerPhone;
       if (x.task !== "question") missing.push(`a question request (this is ${x.task})`);
       if (v.question === null) missing.push("question");
+      if (f.share_name === true && v.customer_name === null) missing.push("customer_name");
+      if (f.share_phone === true && v.customer_phone === null) missing.push("customer_phone");
       break;
     }
     case "booking": {
       const o = x.option;
       v = {
         option_label: o?.label ?? null,
+        picked_option: o?.label ?? null,
         option_time: typeof o?.value.time === "string" ? o.value.time : null,
+        approved_conditions: typeof o?.value.conditions === "string" ? o.value.conditions : null,
         party_size: num("party_size"),
         service: str("service"),
         max_advance_rs: num("max_advance_rs") ?? 0,
-        customer_name: str("customer_name"),
+        // A question call that turned into an offer has no name stored yet.
+        customer_name: str("customer_name") ?? x.profileName ?? null,
         customer_phone: x.customerPhone,
         prev_call_time: x.prev?.at ?? null,
         prev_contact_name: x.prev?.contactName ?? null,
@@ -129,7 +269,7 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean)
       if (!o) missing.push("option");
       if (v.customer_name === null) missing.push("customer_name");
       if (v.customer_phone === null) missing.push("customer_phone");
-      if (!x.prev) missing.push("a completed first call");
+      if (!x.prev) missing.push("a completed earlier call");
       break;
     }
     case "reschedule": {
@@ -194,5 +334,5 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean)
     }
   }
   if (missing.length) throw new MissingCallInput(kind, missing);
-  return { ...v, business_name: x.businessName, must_reask: mustReask };
+  return { ...v, ...resolvedErrand(kind, x, v, now), business_name: x.businessName, must_reask: mustReask };
 }

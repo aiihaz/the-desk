@@ -7,6 +7,7 @@ import type { PlaceHit } from "../places.ts";
 import { serviceClient } from "../store.ts";
 import type { Outbound } from "../whatsapp.ts";
 import type { RecentRequest } from "./cards.ts";
+import type { Delivery, DueFollowUp } from "./followup.ts";
 import { mediaMarker, type OpenPrompt } from "./gate.ts";
 import type { BookingSummary, Place, Prompt } from "./readback.ts";
 import type { RouteLog } from "./router.ts";
@@ -24,6 +25,20 @@ export type ActiveRequest = {
   createdAt: Date;
   // Set while the user has asked the Desk to wait (pause_request); no read-back goes out.
   pausedAt: Date | null;
+  // What this errand is waiting for, and when the Desk brings it up again (set_follow_up).
+  waitingFor?: string | null;
+  remindAt?: Date | null;
+  // Asked to cancel while the call ran: it ends with the result.
+  cancelRequestedAt?: Date | null;
+};
+
+// A fact or preference the Desk keeps for a user (0012). Never a permission.
+export type Memory = {
+  id: string;
+  kind: "fact" | "preference";
+  scope: string;
+  text: string;
+  source: "said" | "learned";
 };
 
 export type UserInfo = {
@@ -71,6 +86,17 @@ export type CallForReport = {
   option: { label: string; value: Record<string, unknown> } | null;
   // Payment confirm: the held booking's time. Cancel, reschedule: the booking's time.
   bookingTime: string | null;
+  // The user asked to cancel while this call ran.
+  cancelRequested?: boolean;
+};
+
+// Everything the user is owed for a settled call, stored with the settlement (0012).
+export type CallReport = {
+  parts: { key: string; message: Outbound }[];
+  prompt?: { id: string; text: string; message: Outbound } | null;
+  next?: { request_id: string; message: Outbound } | null;
+  // Cancelled during the call and nothing was booked: the errand ends here.
+  end?: boolean;
 };
 
 // settle_call(): what a finished call did to its request (0007).
@@ -92,6 +118,12 @@ export type CallSettlement = {
     deadline?: string | null;
     fee_rs?: number | null;
     said?: string | null;
+    // A day with no time, what the caller reported, what the user approved, and why a
+    // stored date differs from the captured one.
+    date?: string | null;
+    captured?: string | null;
+    approved?: string | null;
+    correction?: { from: string; to: string; why: string };
   } | null;
   optOut?: boolean;
 };
@@ -199,10 +231,37 @@ export interface ChatStore {
   ): Promise<{ ok: true; consent_id: string | null } | Refused>;
   // The held booking waiting for this user's payment, with what the hold call said.
   heldBooking(userId: string): Promise<HeldBooking | null>;
+  // settle_and_report(): settles the call and stores what the user is owed, as one.
   settleCall(
     callId: string,
     s: CallSettlement,
+    report?: CallReport,
   ): Promise<{ ok: true; request_id: string; state: State; option_ids: string[] } | Refused>;
+  // now: only to simulate a later time. Unset, the database's clock decides what's due,
+  // the same clock that stamped it, so a skew can't hold back a message just stored.
+  takeDeliveries(now?: Date, callId?: string): Promise<Delivery[]>;
+  // A reply that couldn't be sent during a turn goes out with the next recovery pass.
+  oweMessage(userId: string, requestId: string | null, key: string, message: Outbound): Promise<void>;
+  deliverySent(id: string, waMessageId: string): Promise<void>;
+  // "failed" when it won't be tried again.
+  deliveryFailed(id: string, error: string, final: boolean): Promise<string>;
+  dueFollowUps(now?: Date): Promise<DueFollowUp[]>;
+  queueFollowUp(
+    requestId: string,
+    reason: DueFollowUp["reason"],
+    stamp: number,
+    message: Outbound,
+    now?: Date,
+  ): Promise<boolean>;
+  setFollowUp(
+    requestId: string,
+    waitingFor: string | null,
+    remindAt: string | null,
+  ): Promise<{ ok: true } | Refused>;
+  cancelAfterCall(requestId: string): Promise<{ ok: true } | Refused>;
+  memories(userId: string): Promise<Memory[]>;
+  addMemory(userId: string, m: Omit<Memory, "id"> & { evidence?: string | null }): Promise<Memory | null>;
+  forgetMemory(userId: string, memoryId: string): Promise<void>;
   cancelRequest(requestId: string): Promise<{ ok: true } | Refused>;
   setBusiness(requestId: string, businessId: string): Promise<Changed | Refused>;
   updateSlots(requestId: string, patch: Record<string, unknown>): Promise<Changed | Refused>;
@@ -248,10 +307,14 @@ function toRequest(r: Row): ActiveRequest {
     bookingId: r.booking_id,
     createdAt: new Date(r.created_at),
     pausedAt: r.paused_at ? new Date(r.paused_at) : null,
+    waitingFor: r.waiting_for ?? null,
+    remindAt: r.remind_at ? new Date(r.remind_at) : null,
+    cancelRequestedAt: r.cancel_requested_at ? new Date(r.cancel_requested_at) : null,
   };
 }
 
-const REQUEST_COLUMNS = "id, task, state, version, fields, business_id, booking_id, created_at, paused_at";
+const REQUEST_COLUMNS =
+  "id, task, state, version, fields, business_id, booking_id, created_at, paused_at, waiting_for, remind_at, cancel_requested_at";
 
 export class DbChatStore implements ChatStore {
   constructor(private db: SupabaseClient = serviceClient()) {}
@@ -386,7 +449,8 @@ export class DbChatStore implements ChatStore {
   async booking(bookingId: string): Promise<BookingSummary> {
     const { data, error } = await this.db.from("bookings")
       .select(
-        "time, deposit_amount, known_fee_rs, requests!bookings_request_id_fkey(fields, businesses(name, address, city))",
+        "time, booked_on, deposit_amount, known_fee_rs, " +
+          "requests!bookings_request_id_fkey(fields, businesses(name, address, city))",
       )
       .eq("id", bookingId).single();
     if (error) throw error;
@@ -395,7 +459,8 @@ export class DbChatStore implements ChatStore {
     return {
       place: r.requests.businesses,
       f: fields,
-      time: new Date(r.time),
+      time: r.time ? new Date(r.time) : null,
+      date: r.booked_on,
       customerName: fields.customer_name ?? "",
       depositRs: r.deposit_amount === null ? null : Number(r.deposit_amount),
       // A charge the business stated on an earlier cancel call (settle_call, 0011).
@@ -638,7 +703,7 @@ export class DbChatStore implements ChatStore {
   async callForReport(callId: string): Promise<CallForReport | null> {
     const { data, error } = await this.db.from("calls")
       .select(
-        "id, request_id, user_id, kind, is_retry, business_id, requests(task), users(wa_id), " +
+        "id, request_id, user_id, kind, is_retry, business_id, requests(task, cancel_requested_at), users(wa_id), " +
           "businesses(phone_e164), " +
           "options!calls_option_id_fkey(label, value)",
       ).eq("id", callId)
@@ -665,6 +730,7 @@ export class DbChatStore implements ChatStore {
       waId: row.users.wa_id,
       kind: row.kind,
       task: row.requests.task,
+      cancelRequested: !!row.requests.cancel_requested_at,
       isRetry: row.is_retry,
       businessId: row.business_id,
       phone: row.businesses.phone_e164,
@@ -741,17 +807,121 @@ export class DbChatStore implements ChatStore {
     };
   }
 
-  settleCall(callId: string, s: CallSettlement) {
+  settleCall(callId: string, s: CallSettlement, report?: CallReport) {
     return this.rpc<{ ok: true; request_id: string; state: State; option_ids: string[] } | Refused>(
-      "settle_call",
+      "settle_and_report",
       {
         p_call_id: callId,
         p_result: s.result,
         p_options: s.options ?? [],
         p_booking: s.booking ?? null,
         p_opt_out: s.optOut ?? false,
+        p_parts: report?.parts ?? [],
+        p_prompt: report?.prompt ?? null,
+        p_next: report?.next ?? null,
+        p_end: report?.end ?? false,
       },
     );
+  }
+
+  async oweMessage(userId: string, requestId: string | null, key: string, message: Outbound) {
+    await this.rpc("owe_message", {
+      p_user_id: userId,
+      p_request_id: requestId,
+      p_key: key,
+      p_message: message,
+    });
+  }
+
+  async takeDeliveries(now?: Date, callId?: string): Promise<Delivery[]> {
+    const rows = await this.rpc<Row[]>("take_deliveries", {
+      ...(now ? { p_now: now.toISOString() } : {}),
+      p_call_id: callId ?? null,
+    });
+    return rows.map((d) => ({
+      id: d.id,
+      userId: d.user_id,
+      waId: d.wa_id,
+      message: d.message,
+      attempts: d.attempts,
+      kind: d.kind,
+    }));
+  }
+
+  async deliverySent(id: string, waMessageId: string): Promise<void> {
+    await this.rpc("delivery_sent", { p_id: id, p_wa_message_id: waMessageId });
+  }
+
+  deliveryFailed(id: string, error: string, final: boolean) {
+    return this.rpc<string>("delivery_failed", { p_id: id, p_error: error, p_final: final });
+  }
+
+  async dueFollowUps(now?: Date): Promise<DueFollowUp[]> {
+    const rows = await this.rpc<Row[]>("due_follow_ups", now ? { p_now: now.toISOString() } : {});
+    return rows.map((d) => ({
+      requestId: d.request_id,
+      userId: d.user_id,
+      reason: d.reason,
+      task: d.task,
+      state: d.state,
+      stamp: d.stamp,
+      fields: d.fields ?? {},
+      waitingFor: d.waiting_for,
+      endReason: d.end_reason,
+      place: d.place,
+      amountRs: d.amount_rs === null ? null : Number(d.amount_rs),
+      deadline: d.deadline ? new Date(d.deadline) : null,
+    }));
+  }
+
+  queueFollowUp(
+    requestId: string,
+    reason: DueFollowUp["reason"],
+    stamp: number,
+    message: Outbound,
+    now?: Date,
+  ) {
+    return this.rpc<boolean>("queue_follow_up", {
+      p_request_id: requestId,
+      p_reason: reason,
+      p_stamp: stamp,
+      p_message: message,
+      ...(now ? { p_now: now.toISOString() } : {}),
+    });
+  }
+
+  setFollowUp(requestId: string, waitingFor: string | null, remindAt: string | null) {
+    return this.rpc<{ ok: true } | Refused>("set_follow_up", {
+      p_request_id: requestId,
+      p_waiting_for: waitingFor,
+      p_remind_at: remindAt,
+    });
+  }
+
+  cancelAfterCall(requestId: string) {
+    return this.rpc<{ ok: true } | Refused>("request_cancel_after_call", { p_request_id: requestId });
+  }
+
+  async memories(userId: string): Promise<Memory[]> {
+    const { data, error } = await this.db.from("user_memories").select("id, kind, scope, text, source")
+      .eq("user_id", userId).is("forgotten_at", null).order("created_at");
+    if (error) throw error;
+    return data;
+  }
+
+  // null: they already have this one.
+  async addMemory(userId: string, m: Omit<Memory, "id"> & { evidence?: string | null }) {
+    const { data, error } = await this.db.from("user_memories")
+      .insert({ user_id: userId, ...m }).select("id, kind, scope, text, source").maybeSingle();
+    if (error?.code === "23505") return null;
+    if (error) throw error;
+    return data as Memory | null;
+  }
+
+  async forgetMemory(userId: string, memoryId: string): Promise<void> {
+    const { error } = await this.db.from("user_memories").update({ forgotten_at: new Date().toISOString() })
+      .eq("user_id", userId).eq("id", memoryId);
+    if (error) throw error;
   }
 
   cancelRequest(requestId: string) {

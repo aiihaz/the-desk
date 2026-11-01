@@ -29,6 +29,8 @@ export async function dial(deps: DialDeps, a: DialArgs): Promise<DialResult> {
   if (!r.ok) return { ok: false, error: "refused", reason: r.reason };
 
   try {
+    // No proof, no call: reserve_call names the consent this call rests on.
+    if (!r.consent_id) throw new Error("no consent behind this call");
     // A missing input fails here, after the reservation, so the attempt still counts.
     const variables = callVariables(a.kind, await deps.store.callInputs(r.call_id), r.must_reask);
     const target = await deps.store.dialTarget(r.call_id);

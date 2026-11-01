@@ -87,7 +87,15 @@ Deno.test("also_ask is a booking slot, capped at 150 characters", () => {
 Deno.test("an edit is checked against the merged fields", () => {
   const cur = { window_start: "2026-10-23T19:30:00+05:30", window_end: "2026-10-23T21:00:00+05:30" };
   assertEquals(checkSlots("booking", cur, { window_start: "2026-10-23T21:30:00+05:30" }, now).ok, false);
-  assertEquals(checkSlots("booking", cur, { exact_time: "2026-10-23T22:00:00+05:30" }, now).ok, false);
+  // An exact time sent with a window it doesn't fit is still refused; alone, it replaces the window.
+  assertEquals(
+    checkSlots("booking", cur, {
+      exact_time: "2026-10-23T22:00:00+05:30",
+      window_start: "2026-10-23T19:30:00+05:30",
+      window_end: "2026-10-23T21:00:00+05:30",
+    }, now).ok,
+    false,
+  );
   assertEquals(checkSlots("booking", cur, { window_end: null }, now), {
     ok: true,
     patch: { window_end: null },
@@ -118,4 +126,29 @@ Deno.test("what a plan still needs, and the collecting state", () => {
   );
   assertEquals(missing("cancel", {}, has), ["which booking"]);
   assertEquals(collectingState("cancel", {}, { business: true, booking: true }), "confirming");
+});
+
+Deno.test("a new exact time replaces a fuzzy window, and a new window an exact time", () => {
+  const f = {
+    window_start: "2026-10-24T19:30:00+05:30",
+    window_end: "2026-10-24T20:30:00+05:30",
+    tolerance_min: 30,
+  };
+  const exact = checkSlots("booking", f, { exact_time: "2026-10-24T21:00:00+05:30" }, now);
+  assertEquals(exact, {
+    ok: true,
+    patch: {
+      exact_time: "2026-10-24T21:00:00+05:30",
+      window_start: null,
+      window_end: null,
+      tolerance_min: null,
+    },
+  });
+  const window = checkSlots(
+    "booking",
+    { exact_time: "2026-10-24T21:00:00+05:30" },
+    { window_start: "2026-10-24T22:00:00+05:30", window_end: "2026-10-24T23:00:00+05:30" },
+    now,
+  );
+  assertEquals(window.ok && window.patch.exact_time, null);
 });

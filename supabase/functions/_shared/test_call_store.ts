@@ -13,6 +13,7 @@ export class FakeCallStore implements CallStore {
     call_id: "c-1",
     caller_number_id: "n-1",
     agent_version: "3",
+    consent_id: "k-1",
     must_reask: false,
     flags: [],
   };

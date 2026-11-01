@@ -65,7 +65,8 @@ insert into businesses (id, phone_e164, name, source) values
 insert into caller_numbers (id, e164, provider, a2p_declared_at) values
   ('c0000000-0000-0000-0000-000000000001', '+918000000001', 'sarvam', '2026-10-01');
 insert into credit_ledger (delta_rs, reason) values (500, 'top-up');
-insert into gate_passes (agent_version, suite, passed) values ('v1', 'sarvam-tests', true);
+insert into gate_passes (agent_version, suite, passed, instructions_sha256) values ('v1', 'sarvam-tests', true, 'pin');
+select set_limit('agent_instructions_sha256', '"pin"', 'test');
 select set_limit('active_agent_version', '"v1"', 'test');
 
 create temp table t (name text primary key, id uuid);

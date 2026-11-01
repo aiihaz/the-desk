@@ -1,6 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1.0.8";
 import type { CreateResponse } from "../openai.ts";
-import { type BookingCheck, timeCheck, verifyBooking } from "./verify.ts";
+import { type BookingCheck, instant, readBookedWhen, timeCheck, verifyBooking } from "./verify.ts";
 
 const base: BookingCheck = {
   kind: "first",
@@ -123,4 +123,62 @@ Deno.test("a failing model call is not a verification", async () => {
   );
   assertEquals(v.verified, false);
   assertEquals(v.problems, ["transcript check failed: timeout"]);
+});
+
+Deno.test("a year-less or date-only reading is never a time, and never the year 2001", () => {
+  const a = "2026-11-08T20:00:00+05:30";
+  assertEquals(readBookedWhen("November 8", a), { time: null, date: "2026-11-08", captured: "November 8" });
+  assertEquals(readBookedWhen("8th Nov", a).date, "2026-11-08");
+  assertEquals(readBookedWhen("2026-11-08", a), { time: null, date: "2026-11-08", captured: "2026-11-08" });
+  assertEquals(readBookedWhen("November 9", a).date, null);
+  assertEquals(readBookedWhen("tomorrow evening", a), {
+    time: null,
+    date: null,
+    captured: "tomorrow evening",
+  });
+  assertEquals(readBookedWhen("2026-11-08T20:00", a).time, "2026-11-08T20:00+05:30");
+  assertEquals(instant("November 8"), null);
+});
+
+const year = (bookedTime: string) => ({
+  ...base,
+  fields: {
+    ...base.fields,
+    window_start: undefined,
+    window_end: undefined,
+    exact_time: "2026-11-08T20:00:00+05:30",
+  },
+  bookedTime,
+});
+
+Deno.test("a wrong year is corrected only when the call confirmed the approved booking", async () => {
+  const c = year("2025-11-08T20:00:00+05:30");
+  const v = await verifyBooking(model(confirmed), "m", "low", c);
+  assertEquals(v.verified, true);
+  assertEquals(v.correction?.from, "2025-11-08T20:00:00+05:30");
+  assertEquals(v.correction?.to, "2026-11-08T20:00:00+05:30");
+
+  const not = await verifyBooking(model({ ...confirmed, decision: "not_confirmed" }), "m", "low", c);
+  assertEquals([not.verified, not.correction, not.badYear], [false, undefined, true]);
+
+  const fee = await verifyBooking(model({ ...confirmed, issues: ["a Rs 200 fee"] }), "m", "low", c);
+  assertEquals([fee.verified, fee.correction, fee.badYear], [false, undefined, true]);
+
+  const none = await verifyBooking(model(confirmed), "m", "low", { ...c, transcript: null });
+  assertEquals([none.verified, none.badYear], [false, true]);
+});
+
+Deno.test("a different day is not a year mistake: nothing is corrected", async () => {
+  const v = await verifyBooking(model(confirmed), "m", "low", year("2025-11-09T20:00:00+05:30"));
+  assertEquals([v.verified, v.correction, v.badYear], [false, undefined, undefined]);
+});
+
+Deno.test("a date with no time is flagged, never verified", async () => {
+  const v = await verifyBooking(model(confirmed), "m", "low", {
+    ...year("2026-11-08T20:00:00+05:30"),
+    bookedTime: null,
+    bookedDate: "2026-11-08",
+  });
+  assertEquals(v.verified, false);
+  assertEquals(v.problems[0], "date only, no time confirmed: 2026-11-08");
 });

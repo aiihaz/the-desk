@@ -64,6 +64,9 @@ Deno.test("Luna sees the clock and the cards, and only this state's tools", asyn
     "choose_business",
     "my_places",
     "find_booking",
+    "stay_quiet",
+    "remember",
+    "forget",
   ]);
 });
 
@@ -81,12 +84,12 @@ Deno.test("a tool not allowed in this state is refused and fed back", async () =
 Deno.test("a reply that keeps failing the checks climbs the repair ladder, then falls back", async () => {
   const { sent, inputs, deps } = setup([
     [call("reply", { text: "**Great question!** I'd be happy to help." }, "a")],
-    [call("reply", { text: "x".repeat(401) }, "b")],
+    [call("reply", { text: "`code` and more" }, "b")],
     [call("reply", { text: "See https://x.in" }, "c")],
   ]);
   await runLuna(deps, user, now);
   assertEquals(JSON.parse(inputs[1].at(-1)!.output).ok, false);
-  assertEquals(JSON.parse(inputs[2].at(-1)!.output).reason.includes("under 160 characters"), true);
+  assertEquals(JSON.parse(inputs[2].at(-1)!.output).reason.includes("one short, plain sentence"), true);
   assertEquals(sent, [{ kind: "text", body: "[fallback_generic]" }]);
 });
 
@@ -255,7 +258,7 @@ Deno.test("gate: a reply that claims a booking before any call is sent back, the
   assertEquals([store.routes[0].l3Result, store.routes[0].l3Failed], ["retry_pass", ["claims_action"]]);
 });
 
-Deno.test("gate, Jev down for L3: a short task reply goes out, a long one gets the fallback", async () => {
+Deno.test("gate, Jev down for L3: a task reply goes out whatever its length", async () => {
   const short = setup([[call("reply", { text: "Which day?" })]]);
   withJev(short.deps, short.store, "gate", new Error("down"), new Error("down"));
   await runLuna(short.deps, user, now);
@@ -266,7 +269,8 @@ Deno.test("gate, Jev down for L3: a short task reply goes out, a long one gets t
   ]]);
   withJev(long.deps, long.store, "gate", new Error("down"), new Error("down"));
   await runLuna(long.deps, user, now);
-  assertEquals(long.sent, [{ kind: "text", body: "[fallback_generic]" }]);
+  assertEquals(long.sent.length, 1);
+  assertEquals((long.sent[0] as { body: string }).body.startsWith("Sure, which day"), true);
   assertEquals(long.store.routes[0].l3Failed, ["jev_down"]);
 });
 

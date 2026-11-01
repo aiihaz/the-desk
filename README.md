@@ -9,7 +9,7 @@ A WhatsApp calling and booking agent for India. Plan: `../the-desk-plan.md`, eng
 | E1 Repo + CI | done |
 | E2 Schema, `limits`, `check_dial()`, pgTAP | done |
 | E3 WhatsApp in/out | built and tested locally; live round trip needs the Meta test number |
-| E4 Chat state machine, Luna, business search | built and tested locally (Places search live on the bench); Jev router and L3 Jev check built (shadow by default, needs `jev_model` pinned); L3 facts check still to do |
+| E4 Chat state machine, Luna, business search | built and tested locally (Places search live on the bench); Jev router and L3 Jev check on `jev-1.14.0`, shadow by default, measured live with `deno task jev`; L3 facts check still to do |
 | E5/E6 Sarvam plumbing (client, `dial`, `sarvam-webhook`) | built and tested locally; outputs read in the eng plan 3.4 or the Genie brief contract; booking verification (3.5) built. The Sarvam agent itself and a live two-call run still to do |
 | E7 jobs, admin, advances, booking changes | built and tested locally: stale options, expiry, reconcile, retention (pg_cron), admin commands, alerts, health; advance holds, screenshot check, confirm call; cancel and reschedule of Desk bookings; Serper fallback. Live runs need WhatsApp and Sarvam |
 
@@ -64,9 +64,26 @@ Same place as the Sarvam ones: `supabase/functions/.env` locally, `supabase secr
 | `GOOGLE_MAPS_API_KEY` | Google Cloud console → APIs & Services → Credentials (Places API (New) enabled; restrict the key to that API) |
 | `SERPER_API_KEY` | serper.dev → API key. Optional: without it, places Google lists with no phone stay uncallable |
 
+## Before the first real call
+
+Every call is refused until the caller setup is pinned (`0012`): the active version needs a passed gate on the hash of the instructions it runs, or `check_dial` answers `no_instructions_pin` / `agent_instructions_mismatch` and the user hears that calls aren't working. After the Sarvam agent passes its suite:
+
+```
+shasum -a 256 agent/instructions.md        # the instructions as committed to Sarvam
+insert into gate_passes (agent_version, suite, passed, instructions_sha256) values ('<version>', '<suite>', true, '<hash>');
+set limit active_agent_version <version>   # on WhatsApp, from an admin
+set limit agent_instructions_sha256 <hash>
+```
+
+Sarvam's API isn't read back, so this catches a change on our side of the pin; change the instructions, and the hash and gate must be redone.
+
+## Which version is running
+
+Set `DESK_GIT_SHA` when deploying (`supabase secrets set DESK_GIT_SHA=$(git rev-parse HEAD)`). `health` answers with it, the newest migration applied, when `reconcile` last finished, and how many owed messages are overdue, and fails if the job has stopped.
+
 ## Scheduled jobs
 
-`0009_jobs.sql` schedules them with pg_cron when the migrations run: stale options (every 5 min), request expiry and `reconcile` (every 15 min), retention (daily, 03:00 IST). `reconcile` is an edge function that pg_cron calls through pg_net, using two Vault secrets you set once in the SQL editor:
+`0009_jobs.sql` schedules them with pg_cron when the migrations run: stale options (every 5 min), request expiry (every 15 min), `reconcile` (every 5 min, `0012`), retention (daily, 03:00 IST). `reconcile` also sends what the Desk owes users (`chat/followup.ts`): reminders, one nudge on an unanswered plan, a payment deadline coming up, word that an errand expired, and any report or reply whose send failed. **None of this runs until the two Vault secrets below are set.** Past the 24-hour window a message needs an approved template: set `follow_up_template` to one with a single body parameter, or those messages fail and raise a `delivery_failed` alert. `reconcile` is an edge function that pg_cron calls through pg_net, using two Vault secrets you set once in the SQL editor:
 
 ```
 select vault.create_secret('https://<project-ref>.supabase.co', 'desk_project_url');
@@ -90,7 +107,7 @@ From a wa_id in `DESK_ADMIN_WA_IDS`: `status`, `review`, `resolve <id>`, `stop a
 - `supabase/tests/`: pgTAP suites for guards, limits, the chat state machine and the 0006 fixes
 - `supabase/functions/_shared/chat/`: the chat agent. Luna holds the conversation (`luna.ts`, OpenAI Responses API via `_shared/openai.ts`; model pinned in the `luna_model` limit) and works the errand through tools (`tools.ts`): details, the place (`find.ts`), errands lined up behind each other. When the conversation is ready it asks for the plan (`propose_plan`); code writes the plan from the stored fields as plain WhatsApp text ending in a question (`readback.ts`), so what the user approves is what the call does. No buttons, no "reply YES": the user answers in their own words and Luna calls `approve_plan`, which is not a consent on its own (`approval.ts`): the plan must be open on its current version, the user must have answered after it (by stored order), nothing new may be waiting from them, and a separate check that sees only the plan and the replies must agree and quote their words; then `record_consent()` and `reserve_call()` check again. The code gate (`gate.ts`) only handles STOP/START/delete and the stopped state
 - `supabase/functions/_shared/chat/report.ts`: after a call, reads the voice agent's outputs, settles the request (`settle_call()`) and tells the user what the call established, built by code, so nothing is called booked unless the agent reported it. A waiting errand comes up next
-- `dev/`: local test bench while WhatsApp is blocked. `supabase start`, then `deno task dev`, then open http://localhost:8787. Real chat agent and Luna against the local database; WhatsApp and Sarvam are faked, so no message or call leaves the machine. With the bench running, `deno task eval` plays 8 live conversations through it and reports pass/fail, user messages to the read-back, Luna steps, time and tokens (`dev/evals.ts`; costs a few OpenAI calls)
+- `dev/`: local test bench while WhatsApp is blocked. `supabase start`, then `deno task dev`, then open http://localhost:8787. Real chat agent and Luna against the local database; WhatsApp and Sarvam are faked, so no message or call leaves the machine. With the bench running, `deno task eval` plays live conversations through it, whole errands included, and reports pass/fail, user messages to the read-back, Luna steps, time and tokens (`dev/evals.ts`; costs OpenAI calls; `JEV=gate` sets the mode, `ONLY=word` filters; start the bench with `DEV_PLACES=fake` for the dev businesses). The page switches Jev between off, shadow and gate for the dev user and shows each decision. `deno task jev` runs labelled messages through Jev alone, with no database
 - `supabase/functions/_shared/places.ts`: Google Places Text Search (New), India only; `_shared/chat/find.ts` decides the city (named in the chat, else the saved one; the first one named is saved), keeps callable matches, and tells Luna when to ask which branch or check a match in another city. The bench uses real Places when `GOOGLE_MAPS_API_KEY` is set
 - `supabase/functions/_shared/chat/agent.ts`: the one entry for an inbound message, used by `wa-inbound` and the bench alike: commands at once, else a `turn_debounce_ms` wait and one turn per user. `commands.ts` runs STOP/START/delete; `calls.ts` starts the call after a consent and ends the request if it can't start
 - `supabase/functions/wa-inbound/`: Meta webhook (signature check, dedupe, hand-off to the chat agent)
@@ -103,6 +120,7 @@ From a wa_id in `DESK_ADMIN_WA_IDS`: `status`, `review`, `resolve <id>`, `stop a
 - `supabase/migrations/0009_jobs.sql`, `_shared/reconcile.ts`, `functions/reconcile/`, `functions/health/`: the scheduled jobs above
 - `supabase/migrations/0010_admin.sql`, `_shared/chat/admin.ts`, `_shared/alerts.ts`: admin commands and alerts
 - `supabase/migrations/0011_booking_changes.sql`: advances (hold → screenshot → confirm call, eng plan 2.2), cancel and reschedule of Desk bookings (E4 design 2.7, 2.9). `_shared/chat/payment.ts` reads the screenshot with a model and checks it in code; `find_booking` in `chat/tools.ts`
+- `supabase/migrations/0012_follow_through.sql`, `_shared/chat/followup.ts`: errands record what they wait for; `settle_and_report()` stores a result with everything it owes the user, sent through tracked `deliveries`, retried, and alerted if it can't arrive; `user_memories` (said, or learned from a correction; never a permission, and nothing in the approval or dial path reads it); bookings keep the captured value beside the approved one; `check_dial` names the consent a call rests on and requires the pinned caller setup
 - `_shared/serper.ts`: phone numbers for places Google lists without one, taken only from a result whose name fits, and said in the read-back as found on the web
 
 ## What the chat side reads from the caller
@@ -117,6 +135,7 @@ From a wa_id in `DESK_ADMIN_WA_IDS`: `status`, `review`, `resolve <id>`, `stop a
 | `no_match_reason` | first | `no_slot`, `several_options`, `advance`, `price`, `new_condition`, `unclear` |
 | `advance_amount` | first, booking | rupees |
 | `answer` | question | what the business said, in English. **Not in eng plan 3.4 yet**: the caller needs to produce it |
+| `options` | question | an offer to book, as on a first call. Brought to the user to pick; never accepted on the call |
 | `upi_id`, `payee_name`, `payment_deadline` | first, booking | for a hold within `max_advance_rs` |
 | `payment_status` | payment_confirm | `received`, `not_seen`, `wrong_amount`, `disputed`, `unclear` |
 | `cancel_status`, `cancel_charge_rs`, `refund_stated` | cancel | `cancelled`, `charge_pending`, `not_cancelled`, `unclear`; rupees; their words |
@@ -125,3 +144,7 @@ From a wa_id in `DESK_ADMIN_WA_IDS`: `status`, `review`, `resolve <id>`, `stop a
 | `opt_out_requested` | all | `yes` / `no` |
 
 The `question` input is one string; several questions go as `1) ... 2) ...`.
+
+## What the caller is given
+
+Beside the fields for each call kind, every call gets the errand already resolved (`call_vars.ts`), from what the user approved: `resolved_when`, `request_summary`, `decided`, `flexible`, `may_accept`, `already_happened`, `call_date`, `timezone`. Names follow the Genie brief; the eng plan's older names go too until the agent is built.

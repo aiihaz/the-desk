@@ -1,18 +1,21 @@
 // In-memory ChatStore for the chat-agent tests. The real rules live in SQL (chat_test.sql).
 import type { CallKind } from "../sarvam.ts";
 import type { Outbound } from "../whatsapp.ts";
+import type { Delivery, DueFollowUp } from "./followup.ts";
 import type { OpenPrompt } from "./gate.ts";
 import type { Prompt } from "./readback.ts";
 import type { RouteLog } from "./router.ts";
 import type {
   ActiveRequest,
   CallForReport,
+  CallReport,
   CallSettlement,
   ChatLine,
   ChatStore,
   ConsentStored,
   HeldBooking,
   LiveOption,
+  Memory,
   Refused,
   TurnClaim,
   UpcomingBooking,
@@ -231,15 +234,104 @@ export class FakeChatStore implements ChatStore {
     state: "done",
     option_ids: [],
   };
-  async settleCall(_c: string, s: CallSettlement) {
+  // Like settle_and_report: the parts are stored with the settlement, in order.
+  deliveries: (Delivery & { status: string; final?: boolean })[] = [];
+  reports: CallReport[] = [];
+  async settleCall(_c: string, s: CallSettlement, report?: CallReport) {
     this.settled.push(structuredClone(s));
+    if (!this.settleResult.ok || !report) return this.settleResult;
+    this.reports.push(structuredClone(report));
+    if (report.prompt) {
+      this.prompt = {
+        id: report.prompt.id,
+        kind: "options",
+        optionIds: this.settleResult.option_ids,
+        confirmWord: "yes",
+        waMessageId: null,
+        sentAt: this.promptAt,
+        text: report.prompt.text,
+        message: report.prompt.message,
+      };
+    }
+    const msgs = [
+      ...(report.prompt ? [report.prompt.message] : []),
+      ...report.parts.map((p) => p.message),
+      ...(report.next && this.activated === report.next.request_id ? [report.next.message] : []),
+    ];
+    for (const message of msgs) {
+      this.deliveries.push({
+        id: `d${this.deliveries.length + 1}`,
+        userId: "u1",
+        waId: "919812345678",
+        message,
+        attempts: 0,
+        kind: "report",
+        status: "pending",
+      });
+    }
     return this.settleResult;
+  }
+  owed: { key: string; message: Outbound }[] = [];
+  async oweMessage(_u: string, _r: string | null, key: string, message: Outbound) {
+    this.owed.push({ key, message });
+  }
+  takenAt: (Date | undefined)[] = [];
+  async takeDeliveries(now?: Date) {
+    this.takenAt.push(now);
+    const d = this.deliveries.find((x) => x.status === "pending" && x.attempts === 0);
+    if (!d) return [];
+    d.attempts++;
+    return [d];
+  }
+  async deliverySent(id: string) {
+    this.deliveries.find((d) => d.id === id)!.status = "sent";
+  }
+  async deliveryFailed(id: string, _e: string, final: boolean) {
+    const d = this.deliveries.find((x) => x.id === id)!;
+    if (final) d.status = "failed";
+    d.final = final;
+    return d.status;
+  }
+  due: DueFollowUp[] = [];
+  async dueFollowUps() {
+    return this.due;
+  }
+  queuedFollowUps: { reason: string; message: Outbound }[] = [];
+  async queueFollowUp(_r: string, reason: string, _s: number, message: Outbound) {
+    this.queuedFollowUps.push({ reason, message });
+    return true;
+  }
+  followUps: { waitingFor: string | null; remindAt: string | null }[] = [];
+  async setFollowUp(_r: string, waitingFor: string | null, remindAt: string | null) {
+    this.followUps.push({ waitingFor, remindAt });
+    this.req = { ...this.req!, waitingFor, remindAt: remindAt ? new Date(remindAt) : null };
+    return { ok: true as const };
+  }
+  cancelledAfterCall: string[] = [];
+  async cancelAfterCall(id: string) {
+    this.cancelledAfterCall.push(id);
+    return { ok: true as const };
+  }
+  kept: (Memory & { evidence?: string | null })[] = [];
+  async memories() {
+    return this.kept;
+  }
+  async addMemory(_u: string, m: Omit<Memory, "id"> & { evidence?: string | null }) {
+    if (this.kept.some((k) => k.text.toLowerCase() === m.text.toLowerCase())) return null;
+    const mem = { id: `${this.kept.length + 1}0000000-aaaa`, ...m };
+    this.kept.push(mem);
+    return mem;
+  }
+  async forgetMemory(_u: string, id: string) {
+    this.kept = this.kept.filter((k) => k.id !== id);
   }
   async startRequest(): Promise<never> {
     throw new Error("not used");
   }
-  async cancelRequest(): Promise<never> {
-    throw new Error("not used");
+  cancelResult: { ok: true } | Refused | null = null;
+  async cancelRequest() {
+    if (!this.cancelResult) throw new Error("not used");
+    return this.cancelResult;
   }
   async setBusiness(): Promise<never> {
     throw new Error("not used");

@@ -161,6 +161,26 @@
         <button data-sim="reopen">reopen expired</button>
         <button id="reset">reset chat</button>
       </div>
+      <div class="row">
+        <span class="hint">follow-through</span>
+        <button data-sim="tick">job now</button>
+        <button data-sim="tick" data-minutes="185">job at +3h</button>
+        <button data-sim="tick" data-minutes="1500">job at +25h</button>
+        <button data-sim="break_whatsapp">fail next 2 sends</button>
+      </div>
+    </div>
+  </details>
+  <details class="panel" open>
+    <summary>jev (router &amp; output check)</summary>
+    <div class="tools">
+      <div class="row">
+        <span class="hint">mode</span>
+        <button data-jev="off">off</button>
+        <button data-jev="shadow">shadow</button>
+        <button data-jev="gate">gate</button>
+        <span class="hint" id="jevNow">…</span>
+      </div>
+      <div id="jevLog" class="hint"></div>
     </div>
   </details>
   <details class="panel">
@@ -313,6 +333,15 @@ function summary(e) {
     }
     case "decision:luna_step": return `step ${d.step} · ${d.state ?? "no request"} · ${d.calls.map((c) => c.name).join(", ") || "no call"} · ${d.ms}ms · ${d.usage.input_tokens}→${d.usage.output_tokens} tok`;
     case "decision:replace_guard": return d.reason;
+    case "decision:router": return d.error
+      ? `failed, task mode: ${short(d.error, 80)}`
+      : `${d.jev_mode}: intent=${d.intent} injection=${d.injection} → ${d.mode}${d.why ? ` (${d.why})` : ""} · ${d.latencyMs}ms`;
+    case "decision:output_check": return d.ran
+      ? `${d.jev_mode}: claims=${d.claims} off_task=${d.offtask}${d.failed.length ? ` · failed ${d.failed.join(", ")}` : " · pass"}`
+      : `didn't run: ${short(d.error, 80)}`;
+    case "decision:stay_quiet": return `said nothing: ${short(d.why ?? "", 90)}`;
+    case "decision:deliveries": return `sent ${d.sent} · retrying ${d.retrying} · failed ${d.failed}`;
+    case "decision:follow_through": return `queued ${d.queued} · sent ${d.sent} · retrying ${d.retrying} · failed ${d.failed}`;
     case "decision:luna_error": return `step ${d.step}: ${short(d.error, 90)}`;
     case "decision:luna_tool": return `${d.tool}(${short(d.args, 60)}) → ${short(d.result, 80)}`;
     case "decision:reply_sent": return `“${short(d.text, 90)}”`;
@@ -354,7 +383,16 @@ function table(rows, cols, rowCls) {
   return `<table><tr>${cols.map(([h]) => `<th>${h}</th>`).join("")}</tr>${rows.map((r) =>
     `<tr class="${rowCls ? rowCls(r) : ""}">${cols.map(([, f]) => `<td>${esc(f(r))}</td>`).join("")}</tr>`).join("")}</table>`;
 }
+function renderJev(j) {
+  if (!j) return;
+  $("#jevNow").textContent = `${j.mode} · ${j.model ?? "no model"}${j.key ? "" : " · no key"}`;
+  $("#jevLog").innerHTML = (j.log ?? []).map((l) =>
+    `<div>${hms(l.at)} ${esc(l.intent ?? "–")} inj ${l.injection ?? "–"} → ${esc(l.mode ?? "–")} · ${esc(l.l3_result ?? "–")}${l.l3_failed?.length ? " " + esc(l.l3_failed.join(",")) : ""} · ${l.latency_ms ?? "–"}ms</div>`
+  ).join("");
+}
+
 function renderState(s) {
+  renderJev(s.jev);
   const active = ["collecting","choosing_place","confirming","awaiting_yes","calling_1","options_ready","awaiting_pick","calling_2","verifying","stale_options"];
   const fields = (f) => Object.entries(f ?? {}).map(([k, v]) => `${k}=${typeof v === "string" && /T\d\d:/.test(v) ? v.slice(5, 16).replace("T", " ") : v}`).join(" ");
   $("#state").innerHTML =
@@ -395,7 +433,8 @@ $("#compose").onsubmit = (ev) => {
 };
 
 for (const b of document.querySelectorAll("[data-start]")) b.onclick = () => post("/api/tool", { tool: "start_new_request", args: { task: b.dataset.start } }, false);
-for (const b of document.querySelectorAll("[data-sim]")) b.onclick = () => post("/api/simulate", { action: b.dataset.sim, args: { hours: b.dataset.hours } }, false);
+for (const b of document.querySelectorAll("[data-sim]")) b.onclick = () => post("/api/simulate", { action: b.dataset.sim, args: { hours: b.dataset.hours, minutes: b.dataset.minutes } }, false);
+for (const b of document.querySelectorAll("[data-jev]")) b.onclick = () => post("/api/jev", { mode: b.dataset.jev }, false);
 $("#setSlots").onclick = () => {
   let fields;
   try { fields = JSON.parse($("#slots").value); } catch { return alert("slots must be JSON"); }

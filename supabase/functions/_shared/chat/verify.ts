@@ -9,6 +9,11 @@
 //      of an exact time (call 1), or the picked option's time (call 2).
 // Anything less is "probably booked": the user is asked to confirm with the business, and
 // the call is flagged for review.
+//
+// The caller's date is its reading too. It can carry the wrong year, or a date with no
+// time. A wrong year is corrected to the approved one only when the rest of the booking
+// checks out and the business's own yes is in the transcript; the booking keeps both
+// values and why. Otherwise the wrong date is neither stored nor shown as the booking's.
 import type { CreateResponse, Item } from "../openai.ts";
 import type { ChatStore } from "./store.ts";
 
@@ -21,6 +26,8 @@ export type BookingCheck = {
   // Call 2: the option the user picked.
   option: { label: string; value: Record<string, unknown> } | null;
   bookedTime: string | null;
+  // The call gave a day and no time (YYYY-MM-DD). Never turned into a midnight.
+  bookedDate?: string | null;
   transcript: Transcript | null;
   // match_tolerance_minutes, for an exact time with no tolerance of its own.
   defaultToleranceMin: number;
@@ -40,15 +47,102 @@ export type Verification = {
   // Why it isn't verified, for the admin review; empty when verified.
   problems: string[];
   verdict: TranscriptVerdict | null;
+  // The captured year was wrong and the call confirmed the approved booking: this is the
+  // value to store, with the captured one kept beside it.
+  correction?: Correction;
+  // The captured year was wrong and the call didn't settle it: don't store or show it.
+  badYear?: boolean;
 };
+
+export type Correction = { from: string; to: string; why: string };
 
 export type Verify = (c: BookingCheck, userId: string) => Promise<Verification>;
 
 // A booked time within a minute of the option is the option (spoken times round).
 const SAME_TIME_MS = 60_000;
 
+const TZ = "Asia/Kolkata";
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const FULL = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/;
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// An instant, only from a full date and time. Date.parse alone won't do: it reads
+// "November 8" as the year 2001, and a bare date as midnight UTC. No offset means IST.
+export function instant(v: unknown): string | null {
+  if (typeof v !== "string" || !FULL.test(v.trim())) return null;
+  const t = v.trim().replace(" ", "T");
+  const iso = /(Z|[+-]\d{2}:?\d{2})$/.test(t) ? t : `${t}+05:30`;
+  return Number.isNaN(Date.parse(iso)) ? null : iso;
+}
+
+function istDate(iso: string): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date(iso));
+}
+
+// The instant or date the user approved for this call, as an ISO string.
+export function approvedTime(c: Pick<BookingCheck, "kind" | "option" | "fields">): string | null {
+  const o = c.option?.value.time;
+  if (typeof o === "string") return o;
+  if (c.kind === "booking") return null;
+  const f = c.fields;
+  if (typeof f.exact_time === "string") return f.exact_time;
+  return typeof f.window_start === "string" ? f.window_start : null;
+}
+
+export type BookedWhen = { time: string | null; date: string | null; captured: string | null };
+
+// What the caller reported: a full time, a day with no time, or neither. A day named
+// without a year ("November 8", "8 Nov") takes the approved year if it is the approved day.
+export function readBookedWhen(captured: unknown, approved: string | null): BookedWhen {
+  const raw = typeof captured === "string" && captured.trim() ? captured.trim() : null;
+  if (!raw) return { time: null, date: null, captured: null };
+  const time = instant(raw);
+  if (time) return { time, date: null, captured: raw };
+  if (DATE.test(raw)) return { time: null, date: raw, captured: raw };
+  if (approved) {
+    const want = istDate(approved);
+    const [y, m, d] = want.split("-").map(Number);
+    const words = raw.toLowerCase().replace(/(\d)(st|nd|rd|th)\b/g, "$1");
+    const day = words.match(/\b(\d{1,2})\b/)?.[1];
+    const month = MONTHS.findIndex((n) => words.includes(n));
+    if (Number(day) === d && month + 1 === m) {
+      return {
+        time: null,
+        date: `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
+        captured: raw,
+      };
+    }
+  }
+  return { time: null, date: null, captured: raw };
+}
+
+// The captured value with the approved year, if that is the only thing wrong with it.
+function withApprovedYear(c: BookingCheck): string | null {
+  const approved = approvedTime(c);
+  if (!approved) return null;
+  const year = istDate(approved).slice(0, 4);
+  if (c.bookedDate) {
+    const fixed = `${year}${c.bookedDate.slice(4)}`;
+    return fixed !== c.bookedDate && fixed === istDate(approved) ? fixed : null;
+  }
+  if (!c.bookedTime || Number.isNaN(Date.parse(c.bookedTime))) return null;
+  const day = istDate(c.bookedTime);
+  if (day.slice(0, 4) === year) return null;
+  const clock = new Intl.DateTimeFormat("en-GB", {
+    timeZone: TZ,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  })
+    .format(new Date(c.bookedTime));
+  const fixed = `${year}${day.slice(4)}T${clock}:00+05:30`;
+  return timeCheck({ ...c, bookedTime: fixed }) === null ? fixed : null;
+}
+
 export function timeCheck(c: BookingCheck): string | null {
-  if (!c.bookedTime) return "no booked time reported";
+  if (!c.bookedTime) {
+    return c.bookedDate ? `date only, no time confirmed: ${c.bookedDate}` : "no booked time reported";
+  }
   const t = Date.parse(c.bookedTime);
   if (Number.isNaN(t)) return `booked time unreadable: ${c.bookedTime}`;
 
@@ -173,18 +267,20 @@ export async function verifyBooking(
 ): Promise<Verification> {
   const problems: string[] = [];
   const time = timeCheck(c);
+  const fixed = withApprovedYear(c);
   if (time) problems.push(time);
+  const wrongYear = fixed ? { badYear: true } : {};
 
   if (!c.transcript?.length) {
     problems.push("no transcript");
-    return { verified: false, problems, verdict: null };
+    return { verified: false, problems, verdict: null, ...wrongYear };
   }
   let verdict: TranscriptVerdict | null = null;
   try {
     verdict = await checkTranscript(create, model, effort, c);
   } catch (e) {
     problems.push(`transcript check failed: ${String((e as Error)?.message ?? e)}`);
-    return { verified: false, problems, verdict };
+    return { verified: false, problems, verdict, ...wrongYear };
   }
   const business = c.transcript.filter((l) => !AGENT_ROLES.has(l.role)).map((l) => squash(l.en_text));
   const quoted = verdict.evidence.trim().length > 0 &&
@@ -192,7 +288,21 @@ export async function verifyBooking(
   if (verdict.decision !== "confirmed") problems.push(`transcript: ${verdict.decision} (${verdict.why})`);
   else if (!quoted) problems.push("transcript: confirmation not found in the business's words");
   for (const i of verdict.issues) problems.push(`condition: ${i}`);
-  return { verified: problems.length === 0, problems, verdict };
+
+  // The one problem left is the captured year, and the business agreed the approved booking.
+  if (fixed && problems.length === 1 && problems[0] === time && !c.bookedDate) {
+    return {
+      verified: true,
+      problems: [],
+      verdict,
+      correction: {
+        from: c.bookedTime!,
+        to: fixed,
+        why: "the caller reported the wrong year; the business confirmed the approved booking on the call",
+      },
+    };
+  }
+  return { verified: problems.length === 0, problems, verdict, ...wrongYear };
 }
 
 // The model and effort come from limits, so they change without a deploy.

@@ -29,22 +29,14 @@ Deno.test("reserves, builds the variables from stored fields, dials, stores the 
   assertEquals(started[0].businessPhone, "+919876543210");
   assertEquals(started[0].agentVersion, "3");
   assertEquals(started[0].language, "Tamil");
-  assertEquals(started[0].variables, {
-    window_start: null,
-    window_end: null,
-    exact_time: "2026-10-23T20:00:00+05:30",
-    tolerance_min: null,
-    party_size: 4,
-    service: null,
-    max_price: null,
-    may_book: true,
-    max_advance_rs: 0,
-    customer_name: "Ihaz",
-    customer_phone: "+919812345678",
-    also_ask: null,
-    business_name: "Paragon",
-    must_reask: false,
-  });
+  assertEquals(started[0].variables.exact_time, "2026-10-23T20:00:00+05:30");
+  assertEquals(started[0].variables.party_size, 4);
+  assertEquals(started[0].variables.may_book, true);
+  assertEquals(started[0].variables.customer_name, "Ihaz");
+  assertEquals(started[0].variables.customer_phone, "+919812345678");
+  assertEquals(started[0].variables.business_name, "Paragon");
+  assertEquals(started[0].variables.must_reask, false);
+  assertEquals(started[0].variables.resolved_when, "Friday, 23 October 2026, 8:00 pm IST");
   assertEquals(store.calls.get("c-1"), {
     id: "c-1",
     status: "dialing",

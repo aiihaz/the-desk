@@ -60,7 +60,11 @@ export type Tool =
   | "start_new_request"
   | "pause_request"
   | "resume_request"
-  | "find_booking";
+  | "find_booking"
+  | "stay_quiet"
+  | "set_follow_up"
+  | "remember"
+  | "forget";
 
 // Reschedule and cancel a Desk booking (E4 design 2.7, 2.9). Off: Luna says once that it
 // can't change bookings, instead of collecting details for a request that can't finish.
@@ -111,5 +115,7 @@ export function toolsFor(state: State | null, paused = false): Tool[] {
         return ["start_new_request", "set_slots", ...place, ...findBooking];
     }
   })();
-  return ["reply", ...t];
+  // Any time: saying nothing when nothing is needed, and what they ask to be remembered.
+  // An errand can record what it's waiting for in any state it can be in.
+  return ["reply", ...t, "stay_quiet", ...(state ? ["set_follow_up" as Tool] : []), "remember", "forget"];
 }

@@ -39,7 +39,8 @@ insert into caller_numbers (id, e164, provider, a2p_declared_at) values
   ('c0000000-0000-0000-0000-000000000001', '+918000000001', 'sarvam', now()),
   ('c0000000-0000-0000-0000-000000000002', '+918000000002', 'sarvam', now());
 select set_limit('active_agent_version', '"7"', 'test');
-insert into gate_passes (agent_version, suite, passed) values ('7', 'test', true);
+insert into gate_passes (agent_version, suite, passed, instructions_sha256) values ('7', 'test', true, 'pin');
+select set_limit('agent_instructions_sha256', '"pin"', 'test');
 insert into credit_ledger (delta_rs, reason) values (1000, 'test');
 
 -- Hold -------------------------------------------------------------------------------

@@ -133,6 +133,19 @@ export async function cancelActive(deps: ToolDeps, user: User, ref?: string | nu
   if (!r) return ref ? NO_ERRAND : { ok: false, reason: "no_active_request" };
   const res = await deps.store.cancelRequest(r.id);
   deps.trace?.("cancel_request", res);
+  // A call under way can't be hung up: the errand ends with its result, and the report
+  // says what happened to it.
+  if (!res.ok && res.reason === "in_flight") {
+    const later = await deps.store.cancelAfterCall(r.id);
+    deps.trace?.("cancel_after_call", later);
+    if (later.ok) {
+      return {
+        ok: true,
+        call_in_progress: "the call can't be stopped. Say so plainly: if nothing gets booked the errand " +
+          "ends when it finishes; if they book it, you'll say so and they can have it cancelled",
+      };
+    }
+  }
   if (!res.ok) return res;
   // The next waiting errand, if any, becomes current.
   const next = await deps.store.activateQueued(user.id);
@@ -249,6 +262,100 @@ export async function resumeActive(deps: ToolDeps, user: User): Promise<ToolResu
   deps.trace?.("resume_request", res);
   if (!res.ok) return res;
   return settle(deps, user, r.id);
+}
+
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
+// What an errand is waiting for ("Asha to confirm the time"), and when to bring it up
+// again. It survives a restart, shows on the TASK card, and a reminder goes out from the
+// recovery pass. Luna promises a reminder only after this says ok.
+export async function setFollowUp(
+  deps: ToolDeps,
+  user: User,
+  a: { waitingFor: string | null; remindAt: string | null; errand: string | null },
+): Promise<ToolResult> {
+  const r = await target(deps, user, a.errand);
+  if (!r) return a.errand ? NO_ERRAND : { ok: false, reason: "no_active_request" };
+  const waiting = cleanField(a.waitingFor, 160);
+  if (!waiting && !a.remindAt) return { ok: false, reason: "say what it's waiting for, or when to remind" };
+  const now = deps.now?.() ?? new Date();
+  if (a.remindAt && (!ISO_TIME.test(a.remindAt) || Date.parse(a.remindAt) <= now.getTime())) {
+    return { ok: false, reason: "remind_at: a future time, ISO 8601 with +05:30" };
+  }
+  const res = await deps.store.setFollowUp(r.id, waiting, a.remindAt);
+  deps.trace?.("set_follow_up", { errand: errandRef(r.id), waiting, remindAt: a.remindAt, res });
+  return res.ok ? { ok: true, errand: errandRef(r.id), reminder: a.remindAt ?? "none" } : res;
+}
+
+// Standing permission isn't something the Desk can keep: every call needs its own yes.
+const PERMISSION =
+  /without (asking|checking|confirm|my ok)|(don'?t|never|no need to) (ask|check|confirm)|auto.?(approve|book|pay|confirm)|always (go ahead|approve|say yes)|pre.?approv|you can (just )?(book|pay|agree)/i;
+
+export type RememberArgs = {
+  text: string;
+  kind: "fact" | "preference";
+  scope: string | null;
+  // Picked up from a correction, with the user's own words; said back to them.
+  learned: boolean;
+  evidence: string | null;
+};
+
+const SCOPE = /^(all|booking|question|place:.{1,60})$/;
+
+export async function remember(deps: ToolDeps, user: User, a: RememberArgs): Promise<ToolResult> {
+  const { store } = deps;
+  const text = cleanField(a.text, 200);
+  if (!text) return { ok: false, reason: "nothing to remember" };
+  if (PERMISSION.test(text)) {
+    return {
+      ok: false,
+      reason:
+        "that's a permission, which can't be kept: every call needs their yes on its plan. Say so kindly",
+    };
+  }
+  const scope = a.scope?.trim() || "all";
+  if (!SCOPE.test(scope)) return { ok: false, reason: "scope: all, booking, question, or place:<name>" };
+  let evidence: string | null = null;
+  if (a.learned) {
+    // A preference is learned only from what they actually wrote.
+    evidence = a.evidence?.trim() || null;
+    const since = new Date((deps.now?.() ?? new Date()).getTime() - 24 * 3_600_000);
+    const said = (await store.history(user.id, since, 24)).filter((l) => l.from === "user");
+    const want = evidence?.toLowerCase().replace(/\s+/g, " ");
+    if (!want || !said.some((l) => l.text.toLowerCase().replace(/\s+/g, " ").includes(want))) {
+      return { ok: false, reason: "learned needs evidence: their exact words from the chat" };
+    }
+  }
+  const have = await store.memories(user.id);
+  const cap = (await store.limitInt("max_memories_per_user", user.id)) ?? 30;
+  if (have.length >= cap) return { ok: false, reason: "memory is full; ask which one to forget" };
+  const kept = await store.addMemory(user.id, {
+    kind: a.kind === "preference" ? "preference" : "fact",
+    scope,
+    text,
+    source: a.learned ? "learned" : "said",
+    evidence,
+  });
+  deps.trace?.("remember", { kept, learned: a.learned, evidence });
+  if (!kept) return { ok: true, already_known: true };
+  return {
+    ok: true,
+    memory: `m-${kept.id.slice(0, 8)}`,
+    ...(a.learned ? { say: "tell them in a few words what you'll remember, so they can correct it" } : {}),
+  };
+}
+
+export async function forget(deps: ToolDeps, user: User, what: string): Promise<ToolResult> {
+  const have = await deps.store.memories(user.id);
+  const want = what.trim().toLowerCase().replace(/^m-/, "");
+  const hits = have.filter((m) => m.id.startsWith(want) || m.text.toLowerCase().includes(want));
+  if (!hits.length) return { ok: false, reason: "nothing like that is kept", kept: have.map((m) => m.text) };
+  if (hits.length > 1) {
+    return { ok: false, reason: "more than one fits; ask which", kept: hits.map((m) => m.text) };
+  }
+  await deps.store.forgetMemory(user.id, hits[0].id);
+  deps.trace?.("forget", hits[0]);
+  return { ok: true, forgot: hits[0].text };
 }
 
 // A saved place by label or alias ("paragon", "the usual biryani place").

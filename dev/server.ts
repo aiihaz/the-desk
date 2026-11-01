@@ -8,7 +8,14 @@ import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { deliver } from "../supabase/functions/_shared/deliver.ts";
 import { DbStore, type User } from "../supabase/functions/_shared/store.ts";
 import type { Inbound, Outbound } from "../supabase/functions/_shared/whatsapp.ts";
-import { errandRef, profileCard, recentCard, taskCard } from "../supabase/functions/_shared/chat/cards.ts";
+import {
+  errandRef,
+  memoryCard,
+  profileCard,
+  recentCard,
+  taskCard,
+} from "../supabase/functions/_shared/chat/cards.ts";
+import { runFollowThrough } from "../supabase/functions/_shared/chat/followup.ts";
 import { reportCall } from "../supabase/functions/_shared/chat/report.ts";
 import { claimChecker, verifier } from "../supabase/functions/_shared/chat/verify.ts";
 import type { CallKind, CallResult } from "../supabase/functions/_shared/sarvam.ts";
@@ -143,7 +150,13 @@ function traced(store: ChatStore): ChatStore {
 const store = traced(new DbChatStore(db));
 
 // Fake WhatsApp: messages go to the page, and are logged in `messages` as usual.
+let failSends = 0;
+
 async function fakeSend(_to: string, msg: Outbound): Promise<string> {
+  if (failSends > 0) {
+    failSends--;
+    throw new Error("simulated WhatsApp failure");
+  }
   const id = `dev.out.${crypto.randomUUID()}`;
   emit("whatsapp_out", { id, msg });
   return id;
@@ -161,7 +174,8 @@ const toolDeps: ToolDeps = { store, send, trace: (event, data) => emit(`decision
 
 // find_business uses real Google Places when GOOGLE_MAPS_API_KEY is set (results are
 // saved as businesses; calls stay fake). Without it, it searches the three dev businesses.
-const mapsKey = Deno.env.get("GOOGLE_MAPS_API_KEY");
+// DEV_PLACES=fake keeps to the dev businesses, for evals that must not depend on Google.
+const mapsKey = Deno.env.get("DEV_PLACES") === "fake" ? undefined : Deno.env.get("GOOGLE_MAPS_API_KEY");
 const serperKey = Deno.env.get("SERPER_API_KEY");
 const searchPlaces: SearchPlaces = mapsKey
   ? (serperKey ? withWebPhones(placesClient(mapsKey), serperClient(serperKey)) : placesClient(mapsKey))
@@ -295,6 +309,7 @@ async function cards(user: User) {
       bookOnFirstCall: await store.limitBool("book_on_first_call", user.id),
       placeLabels: (places ?? []).map((p) => p.label),
     }),
+    memory: memoryCard(await store.memories(user.id)),
     task: taskCard(
       r
         ? {
@@ -309,6 +324,9 @@ async function cards(user: User) {
             detail: o.advance_required ? "advance" : null,
           })),
           paused: !!r.pausedAt,
+          waitingFor: r.waitingFor,
+          remindAt: r.remindAt,
+          cancelRequested: !!r.cancelRequestedAt,
           planSentAt: r.id === request?.id ? prompt?.sentAt ?? null : null,
         }
         : null,
@@ -337,7 +355,7 @@ async function snapshot(user: User) {
     .eq("user_id", user.id).order("created_at", { ascending: false }).limit(6);
   const ids = (requests ?? []).map((r) => r.id);
   const none = ["00000000-0000-0000-0000-000000000000"];
-  const [prompts, consents, options, calls, messages] = await Promise.all([
+  const [prompts, consents, options, calls, messages, memories, deliveries, bookings] = await Promise.all([
     db.from("consent_prompts")
       .select(
         "id, request_id, request_version, kind, confirm_word, option_ids, wa_message_id, closed_at, close_reason, text_shown",
@@ -353,6 +371,13 @@ async function snapshot(user: User) {
       .in("request_id", ids.length ? ids : none).order("created_at", { ascending: false }).limit(10),
     db.from("messages").select("direction, wa_message_id, at").eq("user_id", user.id)
       .order("at", { ascending: false }).limit(6),
+    db.from("user_memories").select("id, kind, scope, text, source, evidence, forgotten_at")
+      .eq("user_id", user.id).order("created_at", { ascending: false }).limit(10),
+    db.from("deliveries").select("id, kind, status, attempts, last_error, dedupe_key, message, created_at")
+      .eq("user_id", user.id).order("created_at", { ascending: false }).limit(10),
+    db.from("bookings")
+      .select("id, status, time, booked_on, captured_time, approved_time, time_correction, reference")
+      .in("request_id", ids.length ? ids : none).order("created_at", { ascending: false }).limit(5),
   ]);
   return {
     requests,
@@ -361,6 +386,10 @@ async function snapshot(user: User) {
     options: options.data,
     calls: calls.data,
     messages: messages.data,
+    memories: memories.data,
+    deliveries: deliveries.data,
+    bookings: bookings.data,
+    jev: await jevSettings(user),
   };
 }
 
@@ -390,6 +419,10 @@ async function onMessage(
       ...body,
       // Where Meta puts the id of a quoted message, so history shows what was quoted.
       ...(body.quotedId ? { context: { id: body.quotedId } } : {}),
+      // A reaction arrives in Meta's shape, with no text of its own.
+      ...(type === "reaction"
+        ? { text: undefined, reaction: { emoji: body.text, message_id: body.quotedId } }
+        : {}),
     },
   };
   emit("whatsapp_in", msg);
@@ -430,6 +463,33 @@ async function onTool(body: { tool: string; args?: Record<string, unknown> }) {
       result = { ok: false, reason: "unknown tool" };
   }
   emit("tool_result", { tool: body.tool, result });
+}
+
+// What the router and output check run with, and the last few decisions they logged.
+async function jevSettings(user: User) {
+  const { data: log } = await db.from("router_log")
+    .select("at, jev_mode, model, intent, injection, mode, l3_result, l3_failed, latency_ms")
+    .eq("user_id", user.id).order("at", { ascending: false }).limit(8);
+  return {
+    mode: await store.limitText("jev_mode", user.id),
+    model: await store.limitText("jev_model", user.id),
+    key: !!typesafeKey,
+    log,
+  };
+}
+
+// Off, shadow (logged only) or gate (applies) for the dev user only, like an admin's
+// `set limit jev_mode gate for <wa_id>`.
+async function onJevMode(body: { mode?: string }) {
+  const user = await devUser();
+  if (!["off", "shadow", "gate"].includes(body.mode ?? "")) throw new Error("mode: off, shadow or gate");
+  await rpc("set_limit", {
+    p_key: "jev_mode",
+    p_value: body.mode,
+    p_changed_by: "bench",
+    p_user_id: user.id,
+  });
+  emit("decision:jev_mode", { mode: body.mode });
 }
 
 async function onSimulate(body: { action: string; args?: Record<string, unknown> }) {
@@ -524,6 +584,20 @@ async function onSimulate(body: { action: string; args?: Record<string, unknown>
         result,
       );
     }
+    // The 5-minute job, as if args.minutes (default 0) had passed: reminders, nudges,
+    // notices, and anything still owed.
+    case "tick": {
+      const at = new Date(now.getTime() + Number(a.minutes ?? 0) * 60_000);
+      return emit(
+        "decision:follow_through",
+        await runFollowThrough({ ...toolDeps, now: () => at }),
+      );
+    }
+    // The next sends fail, so the bench can show a report being retried, not lost.
+    case "break_whatsapp": {
+      failSends = Number(a.times ?? 2);
+      return emit("decision:break_whatsapp", { failing_next_sends: failSends });
+    }
     case "expire": {
       const hours = Number(a.hours ?? 13);
       const at = new Date(now.getTime() + hours * 3_600_000);
@@ -557,9 +631,12 @@ async function rpc(fn: string, args: Record<string, unknown>) {
 
 async function reset() {
   const user = await devUser();
+  failSends = 0;
   await db.from("requests").delete().eq("user_id", user.id);
   await db.from("messages").delete().eq("user_id", user.id);
   await db.from("user_turns").delete().eq("user_id", user.id);
+  await db.from("deliveries").delete().eq("user_id", user.id);
+  await db.from("user_memories").delete().eq("user_id", user.id);
   // A new user: no saved city, not stopped, so the first search shows where the place is.
   await db.from("users").update({ city: null, stopped_at: null, delete_requested_at: null }).eq(
     "id",
@@ -640,6 +717,7 @@ Deno.serve({ port: Number(Deno.env.get("DEV_PORT") ?? 8787) }, async (req) => {
       if (url.pathname === "/api/message") await onMessage(body);
       else if (url.pathname === "/api/tool") await onTool(body);
       else if (url.pathname === "/api/simulate") await onSimulate(body);
+      else if (url.pathname === "/api/jev") await onJevMode(body);
       else if (url.pathname === "/api/reset") await reset();
       else return new Response("not found", { status: 404 });
       emit("state", await snapshot(await devUser()));

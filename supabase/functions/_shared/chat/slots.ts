@@ -26,6 +26,10 @@ export type Fields = {
   also_ask?: string;
   // What the user called the place, for find_business.
   place_query?: string;
+  // Question task about something of their own (an order, a booking made elsewhere):
+  // the business needs to know who is asking. Both are said in the plan.
+  share_name?: boolean;
+  share_phone?: boolean;
 };
 
 // Keys Luna may set for each task. max_advance_rs and may_book are code-only; questions
@@ -43,7 +47,7 @@ const ALLOWED: Record<Task, (keyof Fields)[]> = {
     "also_ask",
     "place_query",
   ],
-  question: ["place_query"],
+  question: ["place_query", "share_name", "share_phone", "customer_name"],
   reschedule: ["window_start", "window_end", "exact_time", "tolerance_min"],
   cancel: [],
 };
@@ -104,6 +108,16 @@ export function checkSlots(
     }
   }
   if (errors.length) return { ok: false, errors };
+
+  // A new exact time replaces a window, and a new window an exact time: "make it 9pm"
+  // moves the booking, it doesn't have to fit inside the old "around 8".
+  if (typeof out.exact_time === "string" && !("window_start" in out) && !("window_end" in out)) {
+    if (current.window_start !== undefined) out.window_start = null;
+    if (current.window_end !== undefined) out.window_end = null;
+    if (current.tolerance_min !== undefined && !("tolerance_min" in out)) out.tolerance_min = null;
+  } else if (typeof out.window_start === "string" && typeof out.window_end === "string") {
+    if (current.exact_time !== undefined && !("exact_time" in out)) out.exact_time = null;
+  }
 
   const merged = { ...current, ...out } as Record<string, unknown>;
   for (const [k, v] of Object.entries(out)) if (v === null) delete merged[k];
@@ -171,6 +185,8 @@ function checkValue(key: keyof Fields, v: unknown, now: Date): string | null {
     case "max_advance_rs":
       return int(v, 0, 1_000_000);
     case "may_book":
+    case "share_name":
+    case "share_phone":
       return typeof v === "boolean" ? null : "true or false";
     case "service":
       return text(v, 100);
@@ -222,6 +238,7 @@ export function missing(task: Task, f: Fields, has: Has): string[] {
       break;
     case "question":
       if (!currentQuestions(f).length) out.push("what to ask");
+      if (f.share_name && !f.customer_name && !has.profileName) out.push("the name to give them");
       if (!has.business) out.push("which business");
       break;
     case "reschedule":

@@ -35,7 +35,7 @@ const base: CallInputs = {
 
 Deno.test("cancel variables: the booking to identify, and no loss accepted unless CANCEL was said", () => {
   const v = callVariables("cancel", base, false);
-  assertEquals(v.existing_booking, "Sat, 24 Oct, 8:15 pm, table for 4, name Ihaz, ref T12");
+  assertEquals(v.existing_booking, "Sat, 24 Oct, 2026, 8:15 pm, table for 4, name Ihaz, ref T12");
   assertEquals(v.approved_loss_rs, 0);
   assertEquals(v.prev_contact_name, "Ravi");
   assertEquals(callVariables("cancel", { ...base, approvedLossRs: 500 }, false).approved_loss_rs, 500);

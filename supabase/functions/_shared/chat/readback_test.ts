@@ -94,14 +94,15 @@ Deno.test("an extra question for the call is in the plan, so the approval covers
   assertEquals(p.text.includes(`I'll also ask: "Do you have parking?".`), true);
 });
 
-Deno.test("with no advance allowed, the plan says it won't agree to one (P5)", () => {
+Deno.test("with no advance approved, the plan doesn't mention advances", () => {
   const p = bookingReadback({
     place: paragon,
     f: { ...tonight, may_book: true, max_advance_rs: 0 },
     customerPhone: null,
     now,
   });
-  assertEquals(p.text.includes("in your name (Ihaz). If they want an advance, I won't agree to it."), true);
+  assertEquals(p.text.includes("in your name (Ihaz). If that isn't free"), true);
+  assertEquals(/advance/i.test(p.text), false);
   assertEquals(p.text.includes("Rs"), false);
 });
 
@@ -114,7 +115,7 @@ Deno.test("question plan: one question quoted, several numbered; nothing shared"
   assertEquals(
     one.text,
     'I\'ll call Zudio, Mavoor Rd, Kozhikode and ask: "Do you have the black jeans in size 32?"\n\n' +
-      "I won't book anything or share your name or number.\n\nShall I call them?",
+      "I won't book anything or share your name or number. If they offer to book, I'll check with you first.\n\nShall I call them?",
   );
   noButtonsNoYes(one);
   const two = questionReadback({
@@ -181,7 +182,7 @@ Deno.test("options after a call: numbered text, picked in words", () => {
   assertEquals(
     list.text,
     "Paragon offered:\n1. 9:30 pm\n2. 9:45 pm (they want an advance)\n\nTell me which one and I'll call " +
-      "back to book it in your name (Ihaz). If one needs an advance, I won't agree to it without checking with you.",
+      "back to book it in your name (Ihaz).",
   );
   assertEquals(list.kind, "options");
   assertEquals(list.optionIds, ["o1", "o2"]);

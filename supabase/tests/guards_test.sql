@@ -65,7 +65,8 @@ insert into caller_numbers (id, e164, provider, a2p_declared_at, created_at) val
   ('c0000000-0000-0000-0000-000000000002', '+918000000002', 'sarvam', null,         '2026-10-02');
 
 insert into credit_ledger (delta_rs, reason) values (500, 'top-up');
-insert into gate_passes (agent_version, suite, passed) values ('v1', 'sarvam-tests', true);
+insert into gate_passes (agent_version, suite, passed, instructions_sha256) values ('v1', 'sarvam-tests', true, 'pin');
+select set_limit('agent_instructions_sha256', '"pin"', 'test');
 select set_limit('active_agent_version', '"v1"', 'test');
 
 -- Happy path ---------------------------------------------------------------
@@ -96,7 +97,7 @@ select is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'booki
           'no_option', 'booking call without an option refused');
 
 insert into t values ('o_fresh', pg_temp.new_option((select id from t where name = 'r1'), pg_temp.at('18:50')));
-select is(check_dial((select id from t where name = 'r1'), 'booking', (select id from t where name = 'o_fresh'), false, pg_temp.at('19:00')),
+select is(check_dial((select id from t where name = 'r1'), 'booking', (select id from t where name = 'o_fresh'), false, pg_temp.at('19:00')) - 'consent_id',
           jsonb_build_object('ok', true, 'caller_number_id', 'c0000000-0000-0000-0000-000000000001',
                              'agent_version', 'v1', 'must_reask', false, 'flags', '[]'::jsonb),
           'picked option with consent #2 → booking call allowed, no re-ask');

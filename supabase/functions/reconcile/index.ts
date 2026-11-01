@@ -1,10 +1,12 @@
-// pg_cron, every 15 minutes (0009_jobs.sql): calls with no result are looked up in
-// Sarvam Analytics (_shared/reconcile.ts), due confirm-call redials are placed, then new
-// alerts go to the admins.
+// pg_cron, every 5 minutes (0012): calls with no result are looked up in Sarvam Analytics
+// (_shared/reconcile.ts), due confirm-call redials are placed, what the Desk owes users
+// goes out (reminders, nudges, notices, and any report whose send failed), then new
+// alerts go to the admins. Each run is recorded, so health can tell if this stops.
 // verify_jwt is on, so only callers holding the service role key get here.
 import { DbAdminStore } from "../_shared/chat/admin.ts";
 import { pushAlerts } from "../_shared/alerts.ts";
 import { DbCallStore } from "../_shared/call_store.ts";
+import { runFollowThrough } from "../_shared/chat/followup.ts";
 import { reportCall, type ReportDeps } from "../_shared/chat/report.ts";
 import { DbChatStore } from "../_shared/chat/store.ts";
 import { claimChecker, verifier } from "../_shared/chat/verify.ts";
@@ -86,6 +88,10 @@ Deno.serve(async (req) => {
       });
     }
   }
+  const followThrough = await runFollowThrough(report);
   const alerts = await pushAlerts({ store: admin, admins: () => admin.users(adminWaIds), send });
-  return Response.json({ ...summary, redials, alerts });
+  const detail = { ...summary, redials: redials.length, followThrough };
+  const ran = await db.rpc("job_ran", { p_name: "reconcile", p_detail: detail });
+  if (ran.error) console.error("job_ran failed", ran.error);
+  return Response.json({ ...summary, redials, followThrough, alerts });
 });

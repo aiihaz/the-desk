@@ -78,7 +78,13 @@ Deno.test("booked and verified: said as the business confirmed it on the call, a
   );
   assertEquals(store.settled[0], {
     result: "done",
-    booking: { time: "2026-10-23T20:00:00+05:30", reference: "T12", verified: true, problems: [] },
+    booking: {
+      time: "2026-10-23T20:00:00+05:30",
+      reference: "T12",
+      verified: true,
+      problems: [],
+      captured: "2026-10-23T20:00:00+05:30",
+    },
     optOut: false,
   });
   assertEquals(checks[0].kind, "first");
@@ -107,6 +113,7 @@ Deno.test("booked but not verified: probably booked, check with them, and flagge
     reference: null,
     verified: false,
     problems: ["transcript: unclear (no read-back)"],
+    captured: "2026-10-23T20:00:00+05:30",
   });
   assertEquals(
     body(sent[0]),
@@ -240,11 +247,11 @@ Deno.test("an opt-out is recorded and the user told; a redelivered result says n
 Deno.test("when an errand ends, the one waiting behind it is brought up", async () => {
   const { store, sent, deps } = setup("question");
   store.activated = "r2";
+  store.waiting = [{ ...store.req!, id: "r2", state: "queued" }];
   await reportCall(deps, "c1", result("completed", { answer: "Yes." }));
-  assertEquals(
-    body(sent[0]).endsWith("Next I have your booking for Paragon. Shall I carry on with it?"),
-    true,
-  );
+  assertEquals(sent.length, 2);
+  assertEquals(body(sent[0]), 'Paragon said: "Yes."');
+  assertEquals(body(sent[1]), "Next I have your booking for Paragon. Shall I carry on with it?");
 });
 
 Deno.test("readOutcome: options in the past or without a time or label are dropped", () => {

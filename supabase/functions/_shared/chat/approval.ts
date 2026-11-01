@@ -35,7 +35,7 @@ export const CHECK =
 
 You get the PLAN exactly as the user saw it, and every message since, in order. Messages are from "user" or "desk". Read them as a person would, in any language or mix (Hinglish, Manglish, Tamil, emoji). "[reacted 👍]" is an emoji reaction; "replying to" shows which message a reply or reaction points at.
 
-approve: their messages since the plan, taken together, say to go ahead with this plan as it stands. Short and casual counts ("ok", "haan kar do", "👍", "sounds good, go").
+approve: their messages since the plan, taken together, say to go ahead with this plan as it stands. Short and casual counts ("ok", "ok thanks", "haan kar do", "👍", "[reacted 👍]" on the plan, "sounds good, go"), even if the desk said something in between, as long as nothing else was asked that their answer could be for.
 not_approved: they asked a question, added or changed anything (time, people, place, a condition), said wait, later, stop or no, agreed to something else, or the desk asked them something else after the plan and their reply answers that instead.
 unclear: you can't tell.
 
@@ -131,7 +131,10 @@ export async function approvePlan(
     choice = `${option}. ${o.label}`;
   }
 
-  const since = await linesSince(store, user.id, prompt);
+  // A reaction counts only on this plan. One on anything else says nothing about it.
+  const since = (await linesSince(store, user.id, prompt)).filter((l) =>
+    !(l.from === "user" && l.text.startsWith("[reacted") && l.quoted !== prompt.text)
+  );
   if (!since.some((l) => l.from === "user")) {
     return { ok: false, reason: "they haven't answered the plan yet" };
   }

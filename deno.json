@@ -1,16 +1,18 @@
 {
   "tasks": {
     "test": "deno test --allow-read=fixtures,supabase supabase/functions",
-    "check": "deno fmt --check && deno lint && deno check supabase/functions/*/index.ts dev/server.ts dev/evals.ts",
+    "check": "deno fmt --check && deno lint && deno check supabase/functions/*/index.ts dev/server.ts dev/evals.ts dev/jev_eval.ts",
     "dev": "deno run --allow-net --allow-env --allow-read --allow-run=supabase dev/server.ts",
-    "eval": "deno run --allow-net --allow-env dev/evals.ts"
+    "eval": "deno run --allow-net --allow-env dev/evals.ts",
+    "jev": "deno run --allow-net --allow-env --allow-read dev/jev_eval.ts"
   },
   "fmt": {
     "lineWidth": 110,
     "include": [
       "supabase/functions",
       "dev/server.ts",
-      "dev/evals.ts"
+      "dev/evals.ts",
+      "dev/jev_eval.ts"
     ]
   },
   "lint": {

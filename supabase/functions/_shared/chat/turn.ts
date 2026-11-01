@@ -76,9 +76,22 @@ export async function handleTurn(
       return sendTemplate(deps, user, "stopped_reminder");
     case "screenshot":
       return deps.onPayment(user, route, msg);
-    case "luna":
+    case "luna": {
+      // A reaction asks for nothing unless it's on the open plan. Anything else (a 👍 on
+      // a report) gets no reply, and no model reads it.
+      if (msg.type === "reaction" && batch.length <= 1 && !(await onOpenPlan(store, user, msg))) {
+        deps.trace?.("reaction_ignored", { quoted: msg.quotedId });
+        return;
+      }
       return deps.luna(user, route.text, msg);
+    }
   }
+}
+
+async function onOpenPlan(store: ChatStore, user: User, msg: Inbound): Promise<boolean> {
+  const { prompt } = await store.active(user.id);
+  if (!prompt || !msg.quotedId) return false;
+  return (await store.promptForMessage(user.id, msg.quotedId)) === prompt.id;
 }
 
 export async function sendTemplate(deps: PromptDeps, user: User, key: string): Promise<void> {
@@ -132,6 +145,9 @@ export async function proposePlan(
     mayBook,
   });
   if (need.length) return { ok: false, reason: "not ready", missing: need };
+  if (r.task === "question" && r.fields.share_phone && !info.phone) {
+    return { ok: false, reason: "no number on file to share" };
+  }
   if (r.state !== "confirming" && r.state !== "awaiting_yes") {
     if (r.state === "collecting" || r.state === "choosing_place") {
       await store.advance(r.id, "confirming");
@@ -144,6 +160,9 @@ export async function proposePlan(
   if (r.task === "booking") {
     code.max_advance_rs = await store.limitInt("max_advance_rs", user.id) ?? 0;
     if (mayBook && !r.fields.customer_name && info.name) code.customer_name = info.name;
+  }
+  if (r.task === "question" && r.fields.share_name && !r.fields.customer_name && info.name) {
+    code.customer_name = info.name;
   }
   if (r.fields.exact_time && r.fields.tolerance_min === undefined) {
     code.tolerance_min = await store.limitInt("match_tolerance_minutes", user.id) ?? 0;
@@ -166,7 +185,12 @@ export async function proposePlan(
       });
       break;
     case "question":
-      p = questionReadback({ place: await store.place(r.businessId!), f: r.fields, note });
+      p = questionReadback({
+        place: await store.place(r.businessId!),
+        f: r.fields,
+        customerPhone: info.phone,
+        note,
+      });
       break;
     case "reschedule":
       p = rescheduleReadback({ booking: await store.booking(r.bookingId!), f: r.fields, now });

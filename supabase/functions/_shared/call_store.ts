@@ -12,6 +12,8 @@ export type Reservation =
     call_id: string;
     caller_number_id: string;
     agent_version: string;
+    // The consent this call rests on (check_dial).
+    consent_id: string;
     must_reask: boolean;
     flags: string[];
   };
@@ -78,7 +80,8 @@ export class DbCallStore implements CallStore, ReconcileStore {
   // The same inputs for a request with no call yet (the dev bench shows what a call would get).
   async requestInputs(requestId: string, optionId: string | null): Promise<CallInputs> {
     const { data, error } = await this.db.from("requests")
-      .select("task, fields, booking_id, businesses(name), users(phone_e164)").eq("id", requestId).single();
+      .select("task, fields, booking_id, businesses(name), users(phone_e164, name)").eq("id", requestId)
+      .single();
     if (error) throw error;
     // deno-lint-ignore no-explicit-any
     const row = data as any;
@@ -90,7 +93,7 @@ export class DbCallStore implements CallStore, ReconcileStore {
       option = { label: o.label, value: o.value ?? {} };
     }
     const { data: first, error: e3 } = await this.db.from("calls").select("created_at, outputs")
-      .eq("request_id", requestId).eq("kind", "first").eq("status", "completed")
+      .eq("request_id", requestId).in("kind", ["first", "question"]).eq("status", "completed")
       .order("created_at", { ascending: false }).limit(1).maybeSingle();
     if (e3) throw e3;
     const change = await this.bookingInputs(requestId, row.booking_id);
@@ -99,6 +102,7 @@ export class DbCallStore implements CallStore, ReconcileStore {
       fields: row.fields ?? {},
       businessName: row.businesses?.name ?? "",
       customerPhone: row.users?.phone_e164 ?? null,
+      profileName: row.users?.name ?? null,
       option,
       booking: change.booking,
       payment: change.payment,
@@ -128,7 +132,8 @@ export class DbCallStore implements CallStore, ReconcileStore {
   }> {
     const q = this.db.from("bookings")
       .select(
-        "id, time, reference, deposit_amount, known_fee_rs, call_id, requests!bookings_request_id_fkey(fields), " +
+        "id, time, booked_on, reference, deposit_amount, known_fee_rs, call_id, " +
+          "requests!bookings_request_id_fkey(fields), " +
           "calls!bookings_call_id_fkey(created_at, outputs)",
       );
     const { data: b, error } =
@@ -144,6 +149,7 @@ export class DbCallStore implements CallStore, ReconcileStore {
     const row = b as any;
     const booking = {
       time: row.time,
+      date: row.booked_on,
       reference: row.reference,
       customerName: row.requests?.fields?.customer_name ?? null,
       depositRs: row.deposit_amount === null ? null : Number(row.deposit_amount),

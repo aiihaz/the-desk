@@ -3,6 +3,7 @@
 import { fmtWhen, maskPhone, type Place, placeName } from "./readback.ts";
 import { currentQuestions, type Fields, type Has, missing } from "./slots.ts";
 import { type State, type Task, toolsFor } from "./states.ts";
+import type { Memory } from "./store.ts";
 
 export type Profile = {
   name: string | null;
@@ -24,6 +25,11 @@ export type TaskView = {
   options: { label: string; detail: string | null }[];
   // The user asked the Desk to wait (pause_request).
   paused?: boolean;
+  // What it's waiting for, and the reminder set for it (set_follow_up).
+  waitingFor?: string | null;
+  remindAt?: Date | null;
+  // Asked to cancel during the call.
+  cancelRequested?: boolean;
   // A plan or option list is waiting for the user's answer, sent at this time.
   planSentAt?: Date | null;
   // For missing(): a profile name to book under, and whether the call books.
@@ -70,6 +76,17 @@ export function profileCard(p: Profile): string {
   ].join("\n");
 }
 
+// What the Desk keeps for them. Facts to fill details from; each still shows in the plan.
+export function memoryCard(ms: Memory[]): string {
+  if (!ms.length) return "MEMORY\nnone";
+  return [
+    "MEMORY (use these to fill details, which the plan then shows; never an approval)",
+    ...ms.map((m) =>
+      `m-${m.id.slice(0, 8)} [${m.scope}${m.source === "learned" ? ", learned" : ""}] ${m.text}`
+    ),
+  ].join("\n");
+}
+
 export function taskCard(t: TaskView | null, now: Date, waiting: TaskView[] = []): string {
   if (!t) {
     return [
@@ -88,6 +105,8 @@ export function taskCard(t: TaskView | null, now: Date, waiting: TaskView[] = []
     `state: ${t.state}${!t.paused && STATE_NOTE[t.state] ? ` (${STATE_NOTE[t.state]})` : ""}`,
     ...(t.paused ? ["paused: yes (they asked you to wait; no plan or call until resume_request)"] : []),
     ...(t.planSentAt ? [`plan sent: ${clock(t.planSentAt)}; it is in the chat above`] : []),
+    ...(t.cancelRequested ? ["cancel requested during the call; it ends when the result comes"] : []),
+    ...followUpLines(t),
     `known: ${describeFields(t.fields, now).join("; ") || "nothing yet"}`,
     `still needed for a plan: ${need.length ? need.join(", ") : "nothing"}`,
     `business: ${t.place ? placeName(t.place) : "not picked"}`,
@@ -104,6 +123,13 @@ export function taskCard(t: TaskView | null, now: Date, waiting: TaskView[] = []
   return lines.join("\n");
 }
 
+function followUpLines(t: TaskView): string[] {
+  return [
+    ...(t.waitingFor ? [`waiting for: ${t.waitingFor}`] : []),
+    ...(t.remindAt ? [`reminder set: ${longClock(t.remindAt)}`] : []),
+  ];
+}
+
 // "r-1a2b3c4d question at Test Dental: known: ...; still needed: which business".
 function errandLine(t: TaskView, now: Date): string {
   const need = missing(t.task, t.fields, { business: !!t.place, booking: t.hasBooking, ...t.has });
@@ -111,7 +137,20 @@ function errandLine(t: TaskView, now: Date): string {
     `${t.ref} ${t.task}${t.place ? ` at ${t.place.name}` : ""}`,
     `known: ${describeFields(t.fields, now).join("; ") || "nothing yet"}`,
     `still needed: ${need.join(", ") || "nothing"}`,
+    ...followUpLines(t),
   ].join("; ");
+}
+
+function longClock(d: Date): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(d);
 }
 
 function clock(d: Date): string {
@@ -153,6 +192,8 @@ function describeFields(f: Fields, now: Date): string[] {
   if (f.party_size) out.push(`party_size=${f.party_size}`);
   if (f.service) out.push(`service=${f.service}`);
   if (f.customer_name) out.push(`customer_name=${f.customer_name}`);
+  if (f.share_name) out.push("gives their name on the call");
+  if (f.share_phone) out.push("gives their number on the call");
   if (f.max_price_rs !== undefined) out.push(`max_price_rs=${f.max_price_rs}`);
   currentQuestions(f).forEach((q, i) => out.push(`question ${i + 1}="${q}"`));
   if (f.also_ask) out.push(`also_ask="${f.also_ask}"`);
