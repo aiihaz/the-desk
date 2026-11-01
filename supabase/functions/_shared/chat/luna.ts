@@ -90,7 +90,8 @@ Doing an errand
 4. They answer the plan in their own words. Never ask them to type or tap YES.
    - They clearly said go ahead with it as it stands (any wording or language, "ok thanks" and a 👍 on the plan count): approve_plan. Code checks their answer independently before any call; if it isn't sure, it refuses and you ask them in a few plain words.
    - They changed or added something ("yes but make it 7", "ok, also ask about parking"): that is an edit, not an approval. set_slots, then propose_plan again.
-   - They asked a question: answer it; the plan stays open, so remind them in a few words that you're waiting for their go-ahead.
+   - They asked a question you can answer: answer it; the plan stays open, so remind them in a few words that you're waiting for their go-ahead.
+   - They asked something only the call can find out, and it's a booking plan ("do they have parking?"): don't ask whether to ask. In that same turn set also_ask and propose_plan with a short note, so one yes covers all of it.
    - Unclear: ask naturally ("Shall I call them now?"). Don't call approve_plan on a guess, and never on a yes to a different question.
 5. approve_plan says whether the call started. If it started, tell them in one short line that you're calling and will message when it's done. If it says the call didn't start, the user has already been told why: say nothing more.
 6. After the call, code tells them the result. If the business offered other options, they pick in words ("the 9:30 one", "second"): approve_plan with that option's number when the pick is clear; ask if it isn't.
@@ -121,7 +122,7 @@ Their details
 Facts
 - Know the difference between what you know (the cards, the chat, tool results), what you're assuming, and what only the call can find out. Say which, briefly, when it matters ("I'll ask them if they're open Sunday").
 - Never state hours, prices, availability, ratings, parking or phone numbers from memory. Never say a call, booking or payment happened unless the TASK card's state or a tool result says so.
-- Times: ISO 8601 with +05:30, resolved from NOW. An exact time ("8pm", "8 baje", "at 8") is exact_time only. A fuzzy time ("around 8", "evening", "after 8") is a window ("around 8" is 7:30 to 8:30 pm). A day with no time, or a time with no day, needs asking; never invent a date.
+- Times: ISO 8601 with +05:30, resolved from NOW. An exact time ("8pm", "1 pm", "11 am", "8 baje", "at 8") is exact_time only, never a short window. If they really give a range under 5 minutes, keep it and send window_words with their exact words. A fuzzy time ("around 8", "evening", "after 8") is a window ("around 8" is 7:30 to 8:30 pm). A day with no time, or a time with no day, needs asking; never invent a date.
 - party_size for tables; service for anything else ("haircut", "dentist checkup"). also_ask: one extra thing to ask on a booking call. Questions for a question errand: add_questions in their terms, keeping every limit they gave ("under Rs 300", "by Friday"); reword_questions or remove_questions only when they change one. A follow-up question is added, not swapped in.
 - A question errand shares no name or number, unless it's about something of their own that the business must look up ("where's my order", "is my blazer ready", "did my booking go through"): then set share_name true, and share_phone true if the business would find it by number. The plan says what's shared.
 - If a question call brings back an offer to book, it comes to them as options with its conditions: they pick in words, as after any call. Don't accept or refuse it for them.
@@ -200,6 +201,10 @@ const DEFS: Record<Tool, Omit<FunctionTool, "type" | "strict">> = {
           type: "array",
           items: { type: "integer" },
           description: "only when they no longer want it asked",
+        },
+        window_words: {
+          type: ["string", "null"],
+          description: "only for a window under 5 minutes: their exact words giving that range",
         },
         errand: ERRAND,
       },
@@ -831,7 +836,14 @@ async function runTool(
         ? a.reword_questions.map((x) => ({ number: Number(x?.number), text: String(x?.text ?? "") }))
         : [];
       const add = Array.isArray(a.add_questions) ? a.add_questions.map(String) : [];
-      return setSlots(deps, user, fields, { add, reword, remove: ints(a.remove_questions) }, str(a.errand));
+      const windowWords = str(a.window_words);
+      return setSlots(
+        deps,
+        user,
+        fields,
+        { add, reword, remove: ints(a.remove_questions), windowWords },
+        str(a.errand),
+      );
     }
     case "pause_request":
       return pauseActive(deps, user);

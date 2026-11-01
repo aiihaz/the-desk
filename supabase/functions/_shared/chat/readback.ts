@@ -123,6 +123,9 @@ export function fmtWhen(f: Fields, now: Date, full = false): string {
 // "a table for 4", "your table for 4", or "table for 4" with article "".
 function what(f: Fields, article: "a" | "your" | "" = "a"): string {
   const own = article === "your" ? "your " : "";
+  if (f.party_size && /^tables?$/i.test(f.service ?? "")) {
+    return `${article ? article + " " : ""}table for ${f.party_size}`;
+  }
   if (f.service && f.party_size) return `${own}${f.service} for ${f.party_size}`;
   if (f.service) return `${own}${f.service}`;
   return `${article ? article + " " : ""}table for ${f.party_size}`;

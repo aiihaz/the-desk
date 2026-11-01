@@ -153,16 +153,33 @@ export async function cancelActive(deps: ToolDeps, user: User, ref?: string | nu
   return next.request_id ? { ok: true, now_current: errandRef(next.request_id) } : { ok: true };
 }
 
+// The exact words were written by the user in the last day, not by the model.
+async function userWrote(deps: ToolDeps, user: User, words: string | null | undefined): Promise<boolean> {
+  const want = words?.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!want) return false;
+  const since = new Date((deps.now?.() ?? new Date()).getTime() - 24 * 3_600_000);
+  const lines = await deps.store.history(user.id, since, 24);
+  return lines.some((l) => l.from === "user" && l.text.toLowerCase().replace(/\s+/g, " ").includes(want));
+}
+
+// A range they said: their words, holding more than the one time that a range isn't.
+// Words with no digits ("aath se sawa aath") rest on the quote; the plan shows the result.
+async function saidRange(deps: ToolDeps, user: User, words: string | null | undefined): Promise<boolean> {
+  if ((words?.match(/\d{1,2}(:\d{2})?/g) ?? []).length === 1) return false;
+  return await userWrote(deps, user, words);
+}
+
 export async function setSlots(
   deps: ToolDeps,
   user: User,
   patch: Record<string, unknown>,
-  ops: QuestionOps = {},
+  ops: QuestionOps & { windowWords?: string | null } = {},
   ref?: string | null,
 ): Promise<ToolResult> {
   const r = await target(deps, user, ref);
   if (!r) return ref ? NO_ERRAND : { ok: false, reason: "no_active_request; start_new_request first" };
-  const check = checkSlots(r.task, r.fields, patch, deps.now?.() ?? new Date(), ops);
+  const windowConfirmed = await saidRange(deps, user, ops.windowWords);
+  const check = checkSlots(r.task, r.fields, patch, deps.now?.() ?? new Date(), { ...ops, windowConfirmed });
   deps.trace?.("check_slots", check);
   if (!check.ok) return { ok: false, reason: "invalid", errors: check.errors };
   const res = await deps.store.updateSlots(r.id, check.patch);
@@ -319,10 +336,7 @@ export async function remember(deps: ToolDeps, user: User, a: RememberArgs): Pro
   if (a.learned) {
     // A preference is learned only from what they actually wrote.
     evidence = a.evidence?.trim() || null;
-    const since = new Date((deps.now?.() ?? new Date()).getTime() - 24 * 3_600_000);
-    const said = (await store.history(user.id, since, 24)).filter((l) => l.from === "user");
-    const want = evidence?.toLowerCase().replace(/\s+/g, " ");
-    if (!want || !said.some((l) => l.text.toLowerCase().replace(/\s+/g, " ").includes(want))) {
+    if (!(await userWrote(deps, user, evidence))) {
       return { ok: false, reason: "learned needs evidence: their exact words from the chat" };
     }
   }

@@ -66,10 +66,14 @@ Same place as the Sarvam ones: `supabase/functions/.env` locally, `supabase secr
 
 ## Before the first real call
 
+The agent that dials must have every output in `agent/contract.json`, because Desk's report is built from those alone. Sarvam has no API that shows an agent's output variables, so `0013` works from what each version actually returned. Every completed call records the contract outputs it came back with (`gate_passes.outputs_seen`), and `check_dial` refuses a real business (`caller_contract_mismatch`) until that version has returned all 22. Numbers in `test_numbers` stay open, so a new version earns this with test calls; nothing is typed in by hand. Outputs a test call doesn't return stay missing, so if Sarvam leaves out empty variables, one call won't be enough.
+
+A call that connects and reports no readable result blocks its version for real businesses (`caller_contract_broken`), tells the user the result is unknown and to check before retrying, and raises `caller_contract_missing`. Fix the agent and commit a new version, or clear `contract_broken_at` on the gate row. `deno task caller-check <file>` previews any list of names or saved result; it's a convenience, not the guard.
+
 Every call is refused until the caller setup is pinned (`0012`): the active version needs a passed gate on the hash of the instructions it runs, or `check_dial` answers `no_instructions_pin` / `agent_instructions_mismatch` and the user hears that calls aren't working. After the Sarvam agent passes its suite:
 
 ```
-shasum -a 256 agent/instructions.md        # the instructions as committed to Sarvam
+cat agent/instructions.md agent/contract.json | shasum -a 256    # as committed to Sarvam
 insert into gate_passes (agent_version, suite, passed, instructions_sha256) values ('<version>', '<suite>', true, '<hash>');
 set limit active_agent_version <version>   # on WhatsApp, from an admin
 set limit agent_instructions_sha256 <hash>
@@ -120,6 +124,7 @@ From a wa_id in `DESK_ADMIN_WA_IDS`: `status`, `review`, `resolve <id>`, `stop a
 - `supabase/migrations/0009_jobs.sql`, `_shared/reconcile.ts`, `functions/reconcile/`, `functions/health/`: the scheduled jobs above
 - `supabase/migrations/0010_admin.sql`, `_shared/chat/admin.ts`, `_shared/alerts.ts`: admin commands and alerts
 - `supabase/migrations/0011_booking_changes.sql`: advances (hold → screenshot → confirm call, eng plan 2.2), cancel and reschedule of Desk bookings (E4 design 2.7, 2.9). `_shared/chat/payment.ts` reads the screenshot with a model and checks it in code; `find_booking` in `chat/tools.ts`
+- `supabase/migrations/0013_caller_contract.sql`: a version reaches real businesses only after returning every contract output
 - `supabase/migrations/0012_follow_through.sql`, `_shared/chat/followup.ts`: errands record what they wait for; `settle_and_report()` stores a result with everything it owes the user, sent through tracked `deliveries`, retried, and alerted if it can't arrive; `user_memories` (said, or learned from a correction; never a permission, and nothing in the approval or dial path reads it); bookings keep the captured value beside the approved one; `check_dial` names the consent a call rests on and requires the pinned caller setup
 - `_shared/serper.ts`: phone numbers for places Google lists without one, taken only from a result whose name fits, and said in the read-back as found on the web
 
@@ -134,7 +139,8 @@ From a wa_id in `DESK_ADMIN_WA_IDS`: `status`, `review`, `resolve <id>`, `stop a
 | `options` / `alternatives` | first / booking | up to 3 of `{time, party_size?, label?, advance_required?}` |
 | `no_match_reason` | first | `no_slot`, `several_options`, `advance`, `price`, `new_condition`, `unclear` |
 | `advance_amount` | first, booking | rupees |
-| `answer` | question | what the business said, in English. **Not in eng plan 3.4 yet**: the caller needs to produce it |
+| `answer` | question | what the business said, in English. In `agent/contract.json`, which every caller that dials must have |
+| `also_answer` | first, booking | the answer to `also_ask`, reported on every outcome; a first call with none says so |
 | `options` | question | an offer to book, as on a first call. Brought to the user to pick; never accepted on the call |
 | `upi_id`, `payee_name`, `payment_deadline` | first, booking | for a hold within `max_advance_rs` |
 | `payment_status` | payment_confirm | `received`, `not_seen`, `wrong_amount`, `disputed`, `unclear` |

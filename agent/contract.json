@@ -1,0 +1,27 @@
+{
+  "_about": "The structured outputs Desk reads after every call. Each must exist as an output variable on the caller agent that dials: Desk builds the report from these alone. Unknown means empty, never zero or a guess. Checked with `deno task caller-check`.",
+  "required": [
+    { "name": "outcome", "calls": "all", "type": "text", "describe": "One of: booked, held_pending_deposit, payment_not_seen, hold_expired, cancelled, options_found, unavailable, moved, kept, question_answered, needs_customer_decision, uncertain, wrong_number, voicemail, phone_menu, no_conversation, disconnected, refused." },
+    { "name": "no_match_reason", "calls": "first", "type": "text", "describe": "No booking on call 1: no_slot, several_options, advance, price, new_condition or unclear." },
+    { "name": "booked_time", "calls": "first, booking, reschedule, payment_confirm", "type": "text", "describe": "ISO 8601 with offset, including the year, only if explicitly confirmed. A date with no agreed time: YYYY-MM-DD, never a made-up time." },
+    { "name": "booking_reference", "calls": "first, booking, reschedule, payment_confirm", "type": "text", "describe": "The reference as given, or empty." },
+    { "name": "options", "calls": "first, booking, reschedule, question", "type": "json", "describe": "Up to 3: [{\"time\": \"ISO 8601\", \"details\": \"...\", \"price_rs\": 0, \"conditions\": \"...\", \"advance_required\": false}]. Alternatives offered, or an offer to book on a question call." },
+    { "name": "answer", "calls": "question", "type": "text", "describe": "What the business answered, in their words." },
+    { "name": "also_answer", "calls": "first, booking", "type": "text", "describe": "The answer to also_ask, in their words, or empty if they didn't answer." },
+    { "name": "advance_amount_rs", "calls": "first, booking", "type": "number", "describe": "Advance they asked for, in rupees, or empty." },
+    { "name": "upi_id", "calls": "first, booking", "type": "text", "describe": "UPI ID or number to pay, or empty." },
+    { "name": "payee_name", "calls": "first, booking", "type": "text", "describe": "Who the payment goes to, or empty." },
+    { "name": "payment_deadline", "calls": "first, booking", "type": "text", "describe": "ISO 8601 with offset, or empty." },
+    { "name": "payment_status", "calls": "payment_confirm", "type": "text", "describe": "received, not_seen, wrong_amount, disputed or unclear." },
+    { "name": "callback_time", "calls": "payment_confirm", "type": "text", "describe": "When they asked us to call back, or empty." },
+    { "name": "cancel_status", "calls": "cancel", "type": "text", "describe": "cancelled, charge_pending, not_cancelled or unclear." },
+    { "name": "cancel_charge_rs", "calls": "cancel", "type": "number", "describe": "Any charge or lost deposit they stated, or empty." },
+    { "name": "refund_stated", "calls": "cancel", "type": "text", "describe": "What they said about refunding the advance, in their words, or empty." },
+    { "name": "original_booking_status", "calls": "reschedule", "type": "text", "describe": "kept, moved, cancelled or unclear." },
+    { "name": "contact_name", "calls": "all", "type": "text", "describe": "Staff member's name, if given." },
+    { "name": "possible_unintended_commitment", "calls": "all", "type": "text", "describe": "yes or no: they may have reserved something nobody authorised." },
+    { "name": "unintended_commitment_details", "calls": "all", "type": "text", "describe": "Their exact words, or empty." },
+    { "name": "opt_out_requested", "calls": "all", "type": "text", "describe": "yes or no: they asked not to be called." },
+    { "name": "summary", "calls": "all", "type": "text", "describe": "2 to 3 factual sentences, not a success story." }
+  ]
+}

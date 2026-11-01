@@ -20,7 +20,7 @@ export type CallInputs = {
   option: { label: string; value: Record<string, unknown> } | null;
   // Booking calls: the last completed first call on this request. Reschedule and cancel:
   // the call that made the booking.
-  prev: { at: string; contactName: string | null; summary: string | null } | null;
+  prev: { at: string; contactName: string | null; summary: string | null; alsoAnswered?: boolean } | null;
   // Reschedule, cancel: the Desk booking being changed. Payment confirm: the held one.
   booking: BookingInput | null;
   // Payment confirm: what the screenshot that passed the check showed.
@@ -148,6 +148,7 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
       kind === "reschedule" ? `move from: ${v.existing_booking}` : null,
       picked ? `the option picked: ${o.label}` : when,
       typeof v.customer_name === "string" ? `under the name ${v.customer_name}` : null,
+      typeof v.also_ask === "string" ? `also ask: ${v.also_ask}` : null,
     ].filter(Boolean).join("; ");
 
   const flexible = picked || !when || kind === "question" || kind === "cancel" || kind === "payment_confirm"
@@ -262,6 +263,8 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean,
         // A question call that turned into an offer has no name stored yet.
         customer_name: str("customer_name") ?? x.profileName ?? null,
         customer_phone: x.customerPhone,
+        // The plan promised to ask; a first call that got the answer already did.
+        also_ask: x.prev?.alsoAnswered ? null : str("also_ask"),
         prev_call_time: x.prev?.at ?? null,
         prev_contact_name: x.prev?.contactName ?? null,
         prev_summary: x.prev?.summary ?? null,

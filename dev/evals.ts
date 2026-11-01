@@ -165,11 +165,11 @@ const JOURNEYS: Case[] = [
       { sim: "call_1_options" },
     ],
     check: (r) => {
-      const reply = texts(r.events).at(-2) ?? "";
+      const all = texts(r.events);
       return [
         ...need(
-          !/cancelled|done|stopped/i.test(reply) || /can'?t|already|under way|in progress/i.test(reply),
-          `claimed it was cancelled: "${reply}"`,
+          all.some((t) => /can.?t stop|already (in progress|under way)/i.test(t)),
+          "never said the call can't be stopped",
         ),
         ...need(
           last(r.events).startsWith("You asked me to cancel during the call"),
@@ -215,6 +215,51 @@ const JOURNEYS: Case[] = [
     check: (r) => {
       const n = texts(r.events).filter((t) => t.includes("still waiting on you")).length;
       return need(n === 1, `${n} nudges`);
+    },
+  },
+  {
+    name: "a failed search keeps the errand and its details",
+    messages: [
+      { text: "book a table for 2 at blue moon cafe tomorrow 8pm" },
+      { text: "it's in bengaluru" },
+      { text: "ok try toni&guy indiranagar then" },
+    ],
+    check: (r) => {
+      const plan = outs(r.events).filter(isReadback).at(-1)?.msg.body ?? "";
+      return [
+        ...need(!r.events.some((e) => e.type === "decision:cancel_request"), "the errand was cancelled"),
+        ...need(/Toni&Guy/.test(plan), `no plan at the place that exists: "${last(r.events)}"`),
+        ...need(plan.includes("8:00 pm"), `lost the time: "${plan}"`),
+      ];
+    },
+  },
+  {
+    name: "a side question only the call can answer goes into the plan, and one yes covers it",
+    messages: [{ text: tomorrowTable }, { text: "do they have parking?" }, { text: "ok go ahead" }],
+    check: (r) => {
+      const plan = outs(r.events).filter(isReadback).at(-1)?.msg.body ?? "";
+      return [
+        ...need(/parking/i.test(plan), `parking isn't in the plan: "${plan}"`),
+        ...need(consents(r.events) === 1, "one go-ahead wasn't enough"),
+      ];
+    },
+  },
+  {
+    name: "an exact time stays exact",
+    messages: [{ text: "table for 2 at paragon in kozhikode tomorrow 1 pm" }],
+    check: (r) => {
+      const plan = outs(r.events).filter(isReadback).at(-1)?.msg.body ?? "";
+      return need(plan.includes("at 1:00 pm"), `plan: "${plan}"`);
+    },
+  },
+  {
+    name: "a narrow range they really asked for is kept",
+    messages: [{
+      text: "table for 2 at paragon in kozhikode tomorrow between 8 and 8:05 pm, not a minute later",
+    }],
+    check: (r) => {
+      const plan = outs(r.events).filter(isReadback).at(-1)?.msg.body ?? "";
+      return need(/8:00.8:05 pm/.test(plan), `plan: "${plan}"`);
     },
   },
   {
@@ -316,7 +361,9 @@ const CASES: Case[] = [
     check: (r) => {
       const f: string[] = [];
       if (userMsgsToReadback(r.events) !== 1) f.push("no read-back after the first message");
-      const asked = outs(r.events).filter((o) => o.msg.kind === "text" && o.msg.body?.includes("?"));
+      const asked = outs(r.events).filter((o) =>
+        o.msg.kind === "text" && !isReadback(o) && o.msg.body?.includes("?")
+      );
       if (asked.length) f.push(`asked a question it didn't need: "${asked[0].msg.body}"`);
       return f;
     },

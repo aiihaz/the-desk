@@ -75,6 +75,9 @@ export async function callAfterConsent(
   console.warn("call not started", c.request_id, res.error === "refused" ? res.reason : res.detail);
   const ended = await deps.store.callNotStarted(c.request_id);
   deps.trace?.("call_not_started", ended);
+  if (res.error === "refused" && res.reason.startsWith("caller_contract_")) {
+    await deps.store.raiseAlert(res.reason, c.request_id, null, { kind });
+  }
   const why = res.error === "refused" ? WHY[res.reason] ?? OUR_SIDE : OUR_SIDE;
   const { language } = await deps.store.user(user.id);
   const tpl = await deps.store.template("call_not_started", language);

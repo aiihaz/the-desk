@@ -17,6 +17,7 @@ insert into credit_ledger (delta_rs, reason) values (1000, 'test');
 select set_limit('active_agent_version', '"7"', 'test');
 insert into gate_passes (agent_version, suite, passed, instructions_sha256) values ('7', 'test', true, 'pin');
 select set_limit('agent_instructions_sha256', '"pin"', 'test');
+update gate_passes set outputs_seen = (select array_agg(name) from caller_contract);
 
 create temp table t (name text primary key, id uuid);
 create function pg_temp.id(n text) returns uuid language sql as $$ select id from t where name = n $$;
@@ -81,6 +82,14 @@ select settle_and_report(pg_temp.id('r4_call'), 'back', p_parts =>
 select results_eq($$select state, end_reason from requests where id = pg_temp.id('r4')$$,
                   $$values ('cancelled'::text, 'user'::text)$$, 'and ends the errand with the result');
 select is((request_cancel_after_call(pg_temp.id('r4')) ->> 'reason'), 'not_calling', 'not when no call is running');
+
+-- An answered question cancelled during its call: settled, then closed as the cancel.
+select pg_temp.calling('r7');
+select settle_and_report(pg_temp.id('r7_call'), 'done', p_parts =>
+  '[{"key": "result", "message": {"kind": "text", "body": "Answer, and closed."}}]', p_end => true, p_now => pg_temp.at('11:14'));
+select results_eq($$select state, end_reason from requests where id = pg_temp.id('r7')$$,
+                  $$values ('cancelled'::text, 'user'::text)$$, 'an answered question closes as cancelled');
+select is((select count(*)::int from deliveries where call_id = pg_temp.id('r7_call')), 1, 'and its answer is still owed');
 
 -- A waiting errand becomes current, and is said only if it did.
 select pg_temp.calling('r5');

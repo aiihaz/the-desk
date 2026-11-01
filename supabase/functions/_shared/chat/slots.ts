@@ -54,6 +54,7 @@ const ALLOWED: Record<Task, (keyof Fields)[]> = {
 
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 const MAX_QUESTIONS = 4;
+const SHORT_WINDOW_MS = 5 * 60_000;
 
 export type SlotCheck =
   | { ok: true; patch: Partial<Record<keyof Fields, unknown>> }
@@ -66,6 +67,9 @@ export type QuestionOps = {
   remove?: number[];
 };
 
+// windowConfirmed: their own words give this narrow window (tools.ts checked them).
+export type SlotOps = QuestionOps & { windowConfirmed?: boolean };
+
 // Checks a proposed patch on its own and merged with the current fields.
 // A null value clears that slot. Errors are short and go back to Luna as the tool result.
 export function checkSlots(
@@ -73,7 +77,7 @@ export function checkSlots(
   current: Fields,
   patch: Record<string, unknown>,
   now: Date,
-  ops: QuestionOps = {},
+  ops: SlotOps = {},
 ): SlotCheck {
   const errors: string[] = [];
   const allowed = ALLOWED[task];
@@ -117,6 +121,21 @@ export function checkSlots(
     if (current.tolerance_min !== undefined && !("tolerance_min" in out)) out.tolerance_min = null;
   } else if (typeof out.window_start === "string" && typeof out.window_end === "string") {
     if (current.exact_time !== undefined && !("exact_time" in out)) out.exact_time = null;
+  }
+
+  // A narrow window is usually one time, written wrong, but it can be what they asked for.
+  // Code can't tell, so nothing is rewritten: it's refused until the model either uses
+  // exact_time or shows it's their range (windowConfirmed, from their own words).
+  if (("window_start" in out || "window_end" in out) && !ops.windowConfirmed) {
+    const start = (out.window_start ?? current.window_start) as string | null | undefined;
+    const end = (out.window_end ?? current.window_end) as string | null | undefined;
+    const span = start && end ? Date.parse(end) - Date.parse(start) : 0;
+    if (span > 0 && span <= SHORT_WINDOW_MS) {
+      errors.push(
+        "window: under 5 minutes. For one time they gave, use exact_time alone. Only if they really gave " +
+          "this narrow a range, send it again with window_words: their exact words",
+      );
+    }
   }
 
   const merged = { ...current, ...out } as Record<string, unknown>;

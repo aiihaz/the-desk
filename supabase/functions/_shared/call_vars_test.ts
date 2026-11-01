@@ -128,3 +128,23 @@ Deno.test("missing or mismatched inputs stop the call", () => {
   assertThrows(() => callVariables("booking", base, false), MissingCallInput, "option");
   assertThrows(() => callVariables("reschedule", base, false), MissingCallInput);
 });
+
+Deno.test("the extra question goes on call 2 unless call 1 got the answer", () => {
+  const x = {
+    ...base,
+    fields: { ...base.fields, also_ask: "is there parking?" },
+    option: { label: "9:30 pm", value: { time: "2026-10-23T21:30:00+05:30" } },
+  };
+  const asked = callVariables(
+    "booking",
+    { ...x, prev: { at: "x", contactName: null, summary: null } },
+    false,
+  );
+  assertEquals(asked.also_ask, "is there parking?");
+  assertEquals((asked.decided as string).includes("also ask: is there parking?"), true);
+  const done = callVariables("booking", {
+    ...x,
+    prev: { at: "x", contactName: null, summary: null, alsoAnswered: true },
+  }, false);
+  assertEquals(done.also_ask, null);
+});

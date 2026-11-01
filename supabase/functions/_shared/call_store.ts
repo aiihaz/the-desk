@@ -117,6 +117,7 @@ export class DbCallStore implements CallStore, ReconcileStore {
             : typeof first.outputs?.notes === "string"
             ? first.outputs.notes
             : null,
+          alsoAnswered: !!(first.outputs?.also_answer || first.outputs?.answer),
         }
         : null),
     };

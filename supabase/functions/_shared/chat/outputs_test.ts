@@ -1,3 +1,4 @@
+import contract from "../../../../agent/contract.json" with { type: "json" };
 import { assertEquals } from "jsr:@std/assert@1.0.8";
 import { readOutputs } from "./outputs.ts";
 
@@ -59,4 +60,36 @@ Deno.test("an unintended commitment is kept, in their words", () => {
   })!;
   assertEquals(o.unintended_commitment, "I've put you down for 8");
   assertEquals(readOutputs("first", null), null);
+});
+
+Deno.test("every result the report depends on is in the caller contract", () => {
+  const names = contract.required.map((o) => o.name);
+  for (
+    const n of [
+      "outcome",
+      "booked_time",
+      "booking_reference",
+      "options",
+      "no_match_reason",
+      "advance_amount_rs",
+      "upi_id",
+      "payee_name",
+      "payment_deadline",
+      "payment_status",
+      "cancel_status",
+      "cancel_charge_rs",
+      "refund_stated",
+      "original_booking_status",
+      "answer",
+      "also_answer",
+      "opt_out_requested",
+      "summary",
+    ]
+  ) assertEquals(names.includes(n), true, n);
+});
+
+Deno.test("the contract the database enforces is agent/contract.json", async () => {
+  const sql = await Deno.readTextFile("supabase/migrations/0013_caller_contract.sql");
+  const seeded = [...sql.matchAll(/^ {2}\('([a-z_]+)'\)[,;]$/gm)].map((m) => m[1]);
+  assertEquals(seeded, contract.required.map((o) => o.name));
 });

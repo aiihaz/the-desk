@@ -152,3 +152,18 @@ Deno.test("a new exact time replaces a fuzzy window, and a new window an exact t
   );
   assertEquals(window.ok && window.patch.exact_time, null);
 });
+
+Deno.test("a narrow window is never rewritten: refused, unless their words confirmed it", () => {
+  const narrow = { window_start: "2026-10-24T11:00:00+05:30", window_end: "2026-10-24T11:01:00+05:30" };
+  const refused = checkSlots("booking", {}, narrow, now);
+  assertEquals(refused.ok, false);
+  assertEquals(!refused.ok && refused.errors[0].startsWith("window: under 5 minutes"), true);
+  assertEquals(checkSlots("booking", {}, narrow, now, { windowConfirmed: true }), {
+    ok: true,
+    patch: narrow,
+  });
+  const real = { window_start: "2026-10-24T11:00:00+05:30", window_end: "2026-10-24T11:30:00+05:30" };
+  assertEquals(checkSlots("booking", {}, real, now), { ok: true, patch: real });
+  // An approved narrow window stays as it is when something else on the errand changes.
+  assertEquals(checkSlots("booking", narrow, { party_size: 3 }, now).ok, true);
+});

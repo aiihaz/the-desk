@@ -271,6 +271,18 @@ export class FakeChatStore implements ChatStore {
     }
     return this.settleResult;
   }
+  alerts: { kind: string; detail: Record<string, unknown> }[] = [];
+  outputsSeen: string[] = [];
+  async recordCallerOutputs(_c: string, outputs: string[]) {
+    this.outputsSeen.push(...outputs);
+  }
+  brokenCalls: string[] = [];
+  async callerContractBroken(c: string) {
+    this.brokenCalls.push(c);
+  }
+  async raiseAlert(kind: string, _r: string, _c: string | null, detail: Record<string, unknown>) {
+    this.alerts.push({ kind, detail });
+  }
   owed: { key: string; message: Outbound }[] = [];
   async oweMessage(_u: string, _r: string | null, key: string, message: Outbound) {
     this.owed.push({ key, message });

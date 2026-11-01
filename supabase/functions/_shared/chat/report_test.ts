@@ -404,3 +404,65 @@ Deno.test("reschedule: moved (verified), kept with other times, or unclear", asy
   assertEquals(unclear.store.settled[0].result, "unconfirmed");
   assertEquals(body(unclear.sent[0]).includes("it's not clear what they did"), true);
 });
+
+// The errand from the extraction ticket, as Sarvam would hand it back: strings, and a list
+// as a JSON string. A fixture: it proves Desk reads the contract, not that a caller fills it.
+const TERRACE = "Yes, we do have outdoor seating on our terrace area.";
+
+Deno.test("the contract, as Sarvam returns it, reaches the user with nothing hand-filled", async () => {
+  const { store, sent, deps } = setup();
+  store.req = {
+    ...store.req!,
+    fields: {
+      party_size: 2,
+      customer_name: "Ihaz",
+      exact_time: "2026-11-07T19:30:00+05:30",
+      also_ask: "do you have outdoor seating?",
+    },
+  };
+  const checks: BookingCheck[] = [];
+  deps.verify = passes(checks);
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", {
+      outcome: "booked",
+      booked_time: "2026-11-07T19:30:00+05:30",
+      booking_reference: "",
+      options: "[]",
+      also_answer: TERRACE,
+      advance_amount_rs: "",
+      opt_out_requested: "no",
+      summary: "Booked for Ihaz, two people, Saturday 7 November at 7:30 pm.",
+    }),
+  );
+  assertEquals(checks[0].bookedTime, "2026-11-07T19:30:00+05:30");
+  assertEquals(store.settled[0].result, "done");
+  assertEquals(body(sent[0]).includes("Paragon confirmed it on the call"), true);
+  assertEquals(body(sent[0]).endsWith(`They said: "${TERRACE}"`), true);
+  assertEquals(store.alerts, []);
+  assertEquals(store.brokenCalls, []);
+  assertEquals(store.outputsSeen.includes("also_answer"), true);
+});
+
+Deno.test("a caller with only call_summary: not 'nothing is done', and flagged", async () => {
+  const { store, sent, deps } = setup();
+  deps.verify = passes([]);
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", {
+      call_summary: "The agent successfully booked a table for two people for Ihaz at Paragon.",
+    }),
+  );
+  assertEquals(store.settled[0].result, "back");
+  assertEquals(body(sent[0]).includes("may or may not have gone through"), true);
+  assertEquals(body(sent[0]).includes("before we try again"), true);
+  assertEquals(body(sent[0]).includes("which I can't confirm"), true);
+  assertEquals(body(sent[0]).includes("confirmed it"), false);
+  assertEquals(store.alerts, [{
+    kind: "caller_contract_missing",
+    detail: { kind: "first", outputs: ["call_summary"] },
+  }]);
+  assertEquals(store.brokenCalls, ["c1"]);
+});

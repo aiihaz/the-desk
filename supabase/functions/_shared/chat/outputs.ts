@@ -30,6 +30,8 @@ export type Outputs = {
   refund_stated?: string;
   original_booking_status?: string;
   answer?: string;
+  // The answer to also_ask on a booking call.
+  also_answer?: string;
   contact_name?: string;
   summary?: string;
   unintended_commitment?: string;
@@ -46,6 +48,13 @@ const OUTCOME: Record<string, Record<string, string>> = {
   refused: { first: "not_booked", booking: "not_available" },
   needs_customer_decision: { first: "not_booked", booking: "not_available" },
 };
+
+// Whether the caller reported any result at all. An agent with no structured outputs
+// (only a free-text call_summary) leaves this false: Desk can't know what the call did.
+export function hasResult(o: Outputs | null): boolean {
+  return !!o && !!(o.booking_status || o.outcome || o.answer || o.also_answer || o.payment_status ||
+    o.cancel_status || o.original_booking_status);
+}
 
 export function readOutputs(kind: string, raw: unknown): Outputs | null {
   if (!raw || typeof raw !== "object") return null;
@@ -74,6 +83,7 @@ export function readOutputs(kind: string, raw: unknown): Outputs | null {
       "refund_stated",
       "original_booking_status",
       "answer",
+      "also_answer",
       "contact_name",
       "summary",
     ] as const
@@ -81,10 +91,17 @@ export function readOutputs(kind: string, raw: unknown): Outputs | null {
     const v = text(r[k]);
     if (v) o[k] = v;
   }
+  if (!o.summary) {
+    const s = text(r.call_summary);
+    if (s) o.summary = s;
+  }
   if (!o.answer) {
     const a = text(r.answer_summary);
     if (a) o.answer = a;
   }
+
+  // On a call that isn't a question call, an answer can only be to the extra question.
+  if (!o.also_answer && kind !== "question" && o.answer) o.also_answer = o.answer;
 
   const options = list(r.options);
   const alternatives = list(r.alternatives);

@@ -239,6 +239,16 @@ export interface ChatStore {
   ): Promise<{ ok: true; request_id: string; state: State; option_ids: string[] } | Refused>;
   // now: only to simulate a later time. Unset, the database's clock decides what's due,
   // the same clock that stamped it, so a skew can't hold back a message just stored.
+  raiseAlert(
+    kind: string,
+    requestId: string,
+    callId: string | null,
+    detail: Record<string, unknown>,
+  ): Promise<void>;
+  // What this call's agent version returned, which is all Desk can know of its setup.
+  recordCallerOutputs(callId: string, outputs: string[]): Promise<void>;
+  // It connected and reported nothing readable: real businesses are refused from now on.
+  callerContractBroken(callId: string): Promise<void>;
   takeDeliveries(now?: Date, callId?: string): Promise<Delivery[]>;
   // A reply that couldn't be sent during a turn goes out with the next recovery pass.
   oweMessage(userId: string, requestId: string | null, key: string, message: Outbound): Promise<void>;
@@ -822,6 +832,23 @@ export class DbChatStore implements ChatStore {
         p_end: report?.end ?? false,
       },
     );
+  }
+
+  async recordCallerOutputs(callId: string, outputs: string[]) {
+    await this.rpc("record_caller_outputs", { p_call_id: callId, p_outputs: outputs });
+  }
+
+  async callerContractBroken(callId: string) {
+    await this.rpc("caller_contract_broken", { p_call_id: callId });
+  }
+
+  async raiseAlert(kind: string, requestId: string, callId: string | null, detail: Record<string, unknown>) {
+    await this.rpc("raise_alert", {
+      p_kind: kind,
+      p_request_id: requestId,
+      p_call_id: callId,
+      p_detail: detail,
+    });
   }
 
   async oweMessage(userId: string, requestId: string | null, key: string, message: Outbound) {

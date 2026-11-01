@@ -13,7 +13,7 @@ import { type LunaDeps, runLuna } from "./luna.ts";
 import { reportCall, type ReportDeps } from "./report.ts";
 import type { ActiveRequest } from "./store.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
-import { forget, remember, type RememberArgs, setFollowUp } from "./tools.ts";
+import { forget, remember, type RememberArgs, setFollowUp, setSlots } from "./tools.ts";
 import { handleTurn, type TurnDeps } from "./turn.ts";
 
 const user: User = { id: "u1", waId: "919812345678", blocked: false };
@@ -267,6 +267,94 @@ Deno.test("a corrected year: the approved date is stored, with both values and w
   assertEquals(body(sent[0]).includes("confirmed it on the call"), true);
 });
 
+const withAlso = (kind: "first" = "first") => {
+  const t = report(kind);
+  t.store.req = open({
+    state: "calling_1",
+    fields: { party_size: 2, also_ask: "whether they have parking" },
+  });
+  t.store.settleResult = { ok: true, request_id: "r1", state: "done", option_ids: ["o1"] };
+  t.deps.verify = async () => ({ verified: true, problems: [], verdict: null });
+  return t;
+};
+
+Deno.test("the extra question's answer is in the report, whatever happened to the booking", async () => {
+  const line = 'You also asked: "whether they have parking". They said: "Yes, parking is available."';
+  const answer = { also_answer: "Yes, parking is available." };
+  const booked = withAlso();
+  await reportCall(
+    booked.deps,
+    "c1",
+    result({ ...answer, booking_status: "booked", booked_time: "2026-10-24T11:00:00+05:30" }),
+  );
+  assertEquals(body(booked.sent[0]).endsWith(line), true);
+
+  const none = withAlso();
+  await reportCall(none.deps, "c1", result({ ...answer, booking_status: "not_booked" }));
+  assertEquals(body(none.sent[0]).endsWith(line), true);
+
+  const options = withAlso();
+  await reportCall(
+    options.deps,
+    "c1",
+    result({
+      ...answer,
+      booking_status: "not_booked",
+      options: [{ time: "2026-10-24T13:00:00+05:30" }],
+    }),
+  );
+  assertEquals(body(options.sent[0]).startsWith(line), true);
+  assertEquals(body(options.sent[0]).includes("They offered:\n1. "), true);
+});
+
+Deno.test("an answer in the older answer field counts, and a missing one is said", async () => {
+  const old = withAlso();
+  await reportCall(old.deps, "c1", result({ booking_status: "not_booked", answer: "Yes." }));
+  assertEquals(body(old.sent[0]).endsWith('They said: "Yes."'), true);
+
+  const none = withAlso();
+  await reportCall(none.deps, "c1", result({ booking_status: "not_booked" }));
+  assertEquals(body(none.sent[0]).endsWith("I didn't get a clear answer to that."), true);
+});
+
+Deno.test("no connection, no claim about the extra question", async () => {
+  const t = withAlso();
+  await reportCall(t.deps, "c1", { ...result({}), status: "no_answer" });
+  assertEquals(body(t.sent[0]).includes("You also asked"), false);
+});
+
+Deno.test("cancel during a question call that was answered: the answer arrives, the errand closes cancelled", async () => {
+  const { store, sent, deps } = report("question");
+  store.call!.cancelRequested = true;
+  await reportCall(deps, "c1", result({ answer: "Open till 9." }));
+  assertEquals(store.reports[0].end, true);
+  assertEquals(body(sent[0]).startsWith('Paragon said: "Open till 9."'), true);
+  assertEquals(body(sent[0]).includes("You asked me to cancel during the call."), true);
+});
+
+Deno.test("cancel during a question call with an offer: the answer still arrives", async () => {
+  const { store, sent, deps } = report("question");
+  store.call!.cancelRequested = true;
+  store.settleResult = { ok: true, request_id: "r1", state: "done", option_ids: [] };
+  await reportCall(
+    deps,
+    "c1",
+    result({ answer: "Open till 9.", options: [{ time: "2026-10-24T13:00:00+05:30" }] }),
+  );
+  assertEquals(store.reports[0].end, true);
+  assertEquals(store.reports[0].prompt, undefined);
+  assertEquals(body(sent[0]).includes('Paragon said: "Open till 9."'), true);
+  assertEquals(body(sent[0]).includes("dropped them too"), true);
+});
+
+Deno.test("cancel during a call nobody answered: no offer to try again on a closed errand", async () => {
+  const { store, sent, deps } = report();
+  store.call!.cancelRequested = true;
+  await reportCall(deps, "c1", { ...result({}), status: "no_answer" });
+  assertEquals(store.reports[0].end, true);
+  assertEquals(body(sent[0]).includes("?"), false);
+});
+
 const due = (over: Partial<DueFollowUp>): DueFollowUp => ({
   requestId: "r1",
   userId: "u1",
@@ -331,6 +419,19 @@ Deno.test("set_follow_up: stored on the errand; a past time is refused", async (
   });
   assertEquals(ok.ok, true);
   assertEquals(store.followUps, [{ waitingFor: "Asha to confirm", remindAt: "2026-10-24T10:00:00+05:30" }]);
+});
+
+const NARROW = { window_start: "2026-10-24T20:00:00+05:30", window_end: "2026-10-24T20:05:00+05:30" };
+
+Deno.test("a narrow window needs a range in their own words", async () => {
+  const { store, deps } = report();
+  store.req = open();
+  store.lines = [{ from: "user", text: "tomorrow between 8 and 8:05 please", at: now }];
+  assertEquals((await setSlots(deps, user, NARROW)).ok, false);
+  assertEquals((await setSlots(deps, user, NARROW, { windowWords: "8 pm sharp, they said" })).ok, false);
+  assertEquals((await setSlots(deps, user, NARROW, { windowWords: "8:05" })).ok, false);
+  assertEquals((await setSlots(deps, user, NARROW, { windowWords: "between 8 and 8:05" })).ok, true);
+  assertEquals(store.slotWrites.at(-1), NARROW);
 });
 
 const said = (text: string): RememberArgs => ({

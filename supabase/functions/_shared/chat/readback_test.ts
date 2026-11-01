@@ -188,3 +188,13 @@ Deno.test("options after a call: numbered text, picked in words", () => {
   assertEquals(list.optionIds, ["o1", "o2"]);
   noButtonsNoYes(list);
 });
+
+Deno.test("a table recorded as a service still reads as a table", () => {
+  const p = bookingReadback({
+    place: paragon,
+    f: { ...tonight, service: "table", may_book: true, max_advance_rs: 0 },
+    customerPhone: null,
+    now,
+  });
+  assertEquals(p.text.includes("book a table for"), true);
+});

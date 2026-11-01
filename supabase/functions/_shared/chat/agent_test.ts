@@ -218,3 +218,26 @@ Deno.test("a refused call ends the request and tells the user why, in plain word
     body: "I couldn't start the call. Calls aren't working on my side right now; please try again later.",
   }]);
 });
+
+Deno.test("a refused dial for the caller contract raises an alert and tells the user it's on our side", async () => {
+  const { store, sent, deps } = setup();
+  store.req = {
+    id: "r1",
+    task: "booking",
+    state: "calling_1",
+    version: 1,
+    fields: {},
+    businessId: "b1",
+    bookingId: null,
+    createdAt: now,
+    pausedAt: null,
+  };
+  const res = await callAfterConsent(
+    { ...deps, dial: async () => ({ ok: false, error: "refused", reason: "caller_contract_mismatch" }) },
+    user,
+    { ok: true, consent_id: "k1", kind: "ask", request_id: "r1", option_id: null },
+  );
+  assertEquals(res, { started: false });
+  assertEquals(store.alerts.map((a) => a.kind), ["caller_contract_mismatch"]);
+  assertEquals((sent[0] as { body: string }).body.includes("[call_not_started]"), true);
+});

@@ -26,7 +26,7 @@
 // redelivered result sends nothing twice (followup.ts).
 import type { CallResult } from "../sarvam.ts";
 import { drainDeliveries } from "./followup.ts";
-import { readOutputs } from "./outputs.ts";
+import { hasResult, readOutputs } from "./outputs.ts";
 import { fmtDate, fmtDayFull, fmtTime, optionsPrompt, type Place, placeName } from "./readback.ts";
 import type { CallForReport, CallReport, CallSettlement } from "./store.ts";
 import { cleanField } from "./tools.ts";
@@ -231,7 +231,8 @@ function quote(s: string | null | undefined): string {
   return s ? ` They said: "${s}".` : "";
 }
 
-type Decision = { settle: CallSettlement; text: string; lead?: string };
+// said: what the business answered, kept apart so a cancel during the call can't lose it.
+type Decision = { settle: CallSettlement; text: string; lead?: string; said?: string };
 
 // First and booking calls: booked (verified or not), an advance hold, other times, nothing.
 async function decideBooking(
@@ -309,6 +310,7 @@ async function decideBooking(
           lead: [said, `${said ? "They also" : `${place.name}`} offered to book:`].filter(Boolean).join(
             "\n\n",
           ),
+          said,
         };
       }
       return { settle: { result: "done" }, text: said };
@@ -483,10 +485,12 @@ async function decideReschedule(
 function afterCancel(d: Decision, place: Place): boolean {
   const { result } = d.settle;
   if (result === "options" || result === "back") {
+    // The errand is over, so a closing "Want me to try again?" no longer applies.
+    const record = d.text.replace(/\s*[^.!?"]*\?$/, "");
     const said = result === "options"
-      ? ` They had other options, but I've dropped them too.`
-      : d.text
-      ? ` For the record: ${d.text}`
+      ? `${d.said ? ` ${d.said}` : ""} They had other options, but I've dropped them too.`
+      : record
+      ? ` For the record: ${record}`
       : "";
     d.settle = { result: "back", booking: d.settle.booking, optOut: d.settle.optOut };
     d.text =
@@ -499,8 +503,28 @@ function afterCancel(d: Decision, place: Place): boolean {
       `I'll call ${place.name} back.`;
   } else if (result === "held") {
     d.text += `\n\nThat happened before I could stop it. If you'd rather drop it, tell me and don't pay.`;
+  } else if (result === "done") {
+    // Answered, nothing booked: what the call got still reaches them, and the errand
+    // closes as the cancel they asked for.
+    d.text += `\n\nYou asked me to cancel during the call. It had already got this far, so I've closed ` +
+      "the errand and nothing more will happen.";
+    return true;
+  } else if (result === "unconfirmed" || result === "cancelled") {
+    d.text += `\n\nYou asked me to cancel during the call, but it was already under way.`;
   }
   return false;
+}
+
+// The extra question on a booking call. The plan promised to ask, so the report says what
+// came back, or that nothing did. A booking call asks only if the first call didn't get
+// an answer, so only its answer is news.
+async function alsoLine(deps: ReportDeps, call: CallForReport, r: CallResult): Promise<string | null> {
+  if (r.status !== "completed" || (call.kind !== "first" && call.kind !== "booking")) return null;
+  const ask = (await deps.store.request(call.requestId)).fields.also_ask;
+  if (!ask) return null;
+  const answer = cleanField(readOutputs(call.kind, r.outputs)?.also_answer, 300);
+  if (answer) return `You also asked: "${ask}". They said: "${answer}"`;
+  return call.kind === "first" ? `You also asked: "${ask}". I didn't get a clear answer to that.` : null;
 }
 
 export async function reportCall(deps: ReportDeps, callId: string, r: CallResult): Promise<void> {
@@ -556,6 +580,20 @@ export async function reportCall(deps: ReportDeps, callId: string, r: CallResult
     d.text = d.text.replace("nothing is done yet", "your payment isn't confirmed yet");
   }
   const end = !!call.cancelRequested && call.kind !== "payment_confirm" && afterCancel(d, place);
+  // The call connected and the caller reported no result: an agent without the output
+  // contract (agent/contract.json). It may well have booked, so "nothing is done, try
+  // again?" could book twice. Say what isn't known, quote its note as its note, flag it,
+  // and block the version for real businesses (0013).
+  const blind = r.status === "completed" && !hasResult(readOutputs(call.kind, r.outputs));
+  if (blind && d.settle.result === "back") {
+    const note = cleanField(readOutputs(call.kind, r.outputs)?.summary, 240);
+    d.text = `The call to ${place.name} connected, but its result didn't come back properly, so it may or ` +
+      `may not have gone through. Please check with them before we try again: ${call.phone}.` +
+      (note ? ` My caller's note, which I can't confirm: "${note}"` : "");
+  }
+  const also = await alsoLine(deps, call, r);
+  if (also && d.settle.result === "options") d.lead = `${also}\n\n${d.lead ?? `${place.name} offered:`}`;
+  else if (also) d.text = `${d.text}\n\n${also}`;
   const settle = d.settle;
   settle.optOut = optOut;
 
@@ -600,5 +638,13 @@ export async function reportCall(deps: ReportDeps, callId: string, r: CallResult
   // Already settled (a redelivered result): the user has heard, or the recovery pass will
   // finish telling them.
   if (!res.ok) return;
+  if (r.status === "completed" && r.outputs) await store.recordCallerOutputs(callId, Object.keys(r.outputs));
+  if (blind) {
+    await store.callerContractBroken(callId);
+    await store.raiseAlert("caller_contract_missing", call.requestId, callId, {
+      kind: call.kind,
+      outputs: Object.keys(r.outputs ?? {}),
+    });
+  }
   await drainDeliveries(deps, callId);
 }

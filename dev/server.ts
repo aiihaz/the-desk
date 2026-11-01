@@ -182,9 +182,11 @@ const searchPlaces: SearchPlaces = mapsKey
   : searchDevBusinesses;
 
 async function searchDevBusinesses({ text }: { text: string }): Promise<PlaceHit[]> {
-  const words = text.toLowerCase().split(/[^a-z0-9&]+/).filter((w) => w.length > 2);
+  // The same split both ways, so "Toni&Guy" finds Toni&Guy however it's typed.
+  const split = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2);
+  const words = split(text);
   return DEV_BUSINESSES
-    .filter((b) => b.name.toLowerCase().split(/\W+/).some((w) => words.includes(w)))
+    .filter((b) => split(b.name).some((w) => words.includes(w)))
     .map((b) => ({
       placeId: b.place_id,
       name: b.name,

@@ -67,6 +67,7 @@ insert into caller_numbers (id, e164, provider, a2p_declared_at) values
 insert into credit_ledger (delta_rs, reason) values (500, 'top-up');
 insert into gate_passes (agent_version, suite, passed, instructions_sha256) values ('v1', 'sarvam-tests', true, 'pin');
 select set_limit('agent_instructions_sha256', '"pin"', 'test');
+update gate_passes set outputs_seen = (select array_agg(name) from caller_contract);
 select set_limit('active_agent_version', '"v1"', 'test');
 
 create temp table t (name text primary key, id uuid);
