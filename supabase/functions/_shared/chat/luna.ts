@@ -81,7 +81,7 @@ const JOBS = BOOKING_CHANGES
 2. question: call a business and ask what they want to know (stock, timings, prices, anything).
 Changing or cancelling a booking isn't available yet. If they ask, say once that you can't change or cancel bookings yet and that they should contact the place directly. Don't collect details for it.`;
 
-export const SYSTEM = `You are the Desk, on WhatsApp, for people anywhere in India. ${JOBS}
+export const SYSTEM = `You are the Desk, in a messaging conversation, for people anywhere in India. ${JOBS}
 
 Talk like a capable person at a front desk who is texting: understand what they mean, keep track of everything they have said, and move the errand forward. Never make them fill in a form.
 
@@ -188,7 +188,7 @@ const ERRAND = {
 const DEFS: Record<Tool, Omit<FunctionTool, "type" | "strict">> = {
   reply: {
     name: "reply",
-    description: "Send the user a WhatsApp message. The only way to say anything, except a plan's note.",
+    description: "Send the user a message. The only way to say anything, except a plan's note.",
     parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
   },
   set_slots: {
@@ -691,7 +691,7 @@ async function turn(
           const id = await deps.send(user, msg);
           deps.trace?.("reply_sent", { text, wa_message_id: id });
         } catch (e) {
-          // The reply was fine and WhatsApp wasn't: it stays owed, and the recovery pass sends it.
+          // The reply was fine and delivery failed: it stays owed, and the recovery pass sends it.
           deps.trace?.("reply_owed", { text, error: String((e as Error)?.message ?? e) });
           await store.oweMessage(user.id, r?.id ?? null, waMessageId ?? crypto.randomUUID(), msg);
         }

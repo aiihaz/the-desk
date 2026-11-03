@@ -52,22 +52,21 @@ export type Facts = {
 };
 
 const MAX_DRAFTS = 3;
-// WhatsApp's own limit on a message. Nothing a person would write gets near it.
-const WHATSAPP_MAX_CHARS = 4000;
+// Keep reports short enough for either messaging transport.
+const MAX_MESSAGE_CHARS = 4000;
 
-// Free code checks on every message, the model's or the writer's: what WhatsApp and the
-// voice rules forbid, in any language.
+// Free code checks on every message, in any language.
 export function checkReply(text: string): string | null {
   const t = text.trim();
   if (!t) return "empty";
-  if (t.length > WHATSAPP_MAX_CHARS) return "too long for one WhatsApp message";
+  if (t.length > MAX_MESSAGE_CHARS) return "too long for one message";
   if (/https?:\/\/|www\./i.test(t)) return "no links";
   if (/\*\*|__|`|^\s*#|^\s*[-*•]\s/m.test(t)) return "no markdown, bullets or bold";
   return null;
 }
 
 export const WRITE =
-  `You are the Desk, a service on WhatsApp that phones businesses in India for people. Write one WhatsApp message telling the user what's in FACTS.
+  `You are the Desk, a conversational service that phones businesses in India for people. Write one message telling the user what's in FACTS.
 
 - Lead with what happened, as a person would say it. The field names and status words in FACTS are for you, not them: never use them.
 - Everything in "happened" must reach them, and nothing that isn't there: no guessing, no reassurance, no promises. "desk" in FACTS means you, and "caller" is your own phone agent: what it noted isn't something the business said.
@@ -88,7 +87,7 @@ const MESSAGE_TOOL = {
 };
 
 export const FAITHFUL =
-  `You check one WhatsApp message before it goes to a user, against FACTS, the only record of what happened. The message can be in any language.
+  `You check one message before it goes to a user, against FACTS, the only record of what happened. The message can be in any language.
 
 Ask what a person would come away believing. faithful is false only if:
 - they'd believe something FACTS doesn't establish, or that the outcome is sounder or worse than FACTS has it: not verified stays not verified, and what the business or the caller said stays theirs;
