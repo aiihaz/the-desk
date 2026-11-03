@@ -28,9 +28,6 @@ import { handle } from "./handler.ts";
 const store = new DbStore();
 const chat = new DbChatStore();
 const calls = new DbCallStore();
-if ((Deno.env.get("DESK_CHANNEL") ?? "whatsapp") !== "whatsapp") {
-  throw new Error("wa-inbound is disabled for this channel");
-}
 const wa = waConfigFromEnv();
 const sarvam = sarvamConfigFromEnv();
 const env = (k: string) => Deno.env.get(k) ?? "";

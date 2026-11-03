@@ -1,115 +1,118 @@
 # The Desk on iMessage (Linq)
 
-Alternate branch: `imessage-linq`. The WhatsApp version stays on `main`.
-Linq handles iMessage with RCS/SMS fallback; Desk still uses the existing Luna
-conversation, consent checks, Sarvam calls, booking verification, payment screenshot
-checks, and follow-through jobs. This branch does not deploy itself.
+Alternate branch: `imessage-linq`. Both channels use the **same Supabase project**.
+Linq provides iMessage with RCS/SMS fallback. The existing Luna conversation,
+consent checks, Sarvam caller, booking verification, payment screenshot checks,
+and follow-through jobs are shared.
 
-## Configuration
+## How the channels stay separate
 
-Use a **separate Supabase project** for this alternate version. The database still
-uses the legacy names `wa_id` and `wa_message_id` internally: a `wa_id` is the user's
-international phone digits without `+`, and message IDs are Linq UUIDs. This avoids
-rewriting consent and call guards, but means a database must serve only one channel.
-Do not point this deployment at the WhatsApp database.
+Migration `0017_messaging_channels.sql` adds `users.channel`, defaulting existing
+users to `whatsapp`. Existing WhatsApp `wa_id` keys and their unique constraint
+stay intact, so already deployed WhatsApp code can keep upserting users.
 
-Copy `supabase/functions/.env.example` to `supabase/functions/.env` and fill in:
+Linq stores its identity as `linq:<international-phone-digits>` and keeps the real
+phone in `phone_e164`. The same phone gets a separate user UUID on each channel,
+which separates history, memories, errands, consents, and STOP state. Application
+code normalizes the phone before sending. Reports, retries and alerts look up the
+persisted channel by user UUID, so a call started in iMessage reports there even
+if that phone also uses WhatsApp.
+
+Caller numbers, credit, business opt-outs, global limits and the caller's proven
+gates remain shared. Existing OpenAI, Places and Sarvam credentials stay in the
+same Supabase project. There is no global `DESK_CHANNEL` switch.
+
+## Secrets to add
+
+Put the Linq additions in the ignored `supabase/functions/.env` file:
 
 | Secret | Value |
 |---|---|
-| `DESK_CHANNEL` | `linq` (required for `linq-inbound`) |
 | `LINQ_API_TOKEN` | Linq dashboard API token |
 | `LINQ_WEBHOOK_SECRET` | Signing secret returned when creating the webhook subscription |
-| `DESK_ADMIN_WA_IDS` | Admin phone numbers as country code + digits, without `+`, comma-separated |
-| `DESK_ECHO` | Optional: `1` for an echo test; remove or set `0` to run the agent |
+| `DESK_ADMIN_LINQ_IDS` | iMessage admin phone digits, including country code, without `+`, comma-separated |
+| `DESK_LINQ_ECHO` | `1` for an iMessage echo test, `0` or absent to run the agent |
 
-Add the existing OpenAI, Places, Sarvam, and optional Jev/Serper secrets from
-[README.md](README.md). The `.env` file is ignored by Git; never commit a token.
-Keep an external copy in a password manager. No Meta app, WhatsApp access token,
-WhatsApp template approval, or WhatsApp 24-hour window is required for Linq.
+`DESK_ADMIN_WA_IDS` and `DESK_ECHO` continue to control WhatsApp only. Do not upload
+blank OpenAI or Sarvam entries from the template: that would overwrite the existing
+project's working secrets. Keep an external copy of Linq keys in a password manager.
 
-All production sends select the same transport: conversation replies, call reports,
-reconciliation/retries, health/admin alerts, and the legacy internal `wa-send`
-endpoint. Linq uses `POST /api/partner/v3/messages` with `to` and no pinned `from`,
-letting Linq select the line/service. Plans are sent as their original plain text;
-legacy button/list messages render as text choices. WhatsApp templates are rejected
-on Linq rather than silently sending a template name.
+## Deploy to the existing project
 
-## Deploy the alternate project
-
-From this branch, after installing the Supabase CLI and logging into Supabase:
+These commands use **Supabase CLI 3.x** (`supabase --version`). A management access
+token is required (`supabase login` or `SUPABASE_ACCESS_TOKEN`). Use the existing
+project reference:
 
 ```bash
 git switch imessage-linq
-# Set this to the NEW project's reference, not the WhatsApp project's reference.
-export IMESSAGE_PROJECT_REF="your-new-project-ref"
-supabase link --project-ref "$IMESSAGE_PROJECT_REF"
-supabase db push --linked
-supabase secrets set --env-file supabase/functions/.env --project-ref "$IMESSAGE_PROJECT_REF"
-supabase functions deploy linq-inbound --project-ref "$IMESSAGE_PROJECT_REF"
-supabase functions deploy wa-send --project-ref "$IMESSAGE_PROJECT_REF"
-supabase functions deploy dial --project-ref "$IMESSAGE_PROJECT_REF"
-supabase functions deploy sarvam-webhook --project-ref "$IMESSAGE_PROJECT_REF"
-supabase functions deploy reconcile --project-ref "$IMESSAGE_PROJECT_REF"
-supabase functions deploy health --project-ref "$IMESSAGE_PROJECT_REF"
+export DESK_PROJECT_REF="your-existing-project-ref"
+supabase db push --remote="$DESK_PROJECT_REF" --yes
+supabase functions deploy linq-inbound sarvam-webhook reconcile health \
+  --remote="$DESK_PROJECT_REF" --use-api
 ```
 
-Do not deploy `wa-inbound` for this project. It refuses to start when `DESK_CHANNEL=linq`.
-`linq-inbound` has JWT verification disabled in `supabase/config.toml`; it verifies
-Standard Webhooks HMAC signatures against the **raw request body** and rejects
-timestamps more than five minutes in either direction. Database errors return 503
-so Linq can retry; message UUIDs deduplicate redeliveries. The agent runs in the
-Supabase background task as in the WhatsApp version.
+Keep the existing WhatsApp webhook subscription and secrets. Its function does
+not need to be redeployed: the database migration preserves its insert/conflict
+contract. Deploying the shared report/reconcile/health functions is necessary so
+asynchronous replies and admin alerts can use either channel.
 
-Install Node 22+ and the Linq CLI (verified here with 2.7.0), then authenticate:
+Install Node 22+ and Linq CLI 2.6+ (verified here with 2.7.0), then authenticate:
 
 ```bash
 npm install -g @linqapp/cli@latest
 linq login
 linq whoami
 linq webhooks create \
-  --url "https://${IMESSAGE_PROJECT_REF}.supabase.co/functions/v1/linq-inbound?version=2026-02-03" \
+  --url "https://${DESK_PROJECT_REF}.supabase.co/functions/v1/linq-inbound?version=2026-02-03" \
   --events message.received --json
 ```
 
-Save the returned signing secret as `LINQ_WEBHOOK_SECRET` in the local `.env` and
-run the `supabase secrets set` command again. The `?version=2026-02-03` parameter is
-required: this handler intentionally rejects older message payload formats. Keep
-the subscription ID for later management. Create only one Desk inbound subscription
-per deployment. Any welcome subscription on the Linq sandbox can remain as it is.
+Save the returned signing secret as `LINQ_WEBHOOK_SECRET`. Upload **only** the four
+Linq secrets in the table above using the dashboard, or a dedicated ignored env file
+containing only those values:
 
-Set the two Vault secrets for **this project's** cron jobs, as documented in the
-original README: `desk_project_url` and `desk_service_key`. Set `DESK_GIT_SHA` for
-health/version reporting. Before real calls, configure the existing caller gate,
-test numbers, committed Sarvam agent version, and instruction/contract pins in the
-new database. A new project does not inherit the WhatsApp project's passed gates.
+```bash
+supabase secrets set --env-file .env.linq --remote="$DESK_PROJECT_REF"
+```
 
-GitHub CI checks this branch on push. The existing daily health workflow uses
-repository-wide Supabase secrets; leave those pointing at the WhatsApp deployment.
-This branch does not replace the main deployment's monitoring or secrets.
+The version query parameter is required. Standard Webhooks HMAC is checked on the
+raw body, with five-minute replay protection. JWT verification is disabled only
+for the inbound function in `supabase/config.toml`. Storage failures return 503 for
+Linq to retry, and message UUIDs deduplicate redeliveries. Subscribe only once per
+Desk endpoint. The account's existing welcome subscription can remain.
 
-## First live round trip
+Existing cron/Vault configuration and caller gates stay in the shared database.
+If Desk has never been deployed, apply all migrations and configure the original
+OpenAI/Places/Sarvam secrets, Vault cron secrets and proven caller gates from
+[README.md](README.md) as well. Deployment must not fabricate a passed caller gate.
 
-1. Set `DESK_ECHO=1` in the alternate project.
-2. From your own phone, text the Linq number shown by `linq whoami`. Shared lines
-   require adding the contact first (`linq contacts add +<country-code><number>`)
-   and support up to 20 contacts. This sandbox also requires the recipient to text
-   first; use the actual account's restrictions shown by the CLI/dashboard.
-3. Expect `The Desk got: ...` back in Messages. Check the alternate project's
-   `webhook_events` (`source=linq`) and `messages` tables for the inbound/outbound IDs.
-4. Set `DESK_ECHO=0`, then ask for an errand. Confirm the plan in your own words.
-   Booking and call guards apply exactly as before.
+## Verify
 
-For event inspection, `linq webhooks listen --events message.received` opens a
-temporary subscription that cleans up on Ctrl+C. It can run alongside Desk's
-permanent subscription.
+1. Set `DESK_LINQ_ECHO=1` without changing WhatsApp's `DESK_ECHO`.
+2. Text the number from `linq whoami` using your own phone. Sandbox accounts require
+   the recipient to text first. Shared lines also require contact registration and
+   support up to 20 contacts; follow the actual account's dashboard restrictions.
+3. Expect `The Desk got: ...`. In Supabase, the event source is `linq`, the user has
+   `channel=linq`, and the message IDs are Linq UUIDs.
+4. Set `DESK_LINQ_ECHO=0` and ask for an errand. Confirm the read-back in your own
+   words. The existing consent and call guards still apply.
+5. Check that a WhatsApp conversation still receives WhatsApp replies, including
+   call results and overdue reports.
+
+Linq sends use `POST /api/partner/v3/messages` with `to` and no pinned `from`, so
+Linq selects the appropriate line/service. There is no WhatsApp 24-hour template
+restriction on Linq. Plans retain their original text; legacy button/list messages
+render as text choices, and WhatsApp templates are rejected on the Linq transport.
 
 Supported inbound: direct phone-number conversations, text, threaded text replies,
 and image attachments (including payment screenshots). Email handles, group chats,
-Tapbacks/reaction events, edits, and unsupported media are not implemented as Desk
-inputs in this version. Images use Linq's presigned download URLs, which expire
-after about an hour; a delayed retry may require a fresh screenshot. Text-only
-RCS/SMS fallback cannot guarantee every iMessage attachment/feature.
+Tapbacks/reaction events and edits are not Desk inputs in this version. Unsupported
+media is represented as a marker. Presigned image URLs expire after about an hour;
+a delayed screenshot retry may need a fresh image. RCS/SMS fallback cannot guarantee
+all iMessage attachment/features.
+
+For live event inspection: `linq webhooks listen --events message.received` (temporary
+subscription, Ctrl+C cleans up).
 
 ## Checks
 
@@ -120,9 +123,9 @@ supabase db start
 supabase test db
 ```
 
-The added tests cover signed webhooks, replay/tamper rejection, duplicate delivery,
-database retry, blocked users, normalized identity/history/replies/screenshots,
-the Linq API send shape, and delivery outside WhatsApp's service window. Unit tests
-mock outbound requests and do not send real messages or place calls.
+Tests cover webhook authenticity and retries, blocked users, text/reply/screenshot
+normalization, Linq API payloads, cross-channel identity and delivery isolation,
+old WhatsApp upsert compatibility, and channel-specific STOP handling. Unit tests
+mock sends and calls. GitHub CI checks this branch on push.
 
 API reference: https://docs.linqapp.com/channel/imessage/llms.txt

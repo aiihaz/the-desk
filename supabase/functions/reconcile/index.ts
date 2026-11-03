@@ -24,6 +24,13 @@ const admin = new DbAdminStore();
 const waStore = new DbStore();
 const cfg = sarvamConfigFromEnv();
 const adminWaIds = (Deno.env.get("DESK_ADMIN_WA_IDS") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+const adminLinqIds = (Deno.env.get("DESK_ADMIN_LINQ_IDS") ?? "").split(",").map((s) => s.trim()).filter(
+  Boolean,
+);
+const adminUsers = async () => [
+  ...await admin.users(adminWaIds, "whatsapp"),
+  ...await admin.users(adminLinqIds, "linq"),
+];
 
 const openai = responsesClient(Deno.env.get("OPENAI_API_KEY") ?? "");
 const send: ReportDeps["send"] = createDelivery(waStore);
@@ -88,7 +95,7 @@ Deno.serve(async (req) => {
     }
   }
   const followThrough = await runFollowThrough(report);
-  const alerts = await pushAlerts({ store: admin, admins: () => admin.users(adminWaIds), send });
+  const alerts = await pushAlerts({ store: admin, admins: adminUsers, send });
   const detail = { ...summary, redials: redials.length, followThrough };
   const ran = await db.rpc("job_ran", { p_name: "reconcile", p_detail: detail });
   if (ran.error) console.error("job_ran failed", ran.error);

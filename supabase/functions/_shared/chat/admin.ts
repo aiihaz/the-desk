@@ -5,7 +5,7 @@
 //   limits · set limit <key> <value> [for <wa_id>] · numbers · number off|on <number or id>
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2.45.4";
 import { toE164 } from "../places.ts";
-import { serviceClient, type User } from "../store.ts";
+import { identityKey, type MessagingChannel, serviceClient, storedUser, type User } from "../store.ts";
 
 export type AlertRow = {
   id: string;
@@ -152,7 +152,7 @@ export async function runAdmin(store: AdminStore, text: string, by: string): Pro
 }
 
 export class DbAdminStore implements AdminStore {
-  constructor(private db: SupabaseClient = serviceClient()) {}
+  constructor(private db: SupabaseClient = serviceClient(), private channel: MessagingChannel = "whatsapp") {}
 
   private async rpc<T>(fn: string, args: Record<string, unknown> = {}): Promise<T> {
     const { data, error } = await this.db.rpc(fn, args);
@@ -178,7 +178,9 @@ export class DbAdminStore implements AdminStore {
   async setLimit(key: string, value: unknown, by: string, userWaId: string | null) {
     let userId: string | null = null;
     if (userWaId) {
-      const { data } = await this.db.from("users").select("id").eq("wa_id", userWaId).maybeSingle();
+      const { data, error } = await this.db.from("users").select("id")
+        .eq("wa_id", identityKey(userWaId, this.channel)).maybeSingle();
+      if (error) throw error;
       if (!data) return { ok: false, reason: `no user ${userWaId}` };
       userId = data.id;
     }
@@ -229,11 +231,13 @@ export class DbAdminStore implements AdminStore {
   }
 
   // The admins who have a user row (they've messaged the Desk at least once).
-  async users(waIds: string[]): Promise<User[]> {
+  async users(waIds: string[], channel: MessagingChannel = this.channel): Promise<User[]> {
     if (!waIds.length) return [];
-    const { data, error } = await this.db.from("users").select("id, wa_id, blocked").in("wa_id", waIds);
+    const keys = waIds.map((id) => identityKey(id, channel));
+    const { data, error } = await this.db.from("users")
+      .select("id, wa_id, blocked, phone_e164, channel").in("wa_id", keys);
     if (error) throw error;
-    return data.map((u: Json) => ({ id: u.id, waId: u.wa_id, blocked: u.blocked }));
+    return data.map((u: Json) => storedUser(u));
   }
 }
 

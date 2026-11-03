@@ -1,6 +1,6 @@
 # The Desk — iMessage alternate
 
-This branch (`imessage-linq`) adds Linq iMessage with RCS/SMS fallback. Setup and deployment: [README.imessage.md](README.imessage.md). The WhatsApp version remains on `main`.
+This branch (`imessage-linq`) adds Linq iMessage with RCS/SMS fallback to the same Supabase project, with separate conversation records per channel. Setup and deployment: [README.imessage.md](README.imessage.md). The WhatsApp version remains on `main`.
 
 # The Desk
 

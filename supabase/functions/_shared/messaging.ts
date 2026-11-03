@@ -1,14 +1,21 @@
 // One transport selection for replies, reports, reconciliation and admin alerts.
 import { deliver } from "./deliver.ts";
 import { linqConfigFromEnv, send as linqSend } from "./linq.ts";
-import type { Store, User } from "./store.ts";
+import type { MessagingChannel, Store, User } from "./store.ts";
+import type { Sender } from "./deliver.ts";
 import { type Outbound, send as waSend, waConfigFromEnv } from "./whatsapp.ts";
 
-export function createDelivery(store: Store) {
-  const channel = Deno.env.get("DESK_CHANNEL") ?? "whatsapp";
-  if (channel !== "whatsapp" && channel !== "linq") throw new Error("invalid DESK_CHANNEL");
-  const sender = channel === "linq"
-    ? (to: string, msg: Outbound) => linqSend(linqConfigFromEnv(), to, msg)
-    : (to: string, msg: Outbound) => waSend(waConfigFromEnv(), to, msg);
-  return (user: User, msg: Outbound) => deliver(store, sender, user, msg, new Date(), channel === "whatsapp");
+export function createDelivery(store: Store, senders?: Record<MessagingChannel, Sender>) {
+  return async (user: User, msg: Outbound) => {
+    // The persisted user wins over a caller's cached/stale channel. Call reports,
+    // retries and alerts are delivered to the conversation that created the errand.
+    const target = store.deliveryTarget ? await store.deliveryTarget(user.id) : user;
+    if (target.blocked) throw new Error("recipient is blocked");
+    const channel = target.channel ?? "whatsapp";
+    const sender = senders?.[channel] ??
+      (channel === "linq"
+        ? (to: string, m: Outbound) => linqSend(linqConfigFromEnv(), to, m)
+        : (to: string, m: Outbound) => waSend(waConfigFromEnv(), to, m));
+    return deliver(store, sender, target, msg, new Date(), channel === "whatsapp");
+  };
 }

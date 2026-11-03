@@ -3,7 +3,31 @@ import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.4
 import { waIdToE164 } from "./e164.ts";
 import type { Inbound, Outbound } from "./whatsapp.ts";
 
-export type User = { id: string; waId: string; blocked: boolean };
+export type MessagingChannel = "whatsapp" | "linq";
+export type User = { id: string; waId: string; blocked: boolean; channel?: MessagingChannel };
+
+// Keep existing WhatsApp keys and unique constraints intact. Linq identities get
+// a separate user UUID even when the same phone uses both channels.
+export function identityKey(phoneDigits: string, channel: MessagingChannel): string {
+  waIdToE164(phoneDigits);
+  return channel === "linq" ? `linq:${phoneDigits}` : phoneDigits;
+}
+
+export function storedUser(row: {
+  id: string;
+  wa_id: string;
+  blocked: boolean;
+  phone_e164: string | null;
+  channel: string;
+}): User {
+  if (row.channel !== "whatsapp" && row.channel !== "linq") throw new Error("unknown messaging channel");
+  return {
+    id: row.id,
+    waId: row.channel === "linq" ? (row.phone_e164 ?? "").slice(1) : row.wa_id,
+    blocked: row.blocked,
+    channel: row.channel,
+  };
+}
 
 export interface Store {
   // false if this exact webhook body was already stored (Meta redelivery).
@@ -13,6 +37,8 @@ export interface Store {
   saveInbound(userId: string, msg: Inbound): Promise<boolean>;
   lastInboundAt(userId: string): Promise<Date | null>;
   saveOutbound(userId: string, waMessageId: string, msg: Outbound): Promise<void>;
+  // Resolve by UUID, including for delayed reports whose legacy wa_id is namespaced.
+  deliveryTarget?(userId: string): Promise<User>;
 }
 
 export function serviceClient(): SupabaseClient {
@@ -38,17 +64,26 @@ export class DbStore implements Store {
   }
 
   async upsertUser(waId: string, name: string | null): Promise<User> {
+    const channel = this.source === "linq" ? "linq" : "whatsapp";
+    const key = identityKey(waId, channel);
     // Never overwrite a stored name: the user may have told the Desk a different one.
     const { error } = await this.db.from("users")
-      .upsert({ wa_id: waId, name, phone_e164: waIdToE164(waId) }, {
+      .upsert({ wa_id: key, name, phone_e164: waIdToE164(waId), channel }, {
         onConflict: "wa_id",
         ignoreDuplicates: true,
       });
     if (error) throw error;
     const { data, error: e2 } = await this.db.from("users")
-      .select("id, wa_id, blocked").eq("wa_id", waId).single();
+      .select("id, wa_id, blocked, phone_e164, channel").eq("wa_id", key).single();
     if (e2) throw e2;
-    return { id: data.id, waId: data.wa_id, blocked: data.blocked };
+    return storedUser(data);
+  }
+
+  async deliveryTarget(userId: string): Promise<User> {
+    const { data, error } = await this.db.from("users")
+      .select("id, wa_id, blocked, phone_e164, channel").eq("id", userId).single();
+    if (error) throw error;
+    return storedUser(data);
   }
 
   async saveInbound(userId: string, msg: Inbound): Promise<boolean> {

@@ -16,11 +16,18 @@ const db = serviceClient();
 const admin = new DbAdminStore();
 const waStore = new DbStore();
 const adminWaIds = (Deno.env.get("DESK_ADMIN_WA_IDS") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+const adminLinqIds = (Deno.env.get("DESK_ADMIN_LINQ_IDS") ?? "").split(",").map((s) => s.trim()).filter(
+  Boolean,
+);
+const adminUsers = async () => [
+  ...await admin.users(adminWaIds, "whatsapp"),
+  ...await admin.users(adminLinqIds, "linq"),
+];
 
 Deno.serve(async () => {
   const alerts = await pushAlerts({
     store: admin,
-    admins: () => admin.users(adminWaIds),
+    admins: adminUsers,
     send: createDelivery(waStore),
   });
   const s = await admin.status();

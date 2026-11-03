@@ -22,7 +22,6 @@ import { handle } from "./handler.ts";
 const store = new DbStore(undefined, "linq");
 const chat = new DbChatStore();
 const calls = new DbCallStore();
-if (Deno.env.get("DESK_CHANNEL") !== "linq") throw new Error("linq-inbound requires DESK_CHANNEL=linq");
 const sarvam = sarvamConfigFromEnv();
 const env = (k: string) => Deno.env.get(k) ?? "";
 
@@ -57,8 +56,8 @@ const luna: LunaDeps | null = env("OPENAI_API_KEY")
   : null;
 
 // Comma-separated wa_ids (no +), allowed the admin commands (chat/admin.ts).
-const adminStore = new DbAdminStore();
-const admins = new Set(env("DESK_ADMIN_WA_IDS").split(",").map((s) => s.trim()).filter(Boolean));
+const adminStore = new DbAdminStore(undefined, "linq");
+const admins = new Set(env("DESK_ADMIN_LINQ_IDS").split(",").map((s) => s.trim()).filter(Boolean));
 
 const agent: AgentDeps = {
   store: chat,
@@ -98,7 +97,7 @@ Deno.serve((req) =>
     // deno-lint-ignore no-explicit-any
     background: (p) => (globalThis as any).EdgeRuntime?.waitUntil(p) ?? p,
     handOff: async (user, msg) => {
-      if (env("DESK_ECHO") !== "1") return handleInbound(user, msg, agent);
+      if (env("DESK_LINQ_ECHO") !== "1") return handleInbound(user, msg, agent);
       await send(user, { kind: "text", body: `The Desk got: ${msg.text ?? `(${msg.type})`}` });
     },
   })
