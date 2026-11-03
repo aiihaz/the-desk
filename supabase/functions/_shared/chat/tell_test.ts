@@ -163,3 +163,23 @@ Deno.test("checkReply: what WhatsApp and the voice rules forbid, in any language
   assertEquals(checkReply("See https://paragon.in"), "no links");
   assertEquals(checkReply("**Booked**"), "no markdown, bullets or bold");
 });
+
+Deno.test("the check reads the call itself, not only what code made of it", async () => {
+  const { sent, asked, deps } = setup(
+    [GOOD, "They want {{advance}} to {{pay_to}}, adjusted in the bill. Do you want it?"],
+    [{ faithful: false, problems: ["leaves out that it's adjusted in the bill"] }, {
+      faithful: true,
+      problems: [],
+    }],
+  );
+  const withCall: Facts = {
+    ...facts,
+    call: {
+      transcript: ["caller: Is there an advance?", "business: Rs 500, adjusted in the bill."],
+      caller_noted: { advance_redeemable: "adjusted in the bill" },
+    },
+  };
+  await tell(deps, user, null, "k1", withCall);
+  assertEquals(asked[0].includes("business: Rs 500, adjusted in the bill."), true);
+  assertEquals(body(sent[0]), "They want Rs 500 to paragon@okhdfc, adjusted in the bill. Do you want it?");
+});

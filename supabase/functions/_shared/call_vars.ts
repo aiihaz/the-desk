@@ -128,6 +128,10 @@ function resolvedWhen(f: Record<string, unknown>, o: CallInputs["option"]): stri
 }
 
 // Never agreed on a call. The customer decides, with everything the business said.
+// The user asked for their number not to be given (share_phone false on a booking).
+const NO_PHONE = "Don't give their phone number: they asked not to share it. If the business needs it to " +
+  "book, don't book: find out why, and say you'll check and get back to them.";
+
 const ADVANCE = "No advance: if they want one, don't agree. Take down the amount, whether it's adjusted " +
   "against the bill, whether it's refunded, how and where to pay, by when, and whether they'll keep the " +
   "slot meanwhile, then say you'll check and get back to them.";
@@ -178,6 +182,7 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
         typeof f.max_price_rs === "number" ? `, up to Rs ${f.max_price_rs}` : ""
       }.`,
       conditions ? `Already accepted: ${conditions}.` : null,
+      f.share_phone === false ? NO_PHONE : null,
       ADVANCE,
       "Anything else: don't accept, come back with it.",
     ].filter(Boolean).join(" ")
@@ -280,7 +285,7 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean,
         // Name and number go only when booking on this call: the plan for a call that
         // only asks tells the user neither is shared.
         customer_name: mayBook ? str("customer_name") : null,
-        customer_phone: mayBook ? x.customerPhone : null,
+        customer_phone: mayBook && f.share_phone !== false ? x.customerPhone : null,
         also_ask: str("also_ask"),
       };
       if (x.task !== "booking") missing.push(`a booking request (this is ${x.task})`);
@@ -288,7 +293,7 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean,
       if (v.exact_time === null && (v.window_start === null || v.window_end === null)) missing.push("time");
       if (mayBook && v.customer_name === null) missing.push("customer_name");
       if (typeof f.may_book !== "boolean") missing.push("may_book");
-      if (mayBook && v.customer_phone === null) missing.push("customer_phone");
+      if (mayBook && f.share_phone !== false && v.customer_phone === null) missing.push("customer_phone");
       break;
     }
     case "question": {
@@ -319,7 +324,7 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean,
         service: str("service"),
         // A question call that turned into an offer has no name stored yet.
         customer_name: str("customer_name") ?? x.profileName ?? null,
-        customer_phone: x.customerPhone,
+        customer_phone: f.share_phone === false ? null : x.customerPhone,
         // The plan promised to ask; a first call that got the answer already did.
         also_ask: x.prev?.alsoAnswered ? null : str("also_ask"),
         prev_call_time: x.prev?.at ?? null,
@@ -328,7 +333,7 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean,
       };
       if (!o) missing.push("option");
       if (v.customer_name === null) missing.push("customer_name");
-      if (v.customer_phone === null) missing.push("customer_phone");
+      if (f.share_phone !== false && v.customer_phone === null) missing.push("customer_phone");
       if (!x.prev) missing.push("a completed earlier call");
       break;
     }
@@ -388,7 +393,7 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean,
         payee: p?.payee ?? null,
         // Paying is what makes the booking, so this is the call that gives their details.
         customer_name: b?.customerName ?? str("customer_name") ?? x.profileName ?? null,
-        customer_phone: x.customerPhone,
+        customer_phone: f.share_phone === false ? null : x.customerPhone,
       };
       if (!b) missing.push("held_booking");
       if (!p) missing.push("payment");

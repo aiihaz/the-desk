@@ -15,8 +15,10 @@
 // Every condition reaches the user in the business's own words.
 //
 // The caller's date is its reading too. It can carry the wrong year, or a date with no
-// time. A wrong year is never corrected here: the booking stays unverified, with what was
-// captured kept as evidence and not shown as the booking's date.
+// time. A wrong year is never corrected here: when the transcript check's own reading of
+// the call agrees with what was approved, that reading is the booking's date; otherwise
+// the booking stays unverified, with what was captured kept as evidence and not shown as
+// the booking's date.
 import type { CreateResponse, Item } from "../openai.ts";
 import type { ChatStore } from "./store.ts";
 
@@ -240,7 +242,7 @@ const VERDICT_TOOL = {
   },
 };
 
-const AGENT_ROLES = new Set(["agent", "assistant", "bot"]);
+export const AGENT_ROLES = new Set(["agent", "assistant", "bot"]);
 
 function numberedLines(transcript: Transcript): string {
   return transcript.map((l, i) => `${i + 1}. ${AGENT_ROLES.has(l.role) ? "agent" : "business"}: ${l.en_text}`)
@@ -337,7 +339,12 @@ export async function verifyBooking(
     return { verified: false, problems, verdict: null, ...(wrongYear(c) ? { badYear: true } : {}) };
   }
   // The caller gave no readable time: what the call itself says goes through the same check.
-  const heard = !c.bookedTime && !c.bookedDate ? readBookedWhen(verdict.bookedWhen) : null;
+  // Nor does a note whose only fault is its year (S2: "Saturday November 7" noted as
+  // 2025): the call's own reading, placed from TODAY, is read instead, and verifies only
+  // if it too lands on what they approved. The caller's note stays as evidence.
+  const unread = !c.bookedTime && !c.bookedDate;
+  const fromCall = unread || wrongYear(c) ? readBookedWhen(verdict.bookedWhen) : null;
+  const heard = fromCall && (unread || fromCall.time || fromCall.date) ? fromCall : null;
   const read = heard ? { ...c, bookedTime: heard.time, bookedDate: heard.date } : c;
   const badYear = wrongYear(read);
   const time = timeCheck(read);

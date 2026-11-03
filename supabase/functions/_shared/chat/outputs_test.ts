@@ -105,3 +105,27 @@ Deno.test("the contract the database enforces is agent/contract.json", async () 
     contract.required.map((o) => o.name).sort(),
   );
 });
+
+// Every outcome the caller can return is read on purpose (S9: wrong_number once fell through
+// to "unclear" and became an answer from the business). A new value fails here until it is.
+Deno.test("every outcome in the contract has a meaning on the Desk side", () => {
+  const values = contract.required.find((o) => o.name === "outcome")?.values ?? [];
+  // A booking status, by call kind (outputs.ts OUTCOME).
+  const mapped = [
+    "booked",
+    "advance_required",
+    "options_found",
+    "unavailable",
+    "refused",
+    "needs_customer_decision",
+  ];
+  // Read before any call kind (report.ts): nobody reached, or not this business.
+  const beforeKind = ["wrong_number", "voicemail", "phone_menu", "no_conversation"];
+  // Read by the call kind they belong to (report.ts decidePayment, decideCancel,
+  // decideReschedule, the question call's answer).
+  const byKind = ["payment_not_seen", "hold_expired", "cancelled", "moved", "kept", "question_answered"];
+  // Nothing clear: the kind's own "unclear" path, which never says nothing happened.
+  const unclear = ["uncertain", "disconnected"];
+  assertEquals([...mapped, ...beforeKind, ...byKind, ...unclear].sort(), [...values].sort());
+  for (const o of mapped) assertEquals(!!readOutputs("first", { outcome: o })?.booking_status, true, o);
+});

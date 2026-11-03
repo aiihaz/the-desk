@@ -28,6 +28,8 @@ export type Fields = {
   // Question task about something of their own (an order, a booking made elsewhere):
   // the business needs to know who is asking. Both are said in the plan.
   share_name?: boolean;
+  // Question task: as above. Booking: false when they don't want their number given; the
+  // plan says so, and no call on the errand carries it. Unset, a booking gives it.
   share_phone?: boolean;
 };
 
@@ -45,6 +47,7 @@ const ALLOWED: Record<Task, (keyof Fields)[]> = {
     "max_price_rs",
     "also_ask",
     "place_query",
+    "share_phone",
   ],
   question: ["place_query", "share_name", "share_phone", "customer_name"],
   reschedule: ["window_start", "window_end", "exact_time", "tolerance_min"],
@@ -141,6 +144,16 @@ export function checkSlots(
   const merged = { ...current, ...out } as Record<string, unknown>;
   for (const [k, v] of Object.entries(out)) if (v === null) delete merged[k];
   const m = merged as Fields;
+  // "table for 3" in service with party_size 3 reads as "table for 3 for 3" in the plan
+  // and the caller's brief: the number has one home.
+  if (
+    ("service" in out || "party_size" in out) && m.service && m.party_size &&
+    new RegExp(`(^|\\D)${m.party_size}(\\D|$)`).test(m.service)
+  ) {
+    errors.push(
+      "service: the party size goes in party_size only; service is what's booked, or null for a table",
+    );
+  }
   if (m.window_start && m.window_end && Date.parse(m.window_start) >= Date.parse(m.window_end)) {
     errors.push("window_start: must be before window_end");
   }
@@ -180,10 +193,18 @@ function applyQuestionOps(list: string[], ops: QuestionOps): string[] | string {
   for (const q of ops.add ?? []) {
     const err = text(q, 200);
     if (err) return `add_questions: ${err}`;
-    kept.push(q.trim());
+    // The same question added twice is one question: a plan never lists it twice.
+    if (!kept.some((k) => same(k, q))) kept.push(q.trim());
   }
   if (kept.length > MAX_QUESTIONS) return `questions: at most ${MAX_QUESTIONS} per call`;
   return kept;
+}
+
+// The same text, whatever its spacing or case. Identity, not meaning: a reworded question is
+// Luna's to see in the list it gets back.
+function same(a: string, b: string): boolean {
+  const norm = (t: string) => t.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  return norm(a) === norm(b);
 }
 
 function checkValue(key: keyof Fields, v: unknown, now: Date): string | null {

@@ -245,6 +245,27 @@ Deno.test("a wrong year is never corrected: the booking stays unverified, flagge
   assertEquals([none.verified, none.badYear], [false, true]);
 });
 
+Deno.test("a note wrong only in its year: the call's own reading, from TODAY, can settle it (S2)", async () => {
+  const c = { ...year("2025-11-08T20:00:00+05:30"), today: "Fri 23 Oct 2026, 6:00 pm" };
+  const v = await verifyBooking(
+    model({ ...confirmed, booked_when: "2026-11-08T20:00:00+05:30" }),
+    "m",
+    "low",
+    c,
+  );
+  assertEquals([v.verified, v.badYear], [true, undefined]);
+  assertEquals(v.heard, { time: "2026-11-08T20:00:00+05:30", date: null });
+
+  // If the call's reading doesn't agree either, it stays unverified and flagged.
+  const off = await verifyBooking(
+    model({ ...confirmed, booked_when: "2025-11-08T20:00:00+05:30" }),
+    "m",
+    "low",
+    c,
+  );
+  assertEquals([off.verified, off.badYear], [false, true]);
+});
+
 Deno.test("a different day is not a year mistake", async () => {
   const v = await verifyBooking(model(confirmed), "m", "low", year("2025-11-09T20:00:00+05:30"));
   assertEquals([v.verified, v.badYear], [false, undefined]);

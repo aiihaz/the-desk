@@ -34,6 +34,9 @@ const names: string[] = vars
 const missing = contract.required.filter((o) => !names.includes(o.name));
 console.log(`${contract.required.length - missing.length} of ${contract.required.length} outputs present`);
 for (const m of missing) console.log(`  missing: ${m.name} (${m.calls})`);
+for (const m of contract.optional.filter((o) => !names.includes(o.name))) {
+  console.log(`  optional, not there: ${m.name} (read when present)`);
+}
 if (vars) {
   const out = readOutputs(kind, vars);
   console.log(`\nAs a ${kind} call:`, hasResult(out) ? "Desk can read a result" : "NO RESULT Desk can read");

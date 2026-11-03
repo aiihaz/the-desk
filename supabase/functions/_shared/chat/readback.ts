@@ -158,10 +158,16 @@ export function bookingReadback(
         `your name or number yet; I'll come back to you with what they say.${also}\n\nShall I call them?`,
     ));
   }
-  const who = x.customerPhone ? `${f.customer_name}, ${maskPhone(x.customerPhone)}` : f.customer_name;
+  const withheld = f.share_phone === false;
+  const who = x.customerPhone && !withheld
+    ? `${f.customer_name}, ${maskPhone(x.customerPhone)}`
+    : f.customer_name;
+  const phone = withheld
+    ? "I won't give them your number; if they need it to book, I'll come back to you first. "
+    : "";
   return ask(withNote(
     x.note,
-    `I'll call ${callee(place)} and book ${what_}, in your name (${who}). ` +
+    `I'll call ${callee(place)} and book ${what_}, in your name (${who}). ${phone}` +
       `If that isn't free, or they want an advance, I won't agree to anything; I'll come back to you ` +
       `with what they say.${also}` +
       "\n\nShall I go ahead?",

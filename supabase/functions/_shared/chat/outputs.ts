@@ -41,6 +41,8 @@ export type Outputs = {
   also_answer?: string;
   contact_name?: string;
   summary?: string;
+  // What the caller left unresolved or heard contradicted, in its words.
+  uncertainties?: string;
   unintended_commitment?: string;
   opt_out_requested?: "yes" | "no";
 };
@@ -99,6 +101,7 @@ export function readOutputs(kind: string, raw: unknown): Outputs | null {
       "also_answer",
       "contact_name",
       "summary",
+      "uncertainties",
     ] as const
   ) {
     const v = text(r[k]);

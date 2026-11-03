@@ -20,6 +20,7 @@ const WHY: Record<string, string> = {
   too_late: "the time they asked for has already passed",
   opted_out: "this business has asked not to be called",
   user_block: "they blocked this business",
+  wrong_number: "this number reached someone else last time; it needs another branch, place or number",
   user_stopped: "they stopped the Desk; they need to reply START first",
   limit_user_day: "they've reached today's call limit; they can try tomorrow",
   limit_business_day: "this business has had too many calls today; they can try tomorrow",

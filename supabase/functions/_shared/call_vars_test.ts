@@ -195,3 +195,21 @@ Deno.test("the confirm call says what they report paying, and that it's theirs t
   );
   assertEquals(v.user_name, "Ihaz");
 });
+
+Deno.test("a booking without their number: the call can book, carries no number, and is told why (S5)", () => {
+  const fields = { ...base.fields, may_book: true, share_phone: false };
+  const v = callVariables("first", { ...base, fields }, false);
+  assertEquals([v.may_book, v.customer_phone, v.customer_name], [true, null, "Ihaz"]);
+  assertEquals(v.user_phone, "not shared on this call");
+  assertEquals(String(v.task_context).includes("Don't give their phone number"), true);
+
+  const option = { label: "9:30 pm", value: { time: "2026-10-23T21:30:00+05:30" } };
+  const prev = { at: "2026-10-23T12:00:00+05:30", contactName: null, summary: null };
+  const call2 = callVariables("booking", { ...base, fields, option, prev }, false);
+  assertEquals(call2.customer_phone, null);
+  assertEquals(String(call2.task_context).includes("Don't give their phone number"), true);
+
+  // Given unless they said otherwise.
+  const shared = callVariables("first", { ...base, fields: { ...base.fields, may_book: true } }, false);
+  assertEquals(shared.customer_phone, "+919812345678");
+});
