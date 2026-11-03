@@ -89,10 +89,14 @@ export function memoryCard(ms: Memory[]): string {
 
 // What's waiting on the user outside the current errand, with everything the business said,
 // so nothing has to be asked twice.
-export function openCard(advances: HeldBooking[], decisions: OpenDecision[]): string {
-  if (!advances.length && !decisions.length) return "OPEN\nnothing";
+// owed: places whose call result is in, with the message about it still being written.
+export function openCard(advances: HeldBooking[], decisions: OpenDecision[], owed: string[] = []): string {
+  if (!advances.length && !decisions.length && !owed.length) return "OPEN\nnothing";
   return [
     "OPEN",
+    ...owed.map((p) =>
+      `update being written: the call to ${p} is finished; its result is on its way to them`
+    ),
     ...advances.map((a) => {
       const t = (a.terms ?? {}) as Record<string, string | number | null>;
       return [

@@ -131,6 +131,7 @@ Their details
 - Memory is never a permission. "Just book it without asking me" can't be kept: every call needs their yes on its plan. Say so.
 
 Facts
+- An update in the OPEN card is still being written: the call's result is in, and the message about it is on its way. Say so if they ask; don't guess what it says.
 - Know the difference between what you know (the cards, the chat, tool results), what you're assuming, and what only the call can find out. Say which, briefly, when it matters ("I'll ask them if they're open Sunday").
 - Never state hours, prices, availability, ratings, parking or phone numbers from memory. Never say a call, booking or payment happened unless the TASK card's state or a tool result says so.
 - Times: ISO 8601 with +05:30, resolved from NOW. An exact time ("8pm", "1 pm", "11 am", "8 baje", "at 8") is exact_time only, never a short window. If they really give a range of a few minutes, keep it as a window. A fuzzy time ("around 8", "evening", "after 8") is a window ("around 8" is 7:30 to 8:30 pm). A day with no time, or a time with no day, needs asking; never invent a date.
@@ -172,6 +173,11 @@ const SLOT_PROPS = {
     type: ["string", "null"],
     description: "what the user called the place, with area if given",
   },
+  share_name: {
+    type: ["boolean", "null"],
+    description: "question errand about something of their own the business must look up",
+  },
+  share_phone: { type: ["boolean", "null"], description: "with share_name, if they'd find it by number" },
 };
 
 const ERRAND = {
@@ -466,11 +472,12 @@ async function quietRefused(
 
 // What the user has open besides the current errand.
 async function openNow(deps: LunaDeps, user: User) {
-  const [advances, decisions] = await Promise.all([
+  const [advances, decisions, owed] = await Promise.all([
     deps.store.heldBookings(user.id),
     deps.store.openDecisions(user.id),
+    deps.store.owedUpdates(user.id),
   ]);
-  return { advances, decisions };
+  return { advances, decisions, owed };
 }
 
 async function turn(
@@ -498,7 +505,9 @@ async function turn(
     return {
       task_card: await taskCardFor(deps, user, r, now),
       messages: lines.slice(-4).map(({ from, text }) => ({ from, text })),
-      recent: `${recentCard(await store.recent(user.id), now)}\n\n${openCard(open.advances, open.decisions)}`,
+      recent: `${recentCard(await store.recent(user.id), now)}\n\n${
+        openCard(open.advances, open.decisions, open.owed)
+      }`,
     };
   };
 
@@ -835,7 +844,7 @@ async function context(
     }),
     memoryCard(await store.memories(user.id)),
     await taskCardFor(deps, user, r, now),
-    await openNow(deps, user).then((o) => openCard(o.advances, o.decisions)),
+    await openNow(deps, user).then((o) => openCard(o.advances, o.decisions, o.owed)),
     recentCard(await store.recent(user.id), now),
   ].join("\n\n");
 }

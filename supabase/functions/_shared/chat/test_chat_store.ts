@@ -233,6 +233,10 @@ export class FakeChatStore implements ChatStore {
   async openDecisions() {
     return this.decisions;
   }
+  async owedUpdates() {
+    return this.deliveries.filter((d) => d.status !== "sent" && !d.message && d.kind === "report")
+      .map((d) => d.facts?.place ?? "the business");
+  }
   accepted: { bookingId: string; basis: Record<string, unknown> }[] = [];
   async acceptCondition(bookingId: string, _u: string, basis: Record<string, unknown>) {
     this.accepted.push({ bookingId, basis });

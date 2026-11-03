@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1.0.8";
-import { profileCard, recentCard, taskCard } from "./cards.ts";
+import { openCard, profileCard, recentCard, taskCard } from "./cards.ts";
 
 const now = new Date("2026-10-23T12:00:00+05:30");
 
@@ -104,4 +104,10 @@ Deno.test("recent requests, at most three", () => {
   };
   assertEquals(recentCard([r, r, r, r], now).split("\n").length, 4);
   assertEquals(recentCard([r], now), "RECENT\n12 Oct expired, not confirmed: Paragon, table for 4");
+});
+
+Deno.test("an update still being written shows, so a reply doesn't guess or go quiet", () => {
+  const c = openCard([], [], ["Paragon, Kannur Rd"]);
+  assertEquals(c.includes("update being written: the call to Paragon, Kannur Rd is finished"), true);
+  assertEquals(openCard([], [], []), "OPEN\nnothing");
 });

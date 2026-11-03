@@ -264,6 +264,8 @@ export interface ChatStore {
   heldBookings(userId: string): Promise<HeldBooking[]>;
   // Bookings waiting on the user's decision about a condition (0014).
   openDecisions(userId: string): Promise<OpenDecision[]>;
+  // Places whose finished call still has its message to the user being written (0015).
+  owedUpdates(userId: string): Promise<string[]>;
   acceptCondition(
     bookingId: string,
     userId: string,
@@ -889,6 +891,14 @@ export class DbChatStore implements ChatStore {
       time: b.time ? new Date(b.time) : null,
       conditions: (b.conditions as Row[]).filter((c) => c.required && !c.covered),
     }));
+  }
+
+  async owedUpdates(userId: string): Promise<string[]> {
+    const { data, error } = await this.db.from("deliveries")
+      .select("facts").eq("user_id", userId).eq("status", "pending").is("message", null)
+      .not("call_id", "is", null);
+    if (error) throw error;
+    return (data as Row[]).map((d) => d.facts?.place ?? "the business");
   }
 
   acceptCondition(bookingId: string, userId: string, basis: Record<string, unknown>) {

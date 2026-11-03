@@ -413,3 +413,17 @@ Deno.test("without a pinned model, Jev doesn't run and the log says off", async 
   assertEquals(asked, []);
   assertEquals(store.routes[0].jevMode, "off");
 });
+
+Deno.test("share_name and share_phone can be set: the prompt asks for them, so the schema allows them", async () => {
+  const { deps } = setup([[call("reply", { text: "Which shop?" })]]);
+  const create = deps.create;
+  let props: Record<string, unknown> = {};
+  deps.create = (req) => {
+    const set = req.tools.find((t) => t.name === "set_slots");
+    // deno-lint-ignore no-explicit-any
+    props = (set?.parameters as any).properties.fields.properties;
+    return create(req);
+  };
+  await runLuna(deps, user, now);
+  assertEquals(["share_name", "share_phone"].every((k) => k in props), true);
+});
