@@ -336,6 +336,10 @@ export class FakeChatStore implements ChatStore {
     d.attempts++;
     return [d];
   }
+  async deferDelivery(id: string) {
+    const d = this.deliveries.find((d) => d.id === id)!;
+    d.attempts = Math.max(d.attempts, 1);
+  }
   async deliverySent(id: string) {
     this.deliveries.find((d) => d.id === id)!.status = "sent";
   }

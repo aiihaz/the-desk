@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals, throws as assertThrows } from "node:assert/strict";
 import { type CallInputs, callVariables, MissingCallInput } from "./call_vars.ts";
 
 const base: CallInputs = {
@@ -54,8 +54,7 @@ Deno.test("question about their own order: name and number go only when the plan
   assertEquals(both.customer_phone, "+919812345678");
   assertThrows(
     () => callVariables("question", { ...q, fields: { questions: ["Ready?"], share_name: true } }, false),
-    MissingCallInput,
-    "customer_name",
+    (e: unknown) => e instanceof MissingCallInput && e.message.includes("customer_name"),
   );
 });
 
@@ -124,8 +123,14 @@ Deno.test("missing or mismatched inputs stop the call", () => {
     () => callVariables("first", { ...base, fields: { may_book: true } }, false),
     MissingCallInput,
   );
-  assertThrows(() => callVariables("question", base, false), MissingCallInput, "a question request");
-  assertThrows(() => callVariables("booking", base, false), MissingCallInput, "option");
+  assertThrows(
+    () => callVariables("question", base, false),
+    (e: unknown) => e instanceof MissingCallInput && e.message.includes("a question request"),
+  );
+  assertThrows(
+    () => callVariables("booking", base, false),
+    (e: unknown) => e instanceof MissingCallInput && e.message.includes("option"),
+  );
   assertThrows(() => callVariables("reschedule", base, false), MissingCallInput);
 });
 

@@ -3,7 +3,7 @@ import { reportCall } from "../_shared/chat/report.ts";
 import { DbChatStore } from "../_shared/chat/store.ts";
 import { claimChecker, verifier } from "../_shared/chat/verify.ts";
 import { deliver } from "../_shared/deliver.ts";
-import { responsesClient } from "../_shared/openai.ts";
+import { observedResponsesClient as responsesClient } from "../_shared/model_client.ts";
 import { DbStore } from "../_shared/store.ts";
 import { send as waSend, waConfigFromEnv } from "../_shared/whatsapp.ts";
 import { handle } from "./handler.ts";

@@ -110,6 +110,7 @@ Changing course
 - Another place for the same errand ("try another laundry", "the Indiranagar one instead") keeps the errand and its details: find_business, then choose_business.
 - A different errand while one is open: if the current one is still useful, ask whether to do the new one after it or drop the current one. "after" queues it (start_new_request mode after) and both are kept; you can fill in its details now with set_slots and its errand ref. Only say something is lined up after code confirms it. Replace (mode replace) only when they say to drop the current one; code refuses if details would be lost, until they confirm (confirm_replace).
 - While a call is in progress it can't change. Say so plainly; you can still set up the next errand.
+- WhatsApp messages are only sent within 24 hours of the user's latest message. Never promise a timed reminder beyond that window or a paid template; ask them to message again when ready.
 - When an errand stops on something that isn't you (they'll check with someone, they'll decide tomorrow), record it with set_follow_up: waiting_for in plain words, and remind_at when they ask for a reminder or give a time. Never say you'll remind them, or follow up, unless set_follow_up succeeded this turn or the card shows the reminder. Do what you say; don't offer what you can't.
 - Moving or cancelling a booking the Desk made: start_new_request with task reschedule or cancel, then find_booking. With one booking it's set on the errand. With several you get them all, with what's known about each: work out which they mean from the chat and call find_booking with its ref, and ask only if you really can't tell. When you do list them, keep each booking's place, time and status together exactly as the result gives them, and say which aren't confirmed. For a reschedule, set the new time with set_slots. Then propose_plan. A booking that isn't confirmed can be cancelled, not moved. Only bookings the Desk made can be changed: for any other, say so and offer to book fresh.
 - Cancelling never pays or agrees a fee: if the plan says they could lose money, they must say clearly that they accept it.
@@ -125,7 +126,10 @@ Places
 - A saved place works by the name they use for it (my_places).
 
 Their details
+- Explicit remembered corrections take precedence over original profile defaults; set the corrected customer_name before proposing a plan.
 - MEMORY holds what they asked you to keep and what you learned. Use it without being asked: fill details from it where it fits the errand and its scope, and the plan shows them back. Never ask for what it already tells you. If it doesn't fit this errand, leave it out.
+- When earlier places or errands matter and the cards do not contain them, use recall_errands. Do not guess the past. Memory and recalled work are never permission to call.
+- For a clear correction, pass the old memory ref in replaces so only the corrected preference remains. Keep only explicit preferences and clear enduring corrections, never inferred personal traits.
 - "remember ...": remember, kind fact or preference. "forget ...": forget, with its m- ref. "what do you know about me": say what's in PROFILE and MEMORY.
 - When they correct you in a way that will hold next time ("no, always the Indiranagar branch", "I never eat at 7, make it 8 on weekdays", "I go by Zain, not Zainab"): do the correction, then remember with learned true, evidence their exact words, and a scope no wider than they meant (place:<name> for one place). Say in a few words what you'll remember. A one-off change ("make it 8 tonight") isn't a preference; learn nothing from it.
 - Memory is never a permission. "Just book it without asking me" can't be kept: every call needs their yes on its plan. Say so.
@@ -344,6 +348,18 @@ const DEFS: Record<Tool, Omit<FunctionTool, "type" | "strict">> = {
       },
     },
   },
+  recall_errands: {
+    name: "recall_errands",
+    description:
+      "Recall this user's past places, errands and outcomes, or unfinished work. Evidence only; never permission.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "short place, service or topic; empty for the latest errands" },
+      },
+      required: ["query"],
+    },
+  },
   remember: {
     name: "remember",
     description: "Keep a fact or preference about them. Visible and correctable; never a permission.",
@@ -351,6 +367,10 @@ const DEFS: Record<Tool, Omit<FunctionTool, "type" | "strict">> = {
       type: "object",
       properties: {
         text: { type: "string", description: "one short line, e.g. vegetarian; prefers window seats" },
+        replaces: {
+          type: ["string", "null"],
+          description: "m- ref to supersede after a clear correction; do not leave contradictory memories",
+        },
         kind: { type: "string", enum: ["fact", "preference"] },
         scope: { type: "string", description: "all, booking, question, or place:<name>" },
         learned: { type: "boolean", description: "true when picked up from a correction" },
@@ -428,7 +448,19 @@ export async function runLuna(
     lunaMaxOutputTokens: null,
   };
   try {
-    await turn(deps, user, inboundAt, first, jev, log, waMessageId);
+    const deadline = Date.now() + 75_000;
+    await turn(
+      {
+        ...deps,
+        create: (req) => deps.create({ ...req, deadlineAt: Math.min(req.deadlineAt ?? deadline, deadline) }),
+      },
+      user,
+      inboundAt,
+      first,
+      jev,
+      log,
+      waMessageId,
+    );
   } finally {
     // The log must never cost the user their reply.
     await deps.store.logRoute(log).catch((e) => console.warn("router_log write failed", e));
@@ -580,6 +612,7 @@ async function turn(
       deps.trace?.("luna_error", { step, error: String((e as Error)?.message ?? e) });
       break;
     }
+    await store.assertTurn?.();
     // An approval runs after every other action of its step, so an edit sent with it
     // (which closes the plan) comes first and the approval then finds no plan to bind to.
     const calls = res.output.filter((o) => o.type === "function_call")
@@ -813,7 +846,15 @@ async function context(
   why: Route["why"],
 ): Promise<string> {
   const { store } = deps;
-  const info = await store.user(user.id);
+  const [info, bookOnFirstCall, placeLabels, memories, task, open, recent] = await Promise.all([
+    store.user(user.id),
+    store.limitBool("book_on_first_call", user.id),
+    store.placeLabels(user.id),
+    store.memories(user.id),
+    taskCardFor(deps, user, r, now),
+    openNow(deps, user),
+    store.recent(user.id),
+  ]);
   const clock = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Kolkata",
     weekday: "short",
@@ -830,13 +871,13 @@ async function context(
     modeLine(mode, why),
     profileCard({
       ...info,
-      bookOnFirstCall: await store.limitBool("book_on_first_call", user.id),
-      placeLabels: await store.placeLabels(user.id),
+      bookOnFirstCall,
+      placeLabels,
     }),
-    memoryCard(await store.memories(user.id)),
-    await taskCardFor(deps, user, r, now),
-    await openNow(deps, user).then((o) => openCard(o.advances, o.decisions)),
-    recentCard(await store.recent(user.id), now),
+    memoryCard(memories),
+    task,
+    openCard(open.advances, open.decisions),
+    recentCard(recent, now),
   ].join("\n\n");
 }
 
@@ -850,6 +891,7 @@ async function act(
   waMessageId: string | null,
 ): Promise<ToolResult> {
   try {
+    await deps.store.assertTurn?.();
     return await runTool(deps, user, tool, a, waMessageId);
   } catch (e) {
     deps.trace?.("tool_error", { tool, error: String((e as Error)?.message ?? e) });
@@ -932,6 +974,10 @@ async function runTool(
         remindAt: str(a.remind_at),
         errand: str(a.errand),
       });
+    case "recall_errands":
+      return deps.store.recallErrands
+        ? { ok: true, errands: await deps.store.recallErrands(user.id, String(a.query ?? "").slice(0, 80)) }
+        : { ok: false, reason: "recall unavailable" };
     case "remember":
       return remember(deps, user, {
         text: String(a.text ?? ""),
@@ -939,6 +985,8 @@ async function runTool(
         scope: str(a.scope),
         learned: a.learned === true,
         evidence: str(a.evidence),
+        messageId: waMessageId,
+        replaces: str(a.replaces),
       });
     case "forget":
       return forget(deps, user, String(a.ref ?? ""));

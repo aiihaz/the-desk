@@ -66,6 +66,9 @@ select is(pg_temp.state(pg_temp.id('r1')), 'cancelled', 'START brings nothing ba
 select is(request_data_deletion('a0000000-0000-0000-0000-000000000002', pg_temp.at('18:06')) ->> 'ok', 'true', 'delete my data');
 select ok((select stopped_at is not null and delete_requested_at is not null from users
             where id = 'a0000000-0000-0000-0000-000000000002'), 'stopped and recorded');
+select is(resume_user('a0000000-0000-0000-0000-000000000002')->>'reason','deletion_pending','START does not cancel a pending erasure');
+-- Reset this fixture to test pause independently of its deletion request.
+update users set delete_requested_at=null where id='a0000000-0000-0000-0000-000000000002';
 select resume_user('a0000000-0000-0000-0000-000000000002');
 
 -- A call that can't start ends the request --------------------------------------
@@ -99,11 +102,11 @@ insert into messages (user_id, wa_message_id, direction, body, at) values
   ('a0000000-0000-0000-0000-000000000001', 'm3', 'in', '{"text": "by Friday"}', pg_temp.at('19:00'));
 select is(claim_turn('a0000000-0000-0000-0000-000000000001', 'm1', 90, pg_temp.at('19:01')) ->> 'status', 'newer',
           'an earlier message of a burst leaves it to the newest');
-select is(claim_turn('a0000000-0000-0000-0000-000000000001', 'm3', 90, pg_temp.at('19:01')),
+select is(claim_turn('a0000000-0000-0000-0000-000000000001', 'm3', 90, pg_temp.at('19:01')) - 'token' - 'input_seq',
           '{"status": "claimed", "batch": [{"text": "ask Test Laundry"}, {"text": "if they can dry clean"}, {"text": "by Friday"}]}'::jsonb,
           'the newest takes the whole burst, oldest first');
-select is(claim_turn('a0000000-0000-0000-0000-000000000001', 'm2', 90, pg_temp.at('19:01')) ->> 'status', 'handled',
-          'a message already taken is not answered again');
+select is(claim_turn('a0000000-0000-0000-0000-000000000001', 'm2', 90, pg_temp.at('19:01')) ->> 'status', 'busy',
+          'claimed messages wait until the turn actually completes');
 insert into messages (user_id, wa_message_id, direction, body, at) values
   ('a0000000-0000-0000-0000-000000000001', 'm4', 'in', '{"text": "also pickup?"}', pg_temp.at('19:02'));
 select is(claim_turn('a0000000-0000-0000-0000-000000000001', 'm4', 90, pg_temp.at('19:02')) ->> 'status', 'busy',

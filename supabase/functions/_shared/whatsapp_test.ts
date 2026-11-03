@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertFalse, assertThrows } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals, ok as assert, throws as assertThrows } from "node:assert/strict";
 import { buildPayload, needsTemplate, parseWebhook, verifySignature } from "./whatsapp.ts";
 import { e164ToWaId, waIdToE164 } from "./e164.ts";
 import { sign } from "./test_sign.ts";
@@ -11,12 +11,12 @@ Deno.test("signature: valid, tampered, wrong secret, malformed", async () => {
   const bytes = new TextEncoder().encode(body);
   const header = await sign(body, "s3cret");
   assert(await verifySignature(bytes, header, "s3cret"));
-  assertFalse(await verifySignature(new TextEncoder().encode(body + " "), header, "s3cret"));
-  assertFalse(await verifySignature(bytes, header, "other"));
-  assertFalse(await verifySignature(bytes, null, "s3cret"));
-  assertFalse(await verifySignature(bytes, "sha256=zz", "s3cret"));
-  assertFalse(await verifySignature(bytes, header.replace("sha256=", "sha1="), "s3cret"));
-  assertFalse(await verifySignature(bytes, header, ""), "empty secret never verifies");
+  assertEquals(false, await verifySignature(new TextEncoder().encode(body + " "), header, "s3cret"));
+  assertEquals(false, await verifySignature(bytes, header, "other"));
+  assertEquals(false, await verifySignature(bytes, null, "s3cret"));
+  assertEquals(false, await verifySignature(bytes, "sha256=zz", "s3cret"));
+  assertEquals(false, await verifySignature(bytes, header.replace("sha256=", "sha1="), "s3cret"));
+  assertEquals(false, await verifySignature(bytes, header, ""), "empty secret never verifies");
 });
 
 Deno.test("parse: text message with profile name", () => {
@@ -72,7 +72,7 @@ Deno.test("payloads: Meta's limits are enforced before sending", () => {
 
 Deno.test("24-hour window", () => {
   const now = new Date("2026-10-23T12:00:00Z");
-  assertFalse(needsTemplate(new Date("2026-10-22T12:00:01Z"), now));
+  assertEquals(false, needsTemplate(new Date("2026-10-22T12:00:01Z"), now));
   assert(needsTemplate(new Date("2026-10-22T12:00:00Z"), now));
   assert(needsTemplate(null, now));
 });

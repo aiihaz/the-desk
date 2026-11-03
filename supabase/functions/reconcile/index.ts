@@ -1,3 +1,8 @@
+import { ingestPayload } from "../wa-inbound/handler.ts";
+import { callAfterConsent } from "../_shared/chat/calls.ts";
+import { createAgentRuntime } from "../_shared/agent_runtime.ts";
+import { parseWebhook } from "../_shared/whatsapp.ts";
+import { authorizeInternal } from "../_shared/internal_auth.ts";
 // pg_cron, every 5 minutes (0012): calls with no result are looked up in Sarvam Analytics
 // (_shared/reconcile.ts), due confirm-call redials are placed, what the Desk owes users
 // goes out (reminders, nudges, notices, and any report whose send failed), then new
@@ -11,7 +16,7 @@ import { reportCall, type ReportDeps } from "../_shared/chat/report.ts";
 import { DbChatStore } from "../_shared/chat/store.ts";
 import { claimChecker, verifier } from "../_shared/chat/verify.ts";
 import { deliver } from "../_shared/deliver.ts";
-import { responsesClient } from "../_shared/openai.ts";
+import { observedResponsesClient as responsesClient } from "../_shared/model_client.ts";
 import { reconcile } from "../_shared/reconcile.ts";
 import { dial } from "../_shared/dial.ts";
 import { getTranscript, listAttempts, sarvamConfigFromEnv, startCall } from "../_shared/sarvam.ts";
@@ -38,7 +43,72 @@ const report: ReportDeps = {
 };
 
 Deno.serve(async (req) => {
+  const denied = authorizeInternal(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "");
+  if (denied) return denied;
   if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+  const recovered = await db.rpc("recover_reserved_calls");
+  if (recovered.error) throw recovered.error;
+  // Terminal provider results remain durable until settlement, regardless of webhook retries.
+  for (const result of await calls.pendingSettlements()) {
+    try {
+      if (result.callId) await reportCall(report, result.callId, result);
+    } catch {
+      console.error("settlement retry failed", result.callId);
+    }
+  }
+  const runtime = createAgentRuntime();
+  // Rebuild inbox rows even if a process died after storing a raw, verified event.
+  for (const event of await runtime.store.pendingEvents()) {
+    try {
+      await ingestPayload(event.payload, {
+        store: runtime.store,
+        background: () => {},
+        handOff: async () => {},
+      });
+      await runtime.store.completeEvent(event.external_id);
+    } catch {
+      console.error("event ingestion retry failed");
+    }
+  }
+  // Resume accepted approvals that committed before a call could be reserved.
+  const pending = await db.rpc("pending_consents");
+  if (pending.error) throw pending.error;
+  for (const c of pending.data ?? []) {
+    try {
+      await callAfterConsent(
+        {
+          store: chat,
+          send,
+          create: openai,
+          dial: (a) => dial({ store: calls, start: (call) => startCall(cfg, call) }, a),
+        },
+        { id: c.user_id, waId: c.wa_id, blocked: c.blocked },
+        {
+          ok: true,
+          consent_id: c.consent_id,
+          kind: c.kind,
+          request_id: c.request_id,
+          option_id: c.option_id,
+        },
+      );
+    } catch {
+      console.error("pending consent recovery failed", c.consent_id);
+    }
+  }
+  for (const row of await runtime.store.pendingInbound()) {
+    if (row.blocked) continue;
+    const parsed = parseWebhook({
+      object: "whatsapp_business_account",
+      entry: [{ changes: [{ field: "messages", value: { messages: [row.body] } }] }],
+    })
+      .messages[0];
+    if (!parsed) continue;
+    try {
+      await runtime.handOff({ id: row.user_id, waId: row.wa_id, blocked: row.blocked }, parsed);
+    } catch {
+      console.error("inbox retry failed", parsed.messageId);
+    }
+  }
   const summary = await reconcile({
     openCalls: (before) => calls.openCalls(before),
     // Global values: these limits are about the Desk, not a user.
@@ -80,7 +150,7 @@ Deno.serve(async (req) => {
     );
     redials.push({ requestId, ok: res.ok });
     if (!res.ok) {
-      await chat.callNotStarted(requestId);
+      if (res.error !== "submission_unknown") await chat.callNotStarted(requestId);
       await db.rpc("raise_alert", {
         p_kind: "redial_failed",
         p_request_id: requestId,

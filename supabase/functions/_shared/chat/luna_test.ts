@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import type { User } from "../store.ts";
 import type { Item, ResponseOut } from "../openai.ts";
 import type { Outbound } from "../whatsapp.ts";
@@ -66,6 +66,7 @@ Deno.test("Luna sees the clock and the cards, and only this state's tools", asyn
     "my_places",
     "find_booking",
     "stay_quiet",
+    "recall_errands",
     "remember",
     "forget",
   ]);

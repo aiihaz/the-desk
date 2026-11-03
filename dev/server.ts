@@ -248,11 +248,11 @@ const turnDeps: AgentDeps = {
   send,
   isAdmin: (waId) => waId === DEV_WA_ID && Deno.env.get("DEV_ADMIN") === "1",
   trace: (event, data) => emit(`decision:${event}`, data),
-  luna: async (user, _text, msg) => {
+  luna: async (user, _text, msg, turnStore) => {
     if (!lunaDeps) {
       return emit("luna", { note: "OPENAI_API_KEY is not set in supabase/functions/.env; Luna is off." });
     }
-    await runLuna(lunaDeps, user, msg.at, msg.messageId);
+    await runLuna({ ...lunaDeps, store: turnStore ?? store }, user, msg.at, msg.messageId);
   },
   onCommand: (user, route) =>
     runCommand(

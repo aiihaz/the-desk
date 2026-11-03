@@ -688,6 +688,15 @@ function notConnected(r: CallResult, call: CallForReport): Decision {
 }
 
 export async function reportCall(deps: ReportDeps, callId: string, r: CallResult): Promise<void> {
+  if (deps.store.claimSettlement && !await deps.store.claimSettlement(callId)) return;
+  try {
+    await reportCallImpl(deps, callId, r);
+  } finally {
+    await deps.store.releaseSettlement?.(callId);
+  }
+}
+
+async function reportCallImpl(deps: ReportDeps, callId: string, r: CallResult): Promise<void> {
   const { store } = deps;
   const now = deps.now?.() ?? new Date();
   const call = await store.callForReport(callId);
@@ -732,8 +741,16 @@ export async function reportCall(deps: ReportDeps, callId: string, r: CallResult
     errand: errandFacts(req, call, now),
     happened: {
       status: d.told.status,
+      ...(blind ? { caller_contract_missing: true } : {}),
       ...d.told.detail,
       ...alsoAsked(req, call, r),
+      ...(outputs?.unintended_commitment
+        ? {
+          possible_unintended_commitment: outputs.unintended_commitment,
+          commitment_is_not_authorized: true,
+          action_needed: "check what was reserved; ask the user before any corrective call",
+        }
+        : {}),
       ...(optOut ? { business_asked_not_to_be_called_again_so_it_wont_be: true } : {}),
     },
     values,

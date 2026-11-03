@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals, throws as assertThrows } from "node:assert/strict";
 import { type CallInputs, callVariables, MissingCallInput } from "../call_vars.ts";
 import { callKind } from "./calls.ts";
 import { FakeChatStore } from "./test_chat_store.ts";

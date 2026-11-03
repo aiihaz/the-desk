@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import { checkSlots, collectingState, missing } from "./slots.ts";
 
 const now = new Date("2026-10-23T12:00:00+05:30");

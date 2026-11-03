@@ -64,6 +64,7 @@ export type Tool =
   | "accept_condition"
   | "stay_quiet"
   | "set_follow_up"
+  | "recall_errands"
   | "remember"
   | "forget";
 
@@ -129,6 +130,7 @@ export function toolsFor(state: State | null, paused = false, open: Open = {}): 
     ...(open.decisions ? ["accept_condition" as Tool] : []),
     "stay_quiet",
     ...(state || open.advances ? ["set_follow_up" as Tool] : []),
+    "recall_errands",
     "remember",
     "forget",
   ];

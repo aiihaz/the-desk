@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import { type OpenCall, reconcile, type ReconcileDeps } from "./reconcile.ts";
 import type { Attempt, CallResult } from "./sarvam.ts";
 

@@ -231,7 +231,9 @@ export async function handleScreenshot(
   const place = await store.place(held.businessId);
   const { problems, weak } = checkScreenshot(s, held);
   const payee = s.payee_upi ?? s.payee_name;
+  const inputSeq = await store.inboundWatermark?.(user.id, messageId);
   const rec = await store.recordPayment(held.requestId, problems.length === 0, {
+    ...(inputSeq !== undefined ? { input_seq: inputSeq, source_message_id: messageId } : {}),
     ...s,
     payee,
     problems,
@@ -239,6 +241,13 @@ export async function handleScreenshot(
   });
   deps.trace?.("payment_check", { screenshot: s, problems, weak, rec, hold: held.bookingId });
   if (!rec.ok) {
+    if (rec.reason === "new_inbound") {
+      return say({
+        place: place.name,
+        happened: { status: "another_message_arrived_payment_check_deferred_no_confirm_call_started" },
+        next_step: "send_screenshot_again",
+      }, held.requestId);
+    }
     return say({
       place: place.name,
       happened: {
@@ -281,11 +290,17 @@ export async function handleScreenshot(
       values,
     }, held.requestId);
   }
-  await store.callNotStarted(held.requestId);
+  if (res.error !== "submission_unknown") await store.callNotStarted(held.requestId);
   return say({
     place: place.name,
-    happened: { status: "payment_matches_but_could_not_call_them_not_confirmed_yet" },
+    happened: {
+      status: res.error === "submission_unknown"
+        ? "payment_matches_call_submission_uncertain_do_not_retry"
+        : "payment_matches_but_could_not_call_them_not_confirmed_yet",
+    },
     values,
-    next_step: "send_screenshot_again",
+    next_step: res.error === "submission_unknown"
+      ? "check_with_business_themselves"
+      : "send_screenshot_again",
   }, held.requestId);
 }

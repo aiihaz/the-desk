@@ -2,9 +2,9 @@
 // _shared/dial.ts does the work: reserve_call() first, then Sarvam, with variables built
 // from the request's stored, consented fields. A body that carries its own variables is
 // refused, so no caller can tell the voice agent anything the user didn't approve.
-import type { CallStore } from "../_shared/call_store.ts";
-import { dial } from "../_shared/dial.ts";
-import { type CallKind, type Language, LANGUAGES, type StartCall } from "../_shared/sarvam.ts";
+import type { CallStore } from "./call_store.ts";
+import { dial } from "./dial.ts";
+import { type CallKind, type Language, LANGUAGES, type StartCall } from "./sarvam.ts";
 
 export type DialRequest = {
   request_id: string;

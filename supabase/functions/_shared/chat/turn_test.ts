@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import type { User } from "../store.ts";
 import type { Outbound } from "../whatsapp.ts";
 import { inbound } from "./gate_test.ts";

@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import type { PlaceHit } from "./places.ts";
 import { indianE164, serperClient, type WebPlace, withWebPhones } from "./serper.ts";
 
@@ -29,7 +29,7 @@ Deno.test("a place with no phone gets one from the web only when the name fits, 
     asked.push(q);
     return [
       { title: "Paragon Hotel Tours", address: null, phone: "0495 111 1111" },
-      { title: "Hotel Paragon", address: "Kannur Rd", phone: "0495 270 0001" },
+      { title: "Hotel Paragon", address: "Kannur Rd, Kozhikode", phone: "0495 270 0001" },
     ];
   };
   const search = withWebPhones(async () => [hit({}), hit({ placeId: "p2", phone: "+914952700009" })], web);
@@ -65,4 +65,12 @@ Deno.test("serperClient: India, key header, places parsed", async () => {
   assertEquals(req!.headers.get("X-API-KEY"), "k");
   assertEquals(JSON.parse(await req!.text()).gl, "in");
   assertEquals(out, [{ title: "Hotel Paragon", address: null, phone: "0495 270 0001" }]);
+});
+
+Deno.test("same chain at another branch is not given the requested place's phone", async () => {
+  const search = withWebPhones(async () => [hit({})], async () => [
+    { title: "Hotel Paragon", address: "MG Road, Bengaluru", phone: "9847012345" },
+    { title: "Hotel Paragon", address: "Kozhikode", phone: "9847012346" },
+  ]);
+  assertEquals((await search({ text: "paragon" }))[0].phone, null);
 });

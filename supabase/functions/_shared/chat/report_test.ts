@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import type { CallKind, CallResult } from "../sarvam.ts";
 import type { Outbound } from "../whatsapp.ts";
 import { readOutcome, reportCall, type ReportDeps } from "./report.ts";

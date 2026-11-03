@@ -53,7 +53,7 @@ export type UserInfo = {
 
 // claim_turn(): a turn takes every unhandled message up to its own as one batch.
 export type TurnClaim =
-  | { status: "claimed"; batch: string[] }
+  | { status: "claimed"; batch: string[]; token?: string; inputSeq?: number }
   | { status: "busy" | "newer" | "handled" };
 
 export type Refused = { ok: false; reason: string };
@@ -184,6 +184,20 @@ export type HeldBooking = {
 export type LiveOption = { id: string; label: string; detail: string | null };
 
 export interface ChatStore {
+  readonly turnToken?: string;
+  serviceWindowEnds?(userId: string): Promise<Date | null>;
+  forTurn?(userId: string, token: string): ChatStore;
+  assertTurn?(): Promise<void>;
+  renewTurn?(): Promise<void>;
+  completeTurn?(): Promise<void>;
+  abandonTurn?(): Promise<void>;
+  inboundWatermark?(userId: string, messageId: string): Promise<number | null>;
+  claimSettlement?(callId: string): Promise<boolean>;
+  releaseSettlement?(callId: string): Promise<void>;
+  deferChangedConsent?(requestId: string): Promise<void>;
+  assertDelivery?(id: string): Promise<boolean>;
+  assertWriter?(id: string): Promise<boolean>;
+  deferDelivery?(id: string): Promise<void>;
   user(userId: string): Promise<UserInfo>;
   // The user's active request (not queued, not ended) and its open prompt.
   active(userId: string): Promise<{ request: ActiveRequest | null; prompt: OpenPrompt | null }>;
@@ -228,7 +242,7 @@ export interface ChatStore {
   markHandled(waMessageId: string): Promise<void>;
   // STOP, START, "delete my data" (0006). Stopping ends every request not yet calling.
   stopUser(userId: string): Promise<{ ok: true; cancelled: number; in_flight: boolean }>;
-  resumeUser(userId: string): Promise<{ ok: true; was_stopped: boolean }>;
+  resumeUser(userId: string): Promise<{ ok: true; was_stopped: boolean } | Refused>;
   requestDeletion(userId: string): Promise<{ ok: true; cancelled: number; in_flight: boolean }>;
   pauseRequest(requestId: string): Promise<{ ok: true; state: State } | Refused>;
   resumeRequest(requestId: string): Promise<{ ok: true; changed: boolean; state: State } | Refused>;
@@ -319,8 +333,12 @@ export interface ChatStore {
     remindAt: string | null,
   ): Promise<{ ok: true } | Refused>;
   cancelAfterCall(requestId: string): Promise<{ ok: true } | Refused>;
+  recallErrands?(userId: string, query: string): Promise<Record<string, unknown>[]>;
   memories(userId: string): Promise<Memory[]>;
-  addMemory(userId: string, m: Omit<Memory, "id"> & { evidence?: string | null }): Promise<Memory | null>;
+  addMemory(
+    userId: string,
+    m: Omit<Memory, "id"> & { evidence?: string | null; messageId?: string | null; replaces?: string | null },
+  ): Promise<Memory | null>;
   forgetMemory(userId: string, memoryId: string): Promise<void>;
   cancelRequest(requestId: string): Promise<{ ok: true } | Refused>;
   setBusiness(requestId: string, businessId: string): Promise<Changed | Refused>;
@@ -377,7 +395,78 @@ const REQUEST_COLUMNS =
   "id, task, state, version, fields, business_id, booking_id, created_at, paused_at, waiting_for, remind_at, cancel_requested_at";
 
 export class DbChatStore implements ChatStore {
-  constructor(private db: SupabaseClient = serviceClient()) {}
+  private writerClaims = new Map<string, string>();
+  private deliveryClaims = new Map<string, string>();
+  private settlementClaims = new Map<string, string>();
+  constructor(
+    private db: SupabaseClient = serviceClient(),
+    private turn?: { userId: string; token: string },
+  ) {}
+
+  get turnToken() {
+    return this.turn?.token;
+  }
+  forTurn(userId: string, token: string): ChatStore {
+    return new DbChatStore(serviceClient(token), { userId, token });
+  }
+  async assertTurn() {
+    if (this.turn) await this.rpc("assert_turn", { p_user_id: this.turn.userId, p_token: this.turn.token });
+  }
+  async renewTurn() {
+    if (this.turn) await this.rpc("renew_turn", { p_user_id: this.turn.userId, p_token: this.turn.token });
+  }
+  async completeTurn() {
+    if (this.turn) await this.rpc("complete_turn", { p_user_id: this.turn.userId, p_token: this.turn.token });
+  }
+  async abandonTurn() {
+    if (this.turn) await this.rpc("abandon_turn", { p_user_id: this.turn.userId, p_token: this.turn.token });
+  }
+  async serviceWindowEnds(userId: string): Promise<Date | null> {
+    const { data, error } = await this.db.from("messages").select("at").eq("user_id", userId)
+      .eq("direction", "in").order("at", { ascending: false }).limit(1).maybeSingle();
+    if (error) throw error;
+    return data ? new Date(Date.parse(data.at) + 24 * 3_600_000) : null;
+  }
+  async inboundWatermark(userId: string, messageId: string): Promise<number | null> {
+    const { data, error } = await this.db.from("messages").select("seq").eq("user_id", userId)
+      .eq("wa_message_id", messageId).eq("direction", "in").maybeSingle();
+    if (error) throw error;
+    return data?.seq ?? null;
+  }
+  async claimSettlement(callId: string) {
+    const token = await this.rpc<string | null>("claim_settlement", { p_call_id: callId });
+    if (token) this.settlementClaims.set(callId, token);
+    return !!token;
+  }
+  async releaseSettlement(callId: string) {
+    const token = this.settlementClaims.get(callId);
+    if (!token) return;
+    const { error } = await this.db.from("calls").update({ settlement_until: null })
+      .eq("id", callId).eq("settlement_token", token);
+    this.settlementClaims.delete(callId);
+    if (error) throw error;
+  }
+  assertDelivery(id: string): Promise<boolean> {
+    return this.rpc<boolean>("renew_delivery", {
+      p_id: id,
+      p_claim_token: this.deliveryClaims.get(id),
+      p_writer: false,
+    });
+  }
+  assertWriter(id: string): Promise<boolean> {
+    return this.rpc<boolean>("renew_delivery", {
+      p_id: id,
+      p_claim_token: this.writerClaims.get(id),
+      p_writer: true,
+    });
+  }
+  async deferChangedConsent(requestId: string) {
+    await this.rpc("defer_changed_consent", { p_request_id: requestId });
+  }
+  async deferDelivery(id: string) {
+    await this.rpc("defer_delivery", { p_id: id, p_claim_token: this.deliveryClaims.get(id) });
+    this.deliveryClaims.delete(id);
+  }
 
   private async rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
     const { data, error } = await this.db.rpc(fn, args);
@@ -441,7 +530,12 @@ export class DbChatStore implements ChatStore {
   async hasUnhandledInbound(userId: string): Promise<boolean> {
     const { count, error } = await this.db.from("messages")
       .select("id", { count: "exact", head: true })
-      .eq("user_id", userId).eq("direction", "in").is("handled_at", null);
+      .eq("user_id", userId).eq("direction", "in").is("handled_at", null)
+      .or(
+        this.turn
+          ? `turn_token.is.null,turn_token.neq.${this.turn.token}`
+          : "turn_token.is.null,turn_token.not.is.null",
+      );
     if (error) throw error;
     return (count ?? 0) > 0;
   }
@@ -559,13 +653,20 @@ export class DbChatStore implements ChatStore {
   }
 
   async claimTurn(userId: string, waMessageId: string, ttlS: number): Promise<TurnClaim> {
-    const res = await this.rpc<{ status: TurnClaim["status"]; batch?: Row[] }>("claim_turn", {
+    const res = await this.rpc<
+      { status: TurnClaim["status"]; batch?: Row[]; token?: string; input_seq?: number }
+    >("claim_turn", {
       p_user_id: userId,
       p_message_id: waMessageId,
       p_ttl_s: ttlS,
     });
     return res.status === "claimed"
-      ? { status: "claimed", batch: (res.batch ?? []).map(inboundText) }
+      ? {
+        status: "claimed",
+        batch: (res.batch ?? []).map(inboundText),
+        token: res.token,
+        inputSeq: res.input_seq,
+      }
       : { status: res.status } as TurnClaim;
   }
 
@@ -584,7 +685,7 @@ export class DbChatStore implements ChatStore {
   }
 
   resumeUser(userId: string) {
-    return this.rpc<{ ok: true; was_stopped: boolean }>("resume_user", { p_user_id: userId });
+    return this.rpc<{ ok: true; was_stopped: boolean } | Refused>("resume_user", { p_user_id: userId });
   }
 
   requestDeletion(userId: string) {
@@ -620,7 +721,7 @@ export class DbChatStore implements ChatStore {
   async history(userId: string, since: Date, limit: number): Promise<ChatLine[]> {
     const { data, error } = await this.db.from("messages")
       .select("direction, body, at").eq("user_id", userId).gte("at", since.toISOString())
-      .or("direction.eq.out,handled_at.not.is.null")
+      .or(`direction.eq.out,handled_at.not.is.null${this.turn ? `,turn_token.eq.${this.turn.token}` : ""}`)
       .order("seq", { ascending: false }).limit(limit);
     if (error) throw error;
     return this.lines(data);
@@ -633,7 +734,7 @@ export class DbChatStore implements ChatStore {
     if (!m) return [];
     const { data, error } = await this.db.from("messages")
       .select("direction, body, at").eq("user_id", userId).gt("seq", m.seq)
-      .or("direction.eq.out,handled_at.not.is.null")
+      .or(`direction.eq.out,handled_at.not.is.null${this.turn ? `,turn_token.eq.${this.turn.token}` : ""}`)
       .order("seq", { ascending: false }).limit(limit);
     if (error) throw error;
     return this.lines(data);
@@ -904,6 +1005,7 @@ export class DbChatStore implements ChatStore {
       "settle_and_report",
       {
         p_call_id: callId,
+        p_claim_token: this.settlementClaims.get(callId),
         p_result: s.result,
         p_options: s.options ?? [],
         p_booking: s.booking ?? null,
@@ -946,6 +1048,7 @@ export class DbChatStore implements ChatStore {
       ...(now ? { p_now: now.toISOString() } : {}),
       p_call_id: callId ?? null,
     });
+    for (const d of rows) this.deliveryClaims.set(d.id, d.claim_token);
     return rows.map((d) => ({
       id: d.id,
       userId: d.user_id,
@@ -961,6 +1064,7 @@ export class DbChatStore implements ChatStore {
       ...(now ? { p_now: now.toISOString() } : {}),
       p_call_id: callId ?? null,
     });
+    for (const d of rows) this.writerClaims.set(d.id, d.write_token);
     return rows.map((d) => ({
       id: d.id,
       userId: d.user_id,
@@ -972,11 +1076,19 @@ export class DbChatStore implements ChatStore {
   }
 
   async deliveryWritten(id: string, message: Outbound): Promise<void> {
-    await this.rpc("delivery_written", { p_id: id, p_message: message });
+    await this.rpc("delivery_written", {
+      p_id: id,
+      p_message: message,
+      p_claim_token: this.writerClaims.get(id),
+    });
   }
 
   async deliveryUnwritten(id: string, error: string): Promise<void> {
-    await this.rpc("delivery_unwritten", { p_id: id, p_error: error });
+    await this.rpc("delivery_unwritten", {
+      p_id: id,
+      p_error: error,
+      p_claim_token: this.writerClaims.get(id),
+    });
   }
 
   async oweFacts(
@@ -996,11 +1108,20 @@ export class DbChatStore implements ChatStore {
   }
 
   async deliverySent(id: string, waMessageId: string): Promise<void> {
-    await this.rpc("delivery_sent", { p_id: id, p_wa_message_id: waMessageId });
+    await this.rpc("delivery_sent", {
+      p_id: id,
+      p_wa_message_id: waMessageId,
+      p_claim_token: this.deliveryClaims.get(id),
+    });
   }
 
   deliveryFailed(id: string, error: string, final: boolean) {
-    return this.rpc<string>("delivery_failed", { p_id: id, p_error: error, p_final: final });
+    return this.rpc<string>("delivery_failed", {
+      p_id: id,
+      p_error: error,
+      p_final: final,
+      p_claim_token: this.deliveryClaims.get(id),
+    });
   }
 
   async dueFollowUps(now?: Date): Promise<DueFollowUp[]> {
@@ -1058,17 +1179,29 @@ export class DbChatStore implements ChatStore {
   }
 
   // null: they already have this one.
-  async addMemory(userId: string, m: Omit<Memory, "id"> & { evidence?: string | null }) {
-    const { data, error } = await this.db.from("user_memories")
-      .insert({ user_id: userId, ...m }).select("id, kind, scope, text, source").maybeSingle();
-    if (error?.code === "23505") return null;
-    if (error) throw error;
-    return data as Memory | null;
+  async addMemory(
+    userId: string,
+    m: Omit<Memory, "id"> & { evidence?: string | null; messageId?: string | null; replaces?: string | null },
+  ) {
+    const row = await this.rpc<Memory>("remember_fact", {
+      p_user_id: userId,
+      p_kind: m.kind,
+      p_scope: m.scope,
+      p_text: m.text,
+      p_source: m.source,
+      p_message_id: m.messageId,
+      p_evidence: m.evidence ?? null,
+      p_replaces: m.replaces ?? null,
+    });
+    return row;
+  }
+
+  async recallErrands(userId: string, query: string) {
+    return await this.rpc<Record<string, unknown>[]>("recall_errands", { p_user_id: userId, p_query: query });
   }
 
   async forgetMemory(userId: string, memoryId: string): Promise<void> {
-    const { error } = await this.db.from("user_memories").update({ forgotten_at: new Date().toISOString() })
-      .eq("user_id", userId).eq("id", memoryId);
+    const { error } = await this.db.from("user_memories").delete().eq("user_id", userId).eq("id", memoryId);
     if (error) throw error;
   }
 
@@ -1134,7 +1267,7 @@ export class DbChatStore implements ChatStore {
       p_option_id: optionId,
       p_word: word,
       p_wa_message_id: waMessageId,
-      p_basis: basis ?? null,
+      p_basis: basis ? { ...basis, ...(this.turn ? { turn_token: this.turn.token } : {}) } : null,
     });
   }
 }

@@ -12,11 +12,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 3.0.0
       - name: Start Postgres and apply migrations
         run: supabase db start
       - name: Guard and limit tests (pgTAP)
         run: supabase test db
+      - name: Database concurrency
+        run: python3 scripts/test_db_concurrency.py
 
   functions:
     runs-on: ubuntu-latest
@@ -24,8 +26,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.x
+          deno-version: v2.9.6
       - name: Format, lint, type-check
         run: deno task check
       - name: Unit tests
         run: deno task test
+      - name: Internal endpoint authorization
+        run: deno task test:auth

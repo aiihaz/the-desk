@@ -1,6 +1,6 @@
 # The Desk
 
-A WhatsApp calling and booking agent for India. Plan: `../the-desk-plan.md`, engineering plan: `../the-desk-eng-plan.md`.
+A WhatsApp calling and booking agent for India. The bounded product scope, recovery design, and deployment checks are documented in [ARCHITECTURE.md](ARCHITECTURE.md). Plan: `../the-desk-plan.md`, engineering plan: `../the-desk-eng-plan.md`.
 
 ## Status
 
@@ -87,7 +87,7 @@ Set `DESK_GIT_SHA` when deploying (`supabase secrets set DESK_GIT_SHA=$(git rev-
 
 ## Scheduled jobs
 
-`0009_jobs.sql` schedules them with pg_cron when the migrations run: stale options (every 5 min), request expiry (every 15 min), `reconcile` (every 5 min, `0012`), retention (daily, 03:00 IST). `reconcile` also sends what the Desk owes users (`chat/followup.ts`): reminders, one nudge on an unanswered plan, a payment deadline coming up, word that an errand expired, a deadline that passed, and any report or reply whose write or send failed. **None of this runs until the two Vault secrets below are set.** Past the 24-hour window a message needs an approved template: set `follow_up_template` to one with a single body parameter, or those messages fail and raise a `delivery_failed` alert. `reconcile` is an edge function that pg_cron calls through pg_net, using two Vault secrets you set once in the SQL editor:
+`0009_jobs.sql` schedules them with pg_cron when the migrations run: stale options (every 5 min), request expiry (every 15 min), `reconcile` (every 5 min, `0012`), retention (daily, 03:00 IST). `reconcile` also sends what the Desk owes users (`chat/followup.ts`): reminders, one nudge on an unanswered plan, a payment deadline coming up, word that an errand expired, a deadline that passed, and any report or reply whose write or send failed. **None of this runs until the two Vault secrets below are set.** After the 24-hour window closes, updates stay pending until the user messages again; paid templates are disabled. Migration 0017 adds a one-minute follow-through tick and one useful near-expiry update for unfinished work. `reconcile` is an edge function that pg_cron calls through pg_net, using two Vault secrets you set once in the SQL editor:
 
 ```
 select vault.create_secret('https://<project-ref>.supabase.co', 'desk_project_url');
@@ -98,7 +98,7 @@ select vault.create_secret('<service role key>', 'desk_service_key');
 
 ## Admin on WhatsApp
 
-From a wa_id in `DESK_ADMIN_WA_IDS`: `status`, `review`, `resolve <id>`, `stop all`, `resume`, `credit <rs>`, `optout <+91…>`, `limits`, `set limit <key> <value> [for <wa_id>]`, `numbers`, `number off|on <number or id>`. Alerts (an unverified booking, a call with no result, an unconfirmed payment, a failed redial) come to the same chat every 15 minutes. An admin must have messaged the Desk in the last 24 hours to receive them.
+From a wa_id in `DESK_ADMIN_WA_IDS`: `status`, `review`, `resolve <id>`, `stop all`, `resume`, `credit <rs>`, `optout <+91…>`, `limits`, `set limit <key> <value> [for <wa_id>]`, `numbers`, `number off|on <number or id>`. Alerts (an unverified booking, a call with no result, an unconfirmed payment, a failed redial) are checked by reconciliation every 5 minutes. An admin must have messaged the Desk in the last 24 hours to receive them.
 
 ## Where things are
 
@@ -116,9 +116,9 @@ From a wa_id in `DESK_ADMIN_WA_IDS`: `status`, `review`, `resolve <id>`, `stop a
 - `supabase/functions/_shared/places.ts`: Google Places Text Search (New), India only; `_shared/chat/find.ts` decides the city (named in the chat, else the saved one; the first one named is saved), keeps callable matches, and tells Luna when to ask which branch or check a match in another city. The bench uses real Places when `GOOGLE_MAPS_API_KEY` is set
 - `supabase/functions/_shared/chat/agent.ts`: the one entry for an inbound message, used by `wa-inbound` and the bench alike: commands at once, else a `turn_debounce_ms` wait and one turn per user. `commands.ts` runs STOP/START/delete; `calls.ts` starts the call after a consent and ends the request if it can't start
 - `supabase/functions/wa-inbound/`: Meta webhook (signature check, dedupe, hand-off to the chat agent)
-- `supabase/functions/wa-send/`: internal send endpoint; `_shared/deliver.ts` is the one send path (24-hour window check + log)
+- `supabase/functions/_shared/deliver.ts`: the shared send path (24-hour service window, no paid templates, and message log). The unused `wa-send` HTTP endpoint is removed.
 - `supabase/functions/_shared/sarvam.ts`: Instant Outbound request, webhook parsing, token check
-- `supabase/functions/dial/` and `_shared/dial.ts`: internal; `reserve_call()` first, then Sarvam. The only way to start a call. The voice agent's variables are built from the request's stored, consented fields (`_shared/call_vars.ts`); a request body carrying `variables` is refused
+- `supabase/functions/_shared/dial.ts`: internal module; `reserve_call()` first, then Sarvam. The only way to start a call. The voice agent's variables are built from the request's stored, consented fields (`_shared/call_vars.ts`); a request body carrying `variables` is refused
 - `supabase/functions/sarvam-webhook/`: token check, raw event stored, call row closed once, hand-off to `chat/report.ts`
 - `supabase/migrations/0008_verification.sql` and `_shared/chat/verify.ts`: booking verification (eng plan 3.5). A booking is stored as booked only when the time matches what the user approved and a separate model pass points at the business's line confirming it; otherwise probably booked, the user asked to check with the business, and an alert raised. The pass lists every condition the business attached, and judges whether they required it and whether the user approved it. One rule in code: a required, unapproved condition stops the booking being verified and goes to the user to accept or refuse. Everything else is told in the business's words, and blocks nothing. Cancels and confirm calls get the same transcript check (`checkClaim`)
 - `_shared/chat/outputs.ts`: reads the caller's outputs in either contract, including strings for numbers and JSON-string lists
@@ -159,3 +159,19 @@ The `question` input is one string; several questions go as `1) ... 2) ...`.
 ## What the caller is given
 
 Beside the fields for each call kind, every call gets the errand already resolved (`call_vars.ts`), from what the user approved: `resolved_when`, `request_summary`, `decided`, `flexible`, `may_accept`, `already_happened`, `call_date`, `timezone`. Names follow the Genie brief; the eng plan's older names go too until the agent is built.
+
+
+## Reliability and personal context
+
+The normal errand flow still prepares a calling plan and requires approval before every new call. Explicit preferences and clear corrections can be remembered, corrected or forgotten; relevant past errands can be recalled without broadening the Desk into a companion product.
+
+Only the user's latest message refreshes the 24-hour WhatsApp service window. Pending results wait for the next inbound message after expiry. Unfinished work may receive one useful near-expiry update; no paid templates or repeated keep-alives are sent. Reminders outside the window must not be promised.
+
+Migrations 0016–0018 add recoverable inbox/turn processing, fenced claims, atomic consent watermarks, uncertain-submission handling, result settlement recovery, tracked delivery ownership, local erasure, and operational measurements. The one-minute `follow-through` endpoint handles due messages; the five-minute reconcile job handles provider analytics and recovery. Both require the configured machine credential. See [deployment instructions](ARCHITECTURE.md#deployment), including retirement of already deployed obsolete HTTP endpoints and qualification of the actual external voice caller.
+
+Additional local checks:
+
+```sh
+deno task test:auth
+python3 scripts/test_db_concurrency.py
+```

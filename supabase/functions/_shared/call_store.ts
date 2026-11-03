@@ -32,6 +32,8 @@ export interface CallStore {
   callInputs(callId: string): Promise<CallInputs>;
   markDialing(callId: string, attemptId: string): Promise<void>;
   markFailed(callId: string, reason: string): Promise<void>;
+  beginSubmission(callId: string): Promise<void>;
+  markUnknown(callId: string, reason: string, attemptId?: string): Promise<void>;
   // false if this attempt's result was already stored.
   saveEvent(attemptId: string, payload: unknown): Promise<boolean>;
   // Writes the result to a call that is still open. Returns its id, or null if the
@@ -189,7 +191,10 @@ export class DbCallStore implements CallStore, ReconcileStore {
 
   async markDialing(callId: string, attemptId: string): Promise<void> {
     // The webhook may already have closed the call (instant failure); keep its status.
-    const { error } = await this.db.from("calls").update({ provider_call_id: attemptId })
+    const { error } = await this.db.from("calls").update({
+      provider_call_id: attemptId,
+      submission_state: "accepted",
+    })
       .eq("id", callId);
     if (error) throw error;
     const { error: e2 } = await this.db.from("calls").update({ status: "dialing" })
@@ -198,9 +203,35 @@ export class DbCallStore implements CallStore, ReconcileStore {
   }
 
   async markFailed(callId: string, reason: string): Promise<void> {
-    const { error } = await this.db.from("calls").update({ status: "failed", outcome: reason })
+    const { error } = await this.db.from("calls").update({
+      status: "failed",
+      outcome: reason,
+      submission_state: "rejected",
+    })
       .eq("id", callId).in("status", OPEN);
     if (error) throw error;
+  }
+
+  async beginSubmission(callId: string): Promise<void> {
+    const { error } = await this.db.from("calls").update({ submission_state: "unknown" })
+      .eq("id", callId).eq("status", "queued").is("provider_result", null);
+    if (error) throw error;
+  }
+
+  async markUnknown(callId: string, reason: string, attemptId?: string): Promise<void> {
+    const { error } = await this.db.from("calls").update({
+      submission_state: "unknown",
+      outcome: reason,
+      ...(attemptId ? { provider_call_id: attemptId } : {}),
+    }).eq("id", callId).in("status", OPEN);
+    if (error) throw error;
+    const { error: alertError } = await this.db.rpc("raise_alert", {
+      p_kind: "submission_unknown",
+      p_request_id: null,
+      p_call_id: callId,
+      p_detail: { provider_attempt_known: !!attemptId },
+    });
+    if (alertError) throw alertError;
   }
 
   async saveEvent(attemptId: string, payload: unknown): Promise<boolean> {
@@ -215,18 +246,19 @@ export class DbCallStore implements CallStore, ReconcileStore {
   }
 
   async finishCall(r: CallResult): Promise<string | null> {
-    const q = this.db.from("calls").update({
-      provider_call_id: r.attemptId,
-      status: r.status,
-      outcome: r.failureReason ?? r.status,
-      outputs: r.outputs,
-      transcript: r.transcript,
-      duration_s: r.durationS,
-    }).in("status", OPEN);
-    const { data, error } = await (r.callId ? q.eq("id", r.callId) : q.eq("provider_call_id", r.attemptId))
-      .select("id");
+    const { data, error } = await this.db.rpc("finish_provider_call", { p_result: r });
     if (error) throw error;
-    return data[0]?.id ?? null;
+    return data;
+  }
+
+  async pendingSettlements(): Promise<CallResult[]> {
+    const { data, error } = await this.db.from("calls").select("provider_result").is("settled_at", null)
+      .not("provider_result", "is", null).or(
+        `settlement_until.is.null,settlement_until.lt.${new Date().toISOString()}`,
+      )
+      .order("created_at").limit(50);
+    if (error) throw error;
+    return data.map((c) => c.provider_result as CallResult);
   }
 
   async openCalls(before: Date) {

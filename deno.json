@@ -6,7 +6,8 @@
     "eval": "deno run --allow-net --allow-env dev/evals.ts",
     "jev": "deno run --allow-net --allow-env --allow-read dev/jev_eval.ts",
     "report-eval": "deno run --allow-net --allow-env --allow-read dev/report_eval.ts",
-    "caller-check": "deno run --allow-read dev/caller_check.ts"
+    "caller-check": "deno run --allow-read dev/caller_check.ts",
+    "test:auth": "deno run --allow-run --allow-read --allow-net=127.0.0.1 scripts/test_internal_auth.ts"
   },
   "fmt": {
     "lineWidth": 110,

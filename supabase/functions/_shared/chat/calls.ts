@@ -70,8 +70,13 @@ export async function callAfterConsent(
   deps.trace?.("dial", { args, res });
   if (res.ok) return { started: true };
 
+  if (res.error === "refused" && res.reason === "new_inbound") {
+    await deps.store.deferChangedConsent?.(c.request_id);
+    return { started: false };
+  }
+  if (res.error === "refused" && res.reason === "consent_spent") return { started: false };
   console.warn("call not started", c.request_id, res.error === "refused" ? res.reason : res.detail);
-  const ended = await deps.store.callNotStarted(c.request_id);
+  const ended = res.error === "submission_unknown" ? null : await deps.store.callNotStarted(c.request_id);
   deps.trace?.("call_not_started", ended);
   if (res.error === "refused" && res.reason.startsWith("caller_contract_")) {
     await deps.store.raiseAlert(res.reason, c.request_id, null, { kind });
@@ -79,11 +84,13 @@ export async function callAfterConsent(
   await tell(deps, user, c.request_id, `dial:${c.consent_id}`, {
     event: "call_not_started",
     happened: {
-      status: "the_call_did_not_start_nothing_done",
+      status: res.error === "submission_unknown"
+        ? "call_submission_uncertain_may_have_started_do_not_retry"
+        : "the_call_did_not_start_nothing_done",
       why: res.error === "refused" ? WHY[res.reason] ?? OUR_SIDE : OUR_SIDE,
     },
     values: {},
-    next_step: null,
+    next_step: res.error === "submission_unknown" ? "check_with_business_themselves" : null,
   });
   return { started: false };
 }

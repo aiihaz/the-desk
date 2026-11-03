@@ -209,6 +209,7 @@ export async function send(cfg: WaConfig, to: string, msg: Outbound): Promise<st
     `https://graph.facebook.com/${cfg.graphVersion}/${cfg.phoneNumberId}/messages`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(15_000),
       headers: { Authorization: `Bearer ${cfg.token}`, "Content-Type": "application/json" },
       body: JSON.stringify(buildPayload(to, msg)),
     },
@@ -227,11 +228,15 @@ export async function downloadMedia(
   mediaId: string,
 ): Promise<{ mime: string; bytes: Uint8Array }> {
   const meta = await fetch(`https://graph.facebook.com/${cfg.graphVersion}/${mediaId}`, {
+    signal: AbortSignal.timeout(15_000),
     headers: { Authorization: `Bearer ${cfg.token}` },
   });
   const m = await meta.json().catch(() => ({}));
   if (!meta.ok || typeof m.url !== "string") throw new Error(`media ${mediaId}: ${meta.status}`);
-  const res = await fetch(m.url, { headers: { Authorization: `Bearer ${cfg.token}` } });
+  const res = await fetch(m.url, {
+    signal: AbortSignal.timeout(15_000),
+    headers: { Authorization: `Bearer ${cfg.token}` },
+  });
   if (!res.ok) throw new Error(`media download ${mediaId}: ${res.status}`);
   return {
     mime: String(m.mime_type ?? res.headers.get("content-type") ?? "image/jpeg"),

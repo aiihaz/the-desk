@@ -419,12 +419,6 @@ enabled = true
 [functions.wa-inbound]
 verify_jwt = false
 
-[functions.wa-send]
-verify_jwt = true
-
-[functions.dial]
-verify_jwt = true
-
 # Sarvam sends no JWT or signature; the handler checks the ?token= in the URL instead.
 [functions.sarvam-webhook]
 verify_jwt = false
@@ -434,4 +428,7 @@ verify_jwt = false
 verify_jwt = true
 
 [functions.health]
+verify_jwt = true
+
+[functions.follow-through]
 verify_jwt = true

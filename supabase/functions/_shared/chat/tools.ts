@@ -372,6 +372,14 @@ export async function setFollowUp(
   if (a.remindAt && (!ISO_TIME.test(a.remindAt) || Date.parse(a.remindAt) <= now.getTime())) {
     return { ok: false, reason: "remind_at: a future time, ISO 8601 with +05:30" };
   }
+  const end = await deps.store.serviceWindowEnds?.(user.id);
+  if (a.remindAt && (end === null || end && Date.parse(a.remindAt) >= end.getTime())) {
+    return {
+      ok: false,
+      reason:
+        "That reminder is outside the WhatsApp service window. Keep what is waiting, but ask them to message again then; do not promise an outbound reminder.",
+    };
+  }
   const res = await deps.store.setFollowUp(r.id, waiting, a.remindAt);
   deps.trace?.("set_follow_up", { errand: errandRef(r.id), waiting, remindAt: a.remindAt, res });
   return res.ok ? { ok: true, errand: errandRef(r.id), reminder: a.remindAt ?? "none" } : res;
@@ -384,6 +392,8 @@ export type RememberArgs = {
   // Picked up from a correction, with the user's own words; said back to them.
   learned: boolean;
   evidence: string | null;
+  messageId?: string | null;
+  replaces?: string | null;
 };
 
 const SCOPE = /^(all|booking|question|place:.{1,60})$/;
@@ -400,13 +410,24 @@ export async function remember(deps: ToolDeps, user: User, a: RememberArgs): Pro
   if (a.learned && !evidence) return { ok: false, reason: "learned needs evidence: what they said" };
   const have = await store.memories(user.id);
   const cap = (await store.limitInt("max_memories_per_user", user.id)) ?? 30;
-  if (have.length >= cap) return { ok: false, reason: "memory is full; ask which one to forget" };
+  if (!a.replaces && have.some((m) => m.text.toLowerCase() === text.toLowerCase())) {
+    return { ok: true, already_known: true };
+  }
+  const replacing = a.replaces ? have.filter((m) => m.id.startsWith(a.replaces!.replace(/^m-/, ""))) : [];
+  if (a.replaces && replacing.length !== 1) {
+    return { ok: false, reason: "use one unambiguous m- ref to replace" };
+  }
+  if (have.length >= cap && !a.replaces) {
+    return { ok: false, reason: "memory is full; ask which one to forget" };
+  }
   const kept = await store.addMemory(user.id, {
     kind: a.kind === "preference" ? "preference" : "fact",
     scope,
     text,
     source: a.learned ? "learned" : "said",
     evidence,
+    messageId: a.messageId,
+    replaces: a.replaces,
   });
   deps.trace?.("remember", { kept, learned: a.learned, evidence });
   if (!kept) return { ok: true, already_known: true };

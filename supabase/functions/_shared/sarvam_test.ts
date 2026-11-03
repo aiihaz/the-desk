@@ -1,4 +1,9 @@
-import { assert, assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1.0.8";
+import {
+  deepStrictEqual as assertEquals,
+  ok as assert,
+  rejects as assertRejects,
+  throws as assertThrows,
+} from "node:assert/strict";
 import { buildOutbound, parseWebhook, type SarvamConfig, startCall, verifyWebhookToken } from "./sarvam.ts";
 
 const fixture = (name: string) =>
@@ -70,11 +75,14 @@ Deno.test("startCall: posts to Instant Outbound with the API key", async () => {
   }
 });
 
-Deno.test("startCall: a 422 throws with Sarvam's detail", async () => {
+Deno.test("startCall: a 422 is a definite rejection", async () => {
   const real = globalThis.fetch;
   globalThis.fetch = async () => Response.json({ detail: [{ msg: "bad app_id" }] }, { status: 422 });
   try {
-    await assertRejects(() => startCall(cfg, call), Error, "bad app_id");
+    await assertRejects(
+      () => startCall(cfg, call),
+      (e: unknown) => e instanceof Error && e.message.includes("422"),
+    );
   } finally {
     globalThis.fetch = real;
   }

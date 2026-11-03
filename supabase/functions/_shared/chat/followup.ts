@@ -16,7 +16,7 @@ export type FollowUpDeps = TellDeps;
 export type DueFollowUp = {
   requestId: string;
   userId: string;
-  reason: "reminder" | "nudge" | "payment" | "deadline" | "expired";
+  reason: "reminder" | "nudge" | "payment" | "deadline" | "expired" | "window";
   task: Task;
   state: State;
   // Identifies this occurrence, so a job that runs twice can't queue it twice.
@@ -69,6 +69,13 @@ export function followUpFacts(d: DueFollowUp): Facts {
     switch (d.reason) {
       case "reminder":
         return { status: "reminder_they_asked_for", waiting_for: d.waitingFor };
+      case "window":
+        return {
+          status: "unfinished_errand_service_window_closing",
+          waiting_for: d.waitingFor,
+          note:
+            "give a useful status; if they want to continue later they can message again; no call or payment is implied",
+        };
       case "nudge":
         return { status: "still_waiting_on_their_answer" };
       case "payment":
@@ -114,6 +121,10 @@ async function sendOne(
   sum: DrainSummary,
 ): Promise<void> {
   const { store } = deps;
+  if (store.assertDelivery && !await store.assertDelivery(d.id)) {
+    sum.retrying++;
+    return;
+  }
   const user: User = { id: d.userId, waId: d.waId, blocked: false };
   try {
     const id = await deps.send(user, d.message);
@@ -128,37 +139,16 @@ async function sendOne(
   }
 }
 
-// Meta takes only a template past 24 hours of silence. Without an approved one the
-// message can't go, and the alert from delivery_failed says so.
+// No paid templates: an expired window pauses delivery until the user writes again.
 async function outsideWindow(
   deps: Pick<TellDeps, "store" | "send">,
   d: Delivery,
-  user: User,
+  _user: User,
   sum: DrainSummary,
 ): Promise<void> {
-  const { store } = deps;
-  const name = await store.limitText("follow_up_template", d.userId);
-  const body = (d.message as { body?: string }).body;
-  if (name && body) {
-    try {
-      const { language } = await store.user(d.userId);
-      const id = await deps.send(user, {
-        kind: "template",
-        name,
-        language: language.split("-")[0],
-        params: [body],
-      });
-      await store.deliverySent(d.id, id);
-      sum.sent++;
-      return;
-    } catch (e) {
-      await store.deliveryFailed(d.id, String((e as Error)?.message ?? e), false);
-      sum.retrying++;
-      return;
-    }
-  }
-  await store.deliveryFailed(d.id, "outside the 24-hour window, no template set", true);
-  sum.failed++;
+  if (!deps.store.deferDelivery) throw new Error("delivery deferral is not configured");
+  await deps.store.deferDelivery(d.id);
+  sum.retrying++;
 }
 
 export async function queueFollowUps(store: ChatStore, now?: Date): Promise<number> {

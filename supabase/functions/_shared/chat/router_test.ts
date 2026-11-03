@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import type { AskJev, ChoiceAnswer } from "../jev.ts";
 import { checkOutput, decide, mayClaim, route } from "./router.ts";
 

@@ -1,5 +1,5 @@
 // Code settles, a model writes. What the guards around that writing hold to.
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import type { CreateResponse } from "../openai.ts";
 import type { Outbound } from "../whatsapp.ts";
 import { drainDeliveries, tell } from "./followup.ts";
