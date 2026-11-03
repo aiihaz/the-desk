@@ -4,6 +4,10 @@
 
 export type CallKind = "first" | "booking" | "question" | "reschedule" | "payment_confirm" | "cancel";
 
+// This alternate branch is an owner-only test deployment. Never route to a
+// discovered business or accept a destination override from configuration/tools.
+export const TEST_CALL_RECIPIENT = "+918848878757";
+
 // Values Sarvam accepts for app_overrides.initial_language_name.
 export const LANGUAGES = [
   "Assamese",
@@ -23,6 +27,8 @@ export const LANGUAGES = [
 export type Language = typeof LANGUAGES[number];
 
 export type SarvamConfig = {
+  // Fail closed on this test branch until the user explicitly resumes calls.
+  callsPaused: boolean;
   apiKey: string;
   orgId: string;
   workspaceId: string;
@@ -38,6 +44,7 @@ export type SarvamConfig = {
 export function sarvamConfigFromEnv(): SarvamConfig {
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   return {
+    callsPaused: Deno.env.get("DESK_CALLS_PAUSED") !== "0",
     apiKey: Deno.env.get("SARVAM_API_KEY") ?? "",
     orgId: Deno.env.get("SARVAM_ORG_ID") ?? "",
     workspaceId: Deno.env.get("SARVAM_WORKSPACE_ID") ?? "",
@@ -84,7 +91,7 @@ export function buildOutbound(cfg: SarvamConfig, call: StartCall): Json {
       agent_variables: { ...call.variables, call_kind: call.kind },
       ...(call.language ? { app_overrides: { initial_language_name: call.language } } : {}),
     },
-    user_config: { user_phone_number: call.businessPhone },
+    user_config: { user_phone_number: TEST_CALL_RECIPIENT },
     // Echoed back in the webhook; the call id is how results find their row.
     webhook_config: { url: url.toString(), metadata: { call_id: call.callId } },
   };
@@ -92,6 +99,7 @@ export function buildOutbound(cfg: SarvamConfig, call: StartCall): Json {
 
 // Returns Sarvam's attempt_id (stored as calls.provider_call_id).
 export async function startCall(cfg: SarvamConfig, call: StartCall): Promise<string> {
+  if (cfg.callsPaused) throw new Error("calling is paused; wait for the user to explicitly resume");
   const res = await fetch(
     `${cfg.baseUrl}/outbounds/v1/orgs/${cfg.orgId}/workspaces/${cfg.workspaceId}/outbounds`,
     {

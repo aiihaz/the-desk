@@ -5,6 +5,29 @@ Linq provides iMessage with RCS/SMS fallback. The existing Luna conversation,
 consent checks, Sarvam caller, booking verification, payment screenshot checks,
 and follow-through jobs are shared.
 
+Hosted project: `rvglpiyctuzpegbvlane` (`thedesk`). The Linq webhook is deployed at
+`https://rvglpiyctuzpegbvlane.supabase.co/functions/v1/linq-inbound?version=2026-02-03`.
+All 17 migrations are applied; reconciliation and health checks are configured.
+
+## Owner-only calling, paused
+
+At the user's request, the final Sarvam request **always** sets its recipient to
+`+918848878757`, for every call kind, retry, and follow-up. Google Maps numbers and
+caller-supplied overrides cannot change that destination. This restriction is
+hardcoded in `buildOutbound()`; removing it requires an explicit code change.
+
+Calling is paused until the user explicitly says they are ready. The hosted
+`kill_switch` is true and `DESK_CALLS_PAUSED=1`. The transport also defaults to paused
+when that environment variable is missing, so a fresh deployment cannot ring a phone.
+No automatic unpause is scheduled. A future explicit resume needs both the database
+kill switch cleared and `DESK_CALLS_PAUSED=0`; it still calls only the owner's number.
+
+The hosted iMessage agent has replied through the real model, with delivery/read
+confirmed by Linq. Sarvam caller configuration still needs the workspace identifier
+and verified telephony/version configuration before calling can be validated. No
+live phone tests should run while the user is sleeping, and caller gates must not
+be marked passed without evidence.
+
 ## How the channels stay separate
 
 Migration `0017_messaging_channels.sql` adds `users.channel`, defaulting existing

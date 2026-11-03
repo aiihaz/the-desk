@@ -8,6 +8,7 @@ import { pushAlerts } from "../_shared/alerts.ts";
 import { DbAdminStore } from "../_shared/chat/admin.ts";
 import { createDelivery } from "../_shared/messaging.ts";
 import { DbStore, serviceClient } from "../_shared/store.ts";
+import { sarvamConfigFromEnv, TEST_CALL_RECIPIENT } from "../_shared/sarvam.ts";
 
 // reconcile runs every 5 minutes; this is several missed runs.
 const JOB_STALE_MS = 30 * 60_000;
@@ -44,6 +45,10 @@ Deno.serve(async () => {
     undelivered_alerts: alerts.undelivered,
     open_alerts: s.open_alerts,
     kill_switch: s.kill_switch,
+    calling: {
+      paused: sarvamConfigFromEnv().callsPaused || s.kill_switch === true,
+      test_recipient: TEST_CALL_RECIPIENT,
+    },
     credit_rs: Number(s.credit_rs),
     calls_today: s.calls_today,
   });
