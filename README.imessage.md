@@ -23,8 +23,9 @@ No automatic unpause is scheduled. A future explicit resume needs both the datab
 kill switch cleared and `DESK_CALLS_PAUSED=0`; it still calls only the owner's number.
 
 The hosted iMessage agent has replied through the real model, with delivery/read
-confirmed by Linq. Sarvam caller configuration still needs the workspace identifier
-and verified telephony/version configuration before calling can be validated. No
+confirmed by Linq. The Sarvam organization, workspace and Desk Caller app are configured. Calling
+validation still needs the committed agent version and verified outbound telephony
+configuration. No
 live phone tests should run while the user is sleeping, and caller gates must not
 be marked passed without evidence.
 
