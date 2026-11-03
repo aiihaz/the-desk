@@ -39,6 +39,8 @@ export interface Store {
   saveOutbound(userId: string, waMessageId: string, msg: Outbound): Promise<void>;
   // Resolve by UUID, including for delayed reports whose legacy wa_id is namespaced.
   deliveryTarget?(userId: string): Promise<User>;
+  claimLinqContactShare?(userId: string, chatId: string): Promise<string | null>;
+  finishLinqContactShare?(chatId: string, claim: string, shared: boolean): Promise<void>;
 }
 
 export function serviceClient(): SupabaseClient {
@@ -84,6 +86,24 @@ export class DbStore implements Store {
       .select("id, wa_id, blocked, phone_e164, channel").eq("id", userId).single();
     if (error) throw error;
     return storedUser(data);
+  }
+
+  async claimLinqContactShare(userId: string, chatId: string): Promise<string | null> {
+    const { data, error } = await this.db.rpc("claim_linq_contact_share", {
+      p_user_id: userId,
+      p_chat_id: chatId,
+    });
+    if (error) throw error;
+    return data;
+  }
+
+  async finishLinqContactShare(chatId: string, claim: string, shared: boolean): Promise<void> {
+    const { error } = await this.db.rpc("finish_linq_contact_share", {
+      p_chat_id: chatId,
+      p_claim: claim,
+      p_shared: shared,
+    });
+    if (error) throw error;
   }
 
   async saveInbound(userId: string, msg: Inbound): Promise<boolean> {

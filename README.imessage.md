@@ -25,8 +25,9 @@ kill switch cleared and `DESK_CALLS_PAUSED=0`; it still calls only the owner's n
 The hosted iMessage agent has replied through the real model, with delivery/read
 confirmed by Linq. The Sarvam organization, workspace, supplied connection identifier and Desk Caller
 app are configured. Committed version 4 was identified from authenticated API
-history and selected in the database. The verified Vobiz outbound phone number
-still needs registering before calling can be enabled. No
+history and selected in the database. Purchased outbound caller ID `+918064269395` is registered. It is distinct from the
+only permitted test destination, `+918848878757`. Real-line validation remains
+deferred until the user explicitly allows calling. No
 live phone tests should run while the user is sleeping, and caller gates must not
 be marked passed without evidence.
 
@@ -175,3 +176,23 @@ API reference: https://docs.linqapp.com/channel/imessage/llms.txt
 - No telephone calls have been placed by this deployment. No automatic unpause is
   scheduled. The final real-line caller test and full caller gate remain pending
   until the owner explicitly allows daytime testing and the outbound line is known.
+
+
+## Native iMessage identity sharing
+
+The Linq line `+16504440515` has an active name card for **The Desk**. Set
+`LINQ_SHARE_CONTACT_CARD=1` after configuring the line's card in Linq. The sender
+sends its text first, then shares the native identity card for iMessage chats.
+It never sends a .vcf attachment or adds links/media to the opening reply.
+
+Migration `0018_linq_contact_cards.sql` stores a claim per resolved Linq chat. An
+atomic five-minute lease prevents concurrent replies from sharing twice. A
+successful share has a rolling 24-hour cooldown; a failed lookup/share can retry
+only after five minutes, and only after another outbound reply. New failover chats
+have independent cooldowns. The sender checks that the selected sending line's
+card is active and skips sharing for RCS/SMS, blocked/stopped users, and contacts
+without an inbound message. A card failure never fails or resends the text.
+
+Existing automatic Linq line selection stays in place. Normal turn debouncing and
+one-nudge follow-through continue to govern the conversational flow; this feature
+adds no broadcast job and no messages to non-responders.

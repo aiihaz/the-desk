@@ -2,8 +2,18 @@
 import { e164ToWaId, waIdToE164 } from "./e164.ts";
 import type { Inbound, Outbound } from "./whatsapp.ts";
 
-export type LinqConfig = { token: string };
-export const linqConfigFromEnv = (): LinqConfig => ({ token: Deno.env.get("LINQ_API_TOKEN") ?? "" });
+export type LinqConfig = { token: string; shareContactCard?: boolean };
+export const linqConfigFromEnv = (): LinqConfig => ({
+  token: Deno.env.get("LINQ_API_TOKEN") ?? "",
+  shareContactCard: Deno.env.get("LINQ_SHARE_CONTACT_CARD") === "1",
+});
+
+export type LinqSentMessage = {
+  messageId: string;
+  chatId: string | null;
+  from: string | null;
+  service: string | null;
+};
 
 export function textContent(msg: Outbound): string {
   switch (msg.kind) {
@@ -19,7 +29,13 @@ export function textContent(msg: Outbound): string {
   }
 }
 
-export async function send(cfg: LinqConfig, to: string, msg: Outbound, fetcher = fetch): Promise<string> {
+export async function send(
+  cfg: LinqConfig,
+  to: string,
+  msg: Outbound,
+  fetcher = fetch,
+  afterSend?: (sent: LinqSentMessage) => Promise<void>,
+): Promise<string> {
   if (!cfg.token) throw new Error("LINQ_API_TOKEN is not set");
   const value = textContent(msg);
   if (!value.trim()) throw new Error("empty Linq message");
@@ -32,6 +48,20 @@ export async function send(cfg: LinqConfig, to: string, msg: Outbound, fetcher =
   const body = await res.json();
   if (!res.ok) throw new Error(`linq send failed ${res.status}`);
   if (typeof body?.message?.id !== "string") throw new Error("Linq response missing message.id");
+  if (afterSend) {
+    try {
+      await afterSend({
+        messageId: body.message.id,
+        chatId: typeof body.chat_id === "string" ? body.chat_id : null,
+        from: typeof body.from === "string" ? body.from : null,
+        service: body.service ?? body.message.service ?? null,
+      });
+    } catch {
+      // Identity sharing must never turn an accepted text into a failed delivery
+      // that reconciliation retries, sending the same text again.
+      console.warn("Linq post-send identity sharing failed");
+    }
+  }
   return body.message.id;
 }
 

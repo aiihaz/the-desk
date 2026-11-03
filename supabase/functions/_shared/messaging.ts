@@ -1,6 +1,7 @@
 // One transport selection for replies, reports, reconciliation and admin alerts.
 import { deliver } from "./deliver.ts";
-import { linqConfigFromEnv, send as linqSend } from "./linq.ts";
+import { linqConfigFromEnv } from "./linq.ts";
+import { linqSender } from "./linq_contact_card.ts";
 import type { MessagingChannel, Store, User } from "./store.ts";
 import type { Sender } from "./deliver.ts";
 import { type Outbound, send as waSend, waConfigFromEnv } from "./whatsapp.ts";
@@ -14,7 +15,7 @@ export function createDelivery(store: Store, senders?: Record<MessagingChannel, 
     const channel = target.channel ?? "whatsapp";
     const sender = senders?.[channel] ??
       (channel === "linq"
-        ? (to: string, m: Outbound) => linqSend(linqConfigFromEnv(), to, m)
+        ? linqSender(store, target.id, linqConfigFromEnv())
         : (to: string, m: Outbound) => waSend(waConfigFromEnv(), to, m));
     return deliver(store, sender, target, msg, new Date(), channel === "whatsapp");
   };
