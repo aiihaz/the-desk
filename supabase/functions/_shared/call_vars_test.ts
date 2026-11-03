@@ -79,13 +79,13 @@ Deno.test("the resolved errand: what's decided, flexible, acceptable, and what h
   assertEquals(v.flexible, "Any time inside the window.");
   assertEquals(
     v.may_accept,
-    "Book only what is decided above, up to Rs 2000. No advance: if they want one, don't agree. Take down the amount, whether it's adjusted against the bill, whether it's refunded, how and where to pay, by when, and whether they'll keep the slot meanwhile, then say you'll check with the customer and get back to them. Anything else: don't accept, come back with it.",
+    "Book only what is decided above, up to Rs 2000. No advance: if they want one, don't agree. Take down the amount, whether it's adjusted against the bill, whether it's refunded, how and where to pay, by when, and whether they'll keep the slot meanwhile, then say you'll check and get back to them. Anything else: don't accept, come back with it.",
   );
   assertEquals(v.already_happened, "Nothing yet: this is the first call.");
 
   const asking = callVariables("first", base, false, now);
   assertEquals(String(asking.may_accept).startsWith("Nothing yet: ask what's possible and come back."), true);
-  assertEquals(String(asking.may_accept).includes("say you'll check with the customer"), true);
+  assertEquals(String(asking.may_accept).includes("say you'll check and get back"), true);
 });
 
 Deno.test("a booking from an offer on a question call: picked option, conditions, profile name", () => {
@@ -106,7 +106,7 @@ Deno.test("a booking from an offer on a question call: picked option, conditions
   );
   assertEquals(v.flexible, "Nothing.");
   assertEquals(v.already_happened, "Called earlier, spoke to Rahim: They offered Saturday.");
-  assertEquals((v.may_accept as string).includes("The customer accepted: no refunds."), true);
+  assertEquals((v.may_accept as string).includes("Already accepted: no refunds."), true);
 });
 
 Deno.test("a stored field the kind doesn't use never reaches the agent", () => {
@@ -152,7 +152,7 @@ Deno.test("the extra question goes on call 2 unless call 1 got the answer", () =
 Deno.test("the live caller's inputs: the errand in task_context, and only the name and number the plan shares", () => {
   const now = new Date("2026-10-23T17:05:00+05:30");
   const ask = callVariables("first", base, false, now);
-  assertEquals([ask.user_name, ask.user_phone], ["the customer", "not shared on this call"]);
+  assertEquals([ask.user_name, ask.user_phone], ["not given", "not shared on this call"]);
   assertEquals(String(ask.task_context).includes("Ihaz"), false);
   assertEquals(
     String(ask.task_context).startsWith("First call about this errand.\nDecided: table for 4"),
@@ -172,10 +172,10 @@ Deno.test("the live caller's inputs: the errand in task_context, and only the na
     now,
   );
   assertEquals(String(q.task_context).includes("What to ask: Open Sunday?"), true);
-  assertEquals(q.user_name, "the customer");
+  assertEquals(q.user_name, "not given");
 });
 
-Deno.test("the confirm call says what the customer reports paying, and that it's theirs to report", () => {
+Deno.test("the confirm call says what they report paying, and that it's theirs to report", () => {
   const v = callVariables("payment_confirm", {
     ...base,
     booking: {
@@ -188,7 +188,9 @@ Deno.test("the confirm call says what the customer reports paying, and that it's
     payment: { amountRs: 500, ref: "344321", paidAt: null, payee: "p@ok" },
   }, false);
   assertEquals(
-    String(v.task_context).includes("The customer reports paying Rs 500 to p@ok, reference ending 344321."),
+    String(v.task_context).includes(
+      "The person you're calling for reports paying Rs 500 to p@ok, reference ending 344321.",
+    ),
     true,
   );
   assertEquals(v.user_name, "Ihaz");

@@ -130,7 +130,7 @@ function resolvedWhen(f: Record<string, unknown>, o: CallInputs["option"]): stri
 // Never agreed on a call. The customer decides, with everything the business said.
 const ADVANCE = "No advance: if they want one, don't agree. Take down the amount, whether it's adjusted " +
   "against the bill, whether it's refunded, how and where to pay, by when, and whether they'll keep the " +
-  "slot meanwhile, then say you'll check with the customer and get back to them.";
+  "slot meanwhile, then say you'll check and get back to them.";
 
 // The errand as settled before the call. Every line comes from what the user approved.
 function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars {
@@ -165,7 +165,7 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
     : "Any time inside the window.";
 
   const accept = kind === "question"
-    ? "Take the answer down. If they offer to book or hold, thank them, get the times, price and conditions, and say you'll check with the customer. Accept nothing."
+    ? "Take the answer down. If they offer to book or hold, thank them, get the times, price and conditions, and say you'll check and get back to them. Accept nothing."
     : kind === "cancel"
     ? (x.approvedLossRs
       ? `A loss of up to Rs ${x.approvedLossRs}. Anything more: don't cancel, come back.`
@@ -177,7 +177,7 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
       `Book only what is decided above${
         typeof f.max_price_rs === "number" ? `, up to Rs ${f.max_price_rs}` : ""
       }.`,
-      conditions ? `The customer accepted: ${conditions}.` : null,
+      conditions ? `Already accepted: ${conditions}.` : null,
       ADVANCE,
       "Anything else: don't accept, come back with it.",
     ].filter(Boolean).join(" ")
@@ -205,7 +205,7 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
 
 const KIND: Record<CallKind, string> = {
   first: "First call about this errand.",
-  booking: "Calling back to book the option the customer picked.",
+  booking: "Calling back to book the option they picked.",
   question: "Calling only to ask.",
   reschedule: "Calling to move an existing booking.",
   cancel: "Calling to cancel an existing booking.",
@@ -229,12 +229,12 @@ function agentInputs(kind: CallKind, v: Vars, now: Date): Vars {
     line("Already happened", v.already_happened),
     v.must_reask ? "It's been a while since the options: check it's still free before booking." : null,
     kind === "payment_confirm" && v.paid_amount_rs
-      ? `The customer reports paying Rs ${v.paid_amount_rs}${v.payee ? ` to ${v.payee}` : ""}${
-        v.payment_ref ? `, reference ending ${v.payment_ref}` : ""
-      }. You may say this, as what they report.`
+      ? `The person you're calling for reports paying Rs ${v.paid_amount_rs}${
+        v.payee ? ` to ${v.payee}` : ""
+      }${v.payment_ref ? `, reference ending ${v.payment_ref}` : ""}. You may say this, as what they report.`
       : null,
     kind === "cancel" && typeof v.deposit_paid_rs === "number"
-      ? `The customer paid a Rs ${v.deposit_paid_rs} advance for this booking.`
+      ? `They paid a Rs ${v.deposit_paid_rs} advance for this booking.`
       : null,
   ].filter(Boolean).join("\n");
   const ist = new Intl.DateTimeFormat("en-IN", {
@@ -249,7 +249,7 @@ function agentInputs(kind: CallKind, v: Vars, now: Date): Vars {
   const part = (t: string) => ist.find((p) => p.type === t)?.value ?? "";
   return {
     task_context: task,
-    user_name: typeof v.customer_name === "string" ? v.customer_name : "the customer",
+    user_name: typeof v.customer_name === "string" ? v.customer_name : "not given",
     user_phone: typeof v.customer_phone === "string" ? v.customer_phone : "not shared on this call",
     current_day: part("weekday"),
     current_date: `${part("day")} ${part("month")} ${part("year")}`,
