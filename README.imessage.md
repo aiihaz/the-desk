@@ -7,7 +7,7 @@ and follow-through jobs are shared.
 
 Hosted project: `rvglpiyctuzpegbvlane` (`thedesk`). The Linq webhook is deployed at
 `https://rvglpiyctuzpegbvlane.supabase.co/functions/v1/linq-inbound?version=2026-02-03`.
-All 17 migrations are applied; reconciliation and health checks are configured.
+All 18 migrations are applied; reconciliation and health checks are configured.
 
 ## Owner-only calling, paused
 
@@ -159,8 +159,8 @@ API reference: https://docs.linqapp.com/channel/imessage/llms.txt
 
 ## Hosted verification record
 
-- Runtime source deployed: `4706ffb` (the later branch commits document the rollout).
-- Function tests: 339 passed; formatting, lint, type checks and database CI passed.
+- Runtime source deployed: `bd02f4b` (the later branch commits document the rollout).
+- Function tests: 344 passed; formatting, lint, type checks and database CI passed.
 - Live Linq reply from the hosted model: delivered and read.
 - Signed webhook probe: 200; unsigned webhook probe: 401.
 - Reconciliation heartbeat is running; health reports `ok=true`, `kill_switch=true`,
@@ -175,7 +175,7 @@ API reference: https://docs.linqapp.com/channel/imessage/llms.txt
   runtime-input check above preserves the actual integration inputs and passed.
 - No telephone calls have been placed by this deployment. No automatic unpause is
   scheduled. The final real-line caller test and full caller gate remain pending
-  until the owner explicitly allows daytime testing and the outbound line is known.
+  until the owner explicitly allows daytime testing.
 
 
 ## Native iMessage identity sharing
@@ -196,3 +196,8 @@ without an inbound message. A card failure never fails or resends the text.
 Existing automatic Linq line selection stays in place. Normal turn debouncing and
 one-nudge follow-through continue to govern the conversational flow; this feature
 adds no broadcast job and no messages to non-responders.
+
+Native contact-card deployment verified: active card **The Desk**, accepted share
+in the owner's existing iMessage chat, and a recorded 24-hour cooldown. All 16
+contact-card pgTAP checks also passed in a rolled-back test on the hosted database.
+The purchased caller ID `+918064269395` is registered; calling remains paused.
