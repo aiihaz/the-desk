@@ -148,3 +148,48 @@ Deno.test("the extra question goes on call 2 unless call 1 got the answer", () =
   }, false);
   assertEquals(done.also_ask, null);
 });
+
+Deno.test("the live caller's inputs: the errand in task_context, and only the name and number the plan shares", () => {
+  const now = new Date("2026-10-23T17:05:00+05:30");
+  const ask = callVariables("first", base, false, now);
+  assertEquals([ask.user_name, ask.user_phone], ["the customer", "not shared on this call"]);
+  assertEquals(String(ask.task_context).includes("Ihaz"), false);
+  assertEquals(
+    String(ask.task_context).startsWith("First call about this errand.\nDecided: table for 4"),
+    true,
+  );
+  assertEquals(String(ask.task_context).includes("You may agree to: Nothing yet"), true);
+  assertEquals([ask.current_day, ask.current_date], ["Friday", "23 October 2026"]);
+
+  const book = callVariables("first", { ...base, fields: { ...base.fields, may_book: true } }, false, now);
+  assertEquals([book.user_name, book.user_phone], ["Ihaz", "+919812345678"]);
+  assertEquals(String(book.task_context).includes("don't agree. Take down the amount"), true);
+
+  const q = callVariables(
+    "question",
+    { ...base, task: "question", fields: { questions: ["Open Sunday?"] } },
+    false,
+    now,
+  );
+  assertEquals(String(q.task_context).includes("What to ask: Open Sunday?"), true);
+  assertEquals(q.user_name, "the customer");
+});
+
+Deno.test("the confirm call says what the customer reports paying, and that it's theirs to report", () => {
+  const v = callVariables("payment_confirm", {
+    ...base,
+    booking: {
+      time: "2026-10-23T20:15:00+05:30",
+      reference: null,
+      customerName: "Ihaz",
+      depositRs: 500,
+      knownFeeRs: null,
+    },
+    payment: { amountRs: 500, ref: "344321", paidAt: null, payee: "p@ok" },
+  }, false);
+  assertEquals(
+    String(v.task_context).includes("The customer reports paying Rs 500 to p@ok, reference ending 344321."),
+    true,
+  );
+  assertEquals(v.user_name, "Ihaz");
+});

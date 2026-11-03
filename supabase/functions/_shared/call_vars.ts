@@ -203,6 +203,60 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
   };
 }
 
+const KIND: Record<CallKind, string> = {
+  first: "First call about this errand.",
+  booking: "Calling back to book the option the customer picked.",
+  question: "Calling only to ask.",
+  reschedule: "Calling to move an existing booking.",
+  cancel: "Calling to cancel an existing booking.",
+  payment_confirm: "Calling back to say the advance is paid and confirm the booking.",
+};
+
+// The live caller reads its errand from task_context, user_name and user_phone (Desk
+// Caller v2-3). task_context is the resolved errand above, in one block, plus what only
+// this kind of call needs. Only what the plan said is shared goes in: no name or number
+// on a call that only asks.
+function agentInputs(kind: CallKind, v: Vars, now: Date): Vars {
+  const line = (label: string, value: unknown) =>
+    value === null || value === undefined || value === "" ? null : `${label}: ${value}`;
+  const task = [
+    KIND[kind],
+    line("What to ask", v.question_text),
+    line("The booking", v.existing_booking ?? v.held_booking),
+    line("Decided", v.decided),
+    line("Flexible", v.flexible),
+    line("You may agree to", v.may_accept),
+    line("Already happened", v.already_happened),
+    v.must_reask ? "It's been a while since the options: check it's still free before booking." : null,
+    kind === "payment_confirm" && v.paid_amount_rs
+      ? `The customer reports paying Rs ${v.paid_amount_rs}${v.payee ? ` to ${v.payee}` : ""}${
+        v.payment_ref ? `, reference ending ${v.payment_ref}` : ""
+      }. You may say this, as what they report.`
+      : null,
+    kind === "cancel" && typeof v.deposit_paid_rs === "number"
+      ? `The customer paid a Rs ${v.deposit_paid_rs} advance for this booking.`
+      : null,
+  ].filter(Boolean).join("\n");
+  const ist = new Intl.DateTimeFormat("en-IN", {
+    timeZone: TZ,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).formatToParts(now);
+  const part = (t: string) => ist.find((p) => p.type === t)?.value ?? "";
+  return {
+    task_context: task,
+    user_name: typeof v.customer_name === "string" ? v.customer_name : "the customer",
+    user_phone: typeof v.customer_phone === "string" ? v.customer_phone : "not shared on this call",
+    current_day: part("weekday"),
+    current_date: `${part("day")} ${part("month")} ${part("year")}`,
+    current_time: `${part("hour")}:${part("minute")} ${part("dayPeriod")}`.trim(),
+  };
+}
+
 export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean, now = new Date()): Vars {
   const f = x.fields;
   const str = (k: string) => (typeof f[k] === "string" ? f[k] as string : null);
@@ -342,5 +396,11 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean,
     }
   }
   if (missing.length) throw new MissingCallInput(kind, missing);
-  return { ...v, ...resolvedErrand(kind, x, v, now), business_name: x.businessName, must_reask: mustReask };
+  const all = {
+    ...v,
+    ...resolvedErrand(kind, x, v, now),
+    business_name: x.businessName,
+    must_reask: mustReask,
+  };
+  return { ...all, ...agentInputs(kind, all, now) };
 }
