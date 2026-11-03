@@ -10,25 +10,23 @@ import { runFollowThrough } from "../_shared/chat/followup.ts";
 import { reportCall, type ReportDeps } from "../_shared/chat/report.ts";
 import { DbChatStore } from "../_shared/chat/store.ts";
 import { claimChecker, verifier } from "../_shared/chat/verify.ts";
-import { deliver } from "../_shared/deliver.ts";
+import { createDelivery } from "../_shared/messaging.ts";
 import { responsesClient } from "../_shared/openai.ts";
 import { reconcile } from "../_shared/reconcile.ts";
 import { dial } from "../_shared/dial.ts";
 import { getTranscript, listAttempts, sarvamConfigFromEnv, startCall } from "../_shared/sarvam.ts";
 import { DbStore, serviceClient } from "../_shared/store.ts";
-import { send as waSend, waConfigFromEnv } from "../_shared/whatsapp.ts";
 
 const db = serviceClient();
 const calls = new DbCallStore(db);
 const chat = new DbChatStore();
 const admin = new DbAdminStore();
 const waStore = new DbStore();
-const wa = waConfigFromEnv();
 const cfg = sarvamConfigFromEnv();
 const adminWaIds = (Deno.env.get("DESK_ADMIN_WA_IDS") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 
 const openai = responsesClient(Deno.env.get("OPENAI_API_KEY") ?? "");
-const send: ReportDeps["send"] = (user, msg) => deliver(waStore, (to, m) => waSend(wa, to, m), user, msg);
+const send: ReportDeps["send"] = createDelivery(waStore);
 const report: ReportDeps = {
   store: chat,
   send,

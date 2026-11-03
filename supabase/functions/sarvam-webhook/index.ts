@@ -2,15 +2,13 @@ import { DbCallStore } from "../_shared/call_store.ts";
 import { reportCall } from "../_shared/chat/report.ts";
 import { DbChatStore } from "../_shared/chat/store.ts";
 import { claimChecker, verifier } from "../_shared/chat/verify.ts";
-import { deliver } from "../_shared/deliver.ts";
+import { createDelivery } from "../_shared/messaging.ts";
 import { responsesClient } from "../_shared/openai.ts";
 import { DbStore } from "../_shared/store.ts";
-import { send as waSend, waConfigFromEnv } from "../_shared/whatsapp.ts";
 import { handle } from "./handler.ts";
 
 const store = new DbCallStore();
 const chat = new DbChatStore();
-const wa = waConfigFromEnv();
 const waStore = new DbStore();
 const openai = responsesClient(Deno.env.get("OPENAI_API_KEY") ?? "");
 const verify = verifier(chat, openai);
@@ -31,7 +29,7 @@ Deno.serve((req) =>
           create: openai,
           verify,
           checkClaim,
-          send: (user, msg) => deliver(waStore, (to, m) => waSend(wa, to, m), user, msg),
+          send: createDelivery(waStore),
         },
         callId,
         r,

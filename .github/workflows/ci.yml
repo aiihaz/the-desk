@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, imessage-linq]
   pull_request:
 
 jobs:

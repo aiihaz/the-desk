@@ -6,9 +6,8 @@
 // verify_jwt is on, so only callers holding the service role key get here.
 import { pushAlerts } from "../_shared/alerts.ts";
 import { DbAdminStore } from "../_shared/chat/admin.ts";
-import { deliver } from "../_shared/deliver.ts";
+import { createDelivery } from "../_shared/messaging.ts";
 import { DbStore, serviceClient } from "../_shared/store.ts";
-import { send as waSend, waConfigFromEnv } from "../_shared/whatsapp.ts";
 
 // reconcile runs every 5 minutes; this is several missed runs.
 const JOB_STALE_MS = 30 * 60_000;
@@ -16,14 +15,13 @@ const JOB_STALE_MS = 30 * 60_000;
 const db = serviceClient();
 const admin = new DbAdminStore();
 const waStore = new DbStore();
-const wa = waConfigFromEnv();
 const adminWaIds = (Deno.env.get("DESK_ADMIN_WA_IDS") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 
 Deno.serve(async () => {
   const alerts = await pushAlerts({
     store: admin,
     admins: () => admin.users(adminWaIds),
-    send: (user, msg) => deliver(waStore, (to, m) => waSend(wa, to, m), user, msg),
+    send: createDelivery(waStore),
   });
   const s = await admin.status();
   const { data: job } = await db.from("job_runs").select("last_ok_at").eq("name", "reconcile").maybeSingle();

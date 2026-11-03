@@ -9,15 +9,17 @@ export class OutsideServiceWindow extends Error {
 
 export type Sender = (to: string, msg: Outbound) => Promise<string>;
 
-// The one path for every outgoing WhatsApp message: window check, send, log.
+// One path for outgoing messages: channel-specific window check, send, log.
+// Linq has no Meta service-window restriction; createDelivery selects the policy.
 export async function deliver(
   store: Store,
   sender: Sender,
   user: User,
   msg: Outbound,
   now = new Date(),
+  serviceWindow = true,
 ): Promise<string> {
-  if (msg.kind !== "template" && needsTemplate(await store.lastInboundAt(user.id), now)) {
+  if (serviceWindow && msg.kind !== "template" && needsTemplate(await store.lastInboundAt(user.id), now)) {
     throw new OutsideServiceWindow();
   }
   const id = await sender(user.waId, msg);

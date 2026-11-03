@@ -435,3 +435,7 @@ verify_jwt = true
 
 [functions.health]
 verify_jwt = true
+
+# Linq verifies Standard Webhooks HMAC and timestamp itself.
+[functions.linq-inbound]
+verify_jwt = false

@@ -24,11 +24,11 @@ export function serviceClient(): SupabaseClient {
 }
 
 export class DbStore implements Store {
-  constructor(private db: SupabaseClient = serviceClient()) {}
+  constructor(private db: SupabaseClient = serviceClient(), private source: "meta" | "linq" = "meta") {}
 
   async saveEvent(externalId: string, payload: unknown): Promise<boolean> {
     const { data, error } = await this.db.from("webhook_events")
-      .upsert({ source: "meta", external_id: externalId, payload }, {
+      .upsert({ source: this.source, external_id: externalId, payload }, {
         onConflict: "source,external_id",
         ignoreDuplicates: true,
       })
