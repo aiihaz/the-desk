@@ -26,7 +26,6 @@ import {
   setBusiness,
   setSlots,
   startNewRequest,
-  type ToolDeps,
 } from "../supabase/functions/_shared/chat/tools.ts";
 import { proposePlan } from "../supabase/functions/_shared/chat/turn.ts";
 import { type AgentDeps, handleInbound } from "../supabase/functions/_shared/chat/agent.ts";
@@ -170,7 +169,13 @@ function send(user: User, msg: Outbound) {
   return deliver(waStore, fakeSend, user, msg);
 }
 
-const toolDeps: ToolDeps = { store, send, trace: (event, data) => emit(`decision:${event}`, data) };
+const openaiKey = Deno.env.get("OPENAI_API_KEY");
+const toolDeps = {
+  store,
+  send,
+  create: responsesClient(openaiKey ?? ""),
+  trace: (event: string, data: unknown) => emit(`decision:${event}`, data),
+};
 
 // find_business uses real Google Places when GOOGLE_MAPS_API_KEY is set (results are
 // saved as businesses; calls stay fake). Without it, it searches the three dev businesses.
@@ -223,7 +228,6 @@ async function onApproved(_user: User, consent: ConsentStored): Promise<{ starte
   return { started: true };
 }
 
-const openaiKey = Deno.env.get("OPENAI_API_KEY");
 const typesafeKey = Deno.env.get("TYPESAFE_API_KEY");
 const lunaDeps: LunaDeps | null = openaiKey
   ? {
@@ -258,7 +262,7 @@ const turnDeps: AgentDeps = {
     ),
   // The real screenshot check. The bench has no WhatsApp media, so an image reads from
   // raw.dataUrl when the page sends one; the confirm call is shown, not placed.
-  onPayment: (user, route, msg) =>
+  onPayment: (user, _route, msg) =>
     handleScreenshot(
       {
         store,
@@ -275,6 +279,9 @@ const turnDeps: AgentDeps = {
             bytes: Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)),
           };
         },
+        notAPayment: async (u) => {
+          if (lunaDeps) await runLuna(lunaDeps, u, msg.at, msg.messageId);
+        },
         dial: async (a) => {
           const variables = callVariables(a.kind, await callStore.requestInputs(a.requestId, null), false);
           emit("call", {
@@ -287,7 +294,7 @@ const turnDeps: AgentDeps = {
       },
       user,
       msg.raw,
-      route.typed,
+      msg.messageId,
     ),
 };
 

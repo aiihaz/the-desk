@@ -61,6 +61,7 @@ export type Tool =
   | "pause_request"
   | "resume_request"
   | "find_booking"
+  | "accept_condition"
   | "stay_quiet"
   | "set_follow_up"
   | "remember"
@@ -74,9 +75,13 @@ export const TASKS: Task[] = BOOKING_CHANGES
   : ["booking", "question"];
 const findBooking: Tool[] = BOOKING_CHANGES ? ["find_booking"] : [];
 
+// What's open besides the current errand. An advance waits outside it: it doesn't take the
+// user's one active errand, and only they close it.
+export type Open = { advances?: boolean; decisions?: boolean };
+
 // null = no active request. paused: the request is on hold (pause_request). Errands
 // waiting in the queue are edited with the same tools, named by their errand ref.
-export function toolsFor(state: State | null, paused = false): Tool[] {
+export function toolsFor(state: State | null, paused = false, open: Open = {}): Tool[] {
   const hold: Tool[] = [paused ? "resume_request" : "pause_request"];
   const errands: Tool[] = ["cancel_request", "start_new_request"];
   const place: Tool[] = ["find_business", "choose_business", "my_places"];
@@ -117,5 +122,14 @@ export function toolsFor(state: State | null, paused = false): Tool[] {
   })();
   // Any time: saying nothing when nothing is needed, and what they ask to be remembered.
   // An errand can record what it's waiting for in any state it can be in.
-  return ["reply", ...t, "stay_quiet", ...(state ? ["set_follow_up" as Tool] : []), "remember", "forget"];
+  return [
+    "reply",
+    ...t,
+    ...(open.advances && !t.includes("cancel_request") ? ["cancel_request" as Tool] : []),
+    ...(open.decisions ? ["accept_condition" as Tool] : []),
+    "stay_quiet",
+    ...(state || open.advances ? ["set_follow_up" as Tool] : []),
+    "remember",
+    "forget",
+  ];
 }

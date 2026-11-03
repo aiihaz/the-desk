@@ -7,7 +7,7 @@
 //
 // Costs a few paise of TypeSafe calls.
 import { jevClient } from "../supabase/functions/_shared/jev.ts";
-import { checkOutput, route, type Thresholds } from "../supabase/functions/_shared/chat/router.ts";
+import { checkOutput, mayClaim, route, type Thresholds } from "../supabase/functions/_shared/chat/router.ts";
 import type { State } from "../supabase/functions/_shared/chat/states.ts";
 
 const env = await Deno.readTextFile(new URL("../supabase/functions/.env", import.meta.url));
@@ -17,7 +17,7 @@ if (!key) throw new Error("TYPESAFE_API_KEY is not set in supabase/functions/.en
 const ask = jevClient(key);
 const MODEL = Deno.env.get("JEV_MODEL") ?? "jev-1.14.0";
 const TH: Thresholds = { offscope: 0.85, injection: 0.8 };
-const OUTPUT = { claims: 0.5, offtask: 0.7 };
+const OUTPUT = { claims: 0.5, offtask: 0.7, promise: 0.6 };
 const TIMEOUT_MS = 5000;
 
 const NONE = "TASK\nnone active";
@@ -112,6 +112,24 @@ const OUTPUTS = [
   R("Paracetamol for a child is usually 15 mg per kg, every six hours.", null, "off_task_content"),
   R("Dear Sir, I request leave for tomorrow as I have fever.", null, "off_task_content"),
   R("Paris is the capital of France.", null, "off_task_content"),
+  // Questions and offers aren't claims, in any language.
+  R("Should I book it for 8 or 8:30?", "collecting", null),
+  R("Do you want me to call them now?", "confirming", null),
+  R("Which Paragon did you mean, the one on Kannur Road?", "collecting", null),
+  R("Kya main unhe abhi call karun?", "confirming", null),
+  R("അവരെ വിളിക്കണോ?", "confirming", null),
+];
+
+// A promise to come back later, however it's worded; things that aren't one.
+const PROMISES: [string, boolean][] = [
+  ["Sure, I'll remind you tomorrow at 10.", true],
+  ["I'll follow up with you on Monday.", true],
+  ["Theek hai, kal yaad dila dungi.", true],
+  ["നാളെ ഞാൻ ഓർമ്മിപ്പിക്കാം.", true],
+  ["Will ping you in the morning about it.", true],
+  ["I'll message you when the call is done.", false],
+  ["Which day should I book?", false],
+  ["Noted, I'll remember you're vegetarian.", false],
 ];
 
 const pct = (a: number[], p: number) => a.toSorted((x, y) => x - y)[Math.floor((a.length - 1) * p)] ?? 0;
@@ -167,7 +185,7 @@ for (const o of OUTPUTS) {
     ask,
     MODEL,
     { task_card: NONE, messages: [{ from: "user", text: "ok" }], recent: o.recent },
-    o.state,
+    mayClaim(o.state, o.recent !== "RECENT\nnone"),
     o.reply,
     OUTPUT,
     TIMEOUT_MS,
@@ -186,4 +204,22 @@ console.log(
   `\nOutput check, claims>=${OUTPUT.claims}, offtask>=${OUTPUT.offtask}: ${outOk}/${OUTPUTS.length}`,
 );
 for (const w of outWrong) console.log(`  ✗ ${w}`);
-if (falseRedirects || leaks || outWrong.length || errors) Deno.exit(1);
+
+const promiseWrong: string[] = [];
+for (const [reply, want] of PROMISES) {
+  const res = await checkOutput(
+    ask,
+    MODEL,
+    { task_card: NONE, messages: [{ from: "user", text: "ok" }] },
+    true,
+    reply,
+    OUTPUT,
+    TIMEOUT_MS,
+  );
+  if (!res.ran || res.promised !== want) promiseWrong.push(`"${reply}": want ${want}`);
+}
+console.log(
+  `\nPromise check, >=${OUTPUT.promise}: ${PROMISES.length - promiseWrong.length}/${PROMISES.length}`,
+);
+for (const w of promiseWrong) console.log(`  ✗ ${w}`);
+if (falseRedirects || leaks || outWrong.length || promiseWrong.length || errors) Deno.exit(1);

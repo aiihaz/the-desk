@@ -63,7 +63,7 @@ Deno.test("reschedule variables: the new window, or exactly the picked option on
   ]);
 });
 
-Deno.test("payment_confirm variables need the held booking and the payment", () => {
+Deno.test("payment_confirm variables need the booking and the payment", () => {
   const p = {
     ...base,
     task: "booking",
@@ -74,11 +74,11 @@ Deno.test("payment_confirm variables need the held booking and the payment", () 
   assertThrows(() => callVariables("payment_confirm", { ...p, payment: null }, false), MissingCallInput);
 });
 
-Deno.test("find_booking: one match is set on the change errand; several are listed; none says so", async () => {
+Deno.test("find_booking: several are listed, one is set by ref; none says so", async () => {
   const store = new FakeChatStore();
   const user = { id: "u1", waId: "919812345678", blocked: false };
   const deps = { store, send: async () => "wamid" };
-  assertEquals((await findBooking(deps, user, "paragon")).ok, false);
+  assertEquals((await findBooking(deps, user, null)).ok, false);
 
   store.bookings = [
     {
@@ -109,12 +109,11 @@ Deno.test("find_booking: one match is set on the change errand; several are list
     createdAt: new Date(),
     pausedAt: null,
   };
-  const one = await findBooking(deps, user, "my Paragon table");
-  assertEquals(one.ok && one.set_on, "r-r1");
-  assertEquals(store.bookingSet, ["bk111111-x"]);
-
-  const several = await findBooking(deps, user, "my booking");
+  const several = await findBooking(deps, user, null);
   assertEquals(several.ok && (several.bookings as unknown[]).length, 2);
+  assertEquals(store.bookingSet, []);
   const byRef = await findBooking(deps, user, "bk222222");
   assertEquals(byRef.ok && (byRef.booking as { place: string }).place, "Toni&Guy");
+  assertEquals(byRef.ok && byRef.set_on, "r-r1");
+  assertEquals(store.bookingSet, ["bk222222-y"]);
 });

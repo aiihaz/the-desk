@@ -14,8 +14,7 @@ export type Fields = {
   service?: string;
   customer_name?: string;
   max_price_rs?: number;
-  // Set by code from limits when the plan is built, so the consent hash covers them.
-  max_advance_rs?: number;
+  // Set by code from limits when the plan is built, so the consent hash covers it.
   may_book?: boolean;
   // Question task: each thing to ask, in the user's terms. Edited one item at a time
   // (questionOps), so a follow-up never replaces what they asked before.
@@ -32,7 +31,7 @@ export type Fields = {
   share_phone?: boolean;
 };
 
-// Keys Luna may set for each task. max_advance_rs and may_book are code-only; questions
+// Keys Luna may set for each task. may_book is code-only; questions
 // change through questionOps.
 const ALLOWED: Record<Task, (keyof Fields)[]> = {
   booking: [
@@ -58,7 +57,8 @@ const SHORT_WINDOW_MS = 5 * 60_000;
 
 export type SlotCheck =
   | { ok: true; patch: Partial<Record<keyof Fields, unknown>> }
-  | { ok: false; errors: string[] };
+  // narrow: the only error is a window under 5 minutes, which their words may support.
+  | { ok: false; errors: string[]; narrow?: boolean };
 
 // Edits to the question list: add new ones, reword one (1-based), remove some.
 export type QuestionOps = {
@@ -67,7 +67,7 @@ export type QuestionOps = {
   remove?: number[];
 };
 
-// windowConfirmed: their own words give this narrow window (tools.ts checked them).
+// windowConfirmed: a reading of the chat found they asked for this narrow a window (tools.ts).
 export type SlotOps = QuestionOps & { windowConfirmed?: boolean };
 
 // Checks a proposed patch on its own and merged with the current fields.
@@ -124,16 +124,16 @@ export function checkSlots(
   }
 
   // A narrow window is usually one time, written wrong, but it can be what they asked for.
-  // Code can't tell, so nothing is rewritten: it's refused until the model either uses
-  // exact_time or shows it's their range (windowConfirmed, from their own words).
+  // Nothing is rewritten: it's refused unless a reading of the chat finds it's their range.
+  let narrow = false;
   if (("window_start" in out || "window_end" in out) && !ops.windowConfirmed) {
     const start = (out.window_start ?? current.window_start) as string | null | undefined;
     const end = (out.window_end ?? current.window_end) as string | null | undefined;
     const span = start && end ? Date.parse(end) - Date.parse(start) : 0;
     if (span > 0 && span <= SHORT_WINDOW_MS) {
+      narrow = true;
       errors.push(
-        "window: under 5 minutes. For one time they gave, use exact_time alone. Only if they really gave " +
-          "this narrow a range, send it again with window_words: their exact words",
+        "window: under 5 minutes, and they didn't ask for that. For one time they gave, use exact_time alone",
       );
     }
   }
@@ -150,7 +150,9 @@ export function checkSlots(
       errors.push("exact_time: must be inside the window");
     }
   }
-  return errors.length ? { ok: false, errors } : { ok: true, patch: out };
+  return errors.length
+    ? { ok: false, errors, narrow: narrow && errors.length === 1 }
+    : { ok: true, patch: out };
 }
 
 export function currentQuestions(f: Fields): string[] {
@@ -201,7 +203,6 @@ function checkValue(key: keyof Fields, v: unknown, now: Date): string | null {
     case "tolerance_min":
       return int(v, 0, 120);
     case "max_price_rs":
-    case "max_advance_rs":
       return int(v, 0, 1_000_000);
     case "may_book":
     case "share_name":

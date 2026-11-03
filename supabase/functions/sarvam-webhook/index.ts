@@ -28,6 +28,7 @@ Deno.serve((req) =>
       reportCall(
         {
           store: chat,
+          create: openai,
           verify,
           checkClaim,
           send: (user, msg) => deliver(waStore, (to, m) => waSend(wa, to, m), user, msg),

@@ -49,7 +49,7 @@ Deno.test("needs_customer_decision is a new condition; empty and 'null' strings 
   assertEquals(o.booking_status, "not_booked");
   assertEquals(o.no_match_reason, "new_condition");
   assertEquals(o.booked_time, undefined);
-  assertEquals(o.upi_id, undefined);
+  assertEquals(o.payment_address, undefined);
 });
 
 Deno.test("an unintended commitment is kept, in their words", () => {
@@ -72,7 +72,11 @@ Deno.test("every result the report depends on is in the caller contract", () => 
       "options",
       "no_match_reason",
       "advance_amount_rs",
-      "upi_id",
+      "advance_redeemable",
+      "advance_refund",
+      "advance_hold",
+      "payment_mode",
+      "payment_address",
       "payee_name",
       "payment_deadline",
       "payment_status",
@@ -89,7 +93,15 @@ Deno.test("every result the report depends on is in the caller contract", () => 
 });
 
 Deno.test("the contract the database enforces is agent/contract.json", async () => {
-  const sql = await Deno.readTextFile("supabase/migrations/0013_caller_contract.sql");
-  const seeded = [...sql.matchAll(/^ {2}\('([a-z_]+)'\)[,;]$/gm)].map((m) => m[1]);
-  assertEquals(seeded, contract.required.map((o) => o.name));
+  const seeds = await Deno.readTextFile("supabase/migrations/0013_caller_contract.sql");
+  const change = await Deno.readTextFile("supabase/migrations/0014_advances_and_conditions.sql");
+  const name = /^ {2}\('([a-z_]+)'\)[,;]$/gm;
+  const dropped = [...change.matchAll(/delete from caller_contract where name = '([a-z_]+)'/g)].map((m) =>
+    m[1]
+  );
+  const seeded = [...[...seeds.matchAll(name)], ...[...change.matchAll(name)]].map((m) => m[1]);
+  assertEquals(
+    seeded.filter((n) => !dropped.includes(n)).sort(),
+    contract.required.map((o) => o.name).sort(),
+  );
 });

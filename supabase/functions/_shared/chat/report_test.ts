@@ -3,7 +3,8 @@ import type { CallKind, CallResult } from "../sarvam.ts";
 import type { Outbound } from "../whatsapp.ts";
 import { readOutcome, reportCall, type ReportDeps } from "./report.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
-import type { BookingCheck, Verification } from "./verify.ts";
+import { fakeWriter } from "./test_writer.ts";
+import type { BookingCheck, Condition, Verification } from "./verify.ts";
 
 const now = new Date("2026-10-23T12:00:00+05:30");
 
@@ -36,6 +37,7 @@ function setup(kind: CallKind = "first") {
   const sent: Outbound[] = [];
   const deps: ReportDeps = {
     store,
+    create: fakeWriter,
     send: async (_u, m) => {
       sent.push(m);
       return `wamid.out${sent.length}`;
@@ -45,25 +47,33 @@ function setup(kind: CallKind = "first") {
   return { store, sent, deps };
 }
 
-const result = (status: CallResult["status"], outputs: Record<string, unknown> | null): CallResult => ({
+const result = (
+  status: CallResult["status"],
+  outputs: Record<string, unknown> | null,
+  failureReason: string | null = null,
+): CallResult => ({
   attemptId: "a1",
   callId: "c1",
   status,
   durationS: 60,
   interactionId: null,
-  failureReason: null,
+  failureReason,
   outputs,
   transcript: null,
   agentNumber: null,
 });
 const body = (m: Outbound) => (m as { body: string }).body;
+const facts = (store: FakeChatStore) => store.reports[0].facts;
+const status = (store: FakeChatStore) => facts(store).happened.status;
 
 const passes = (checks: BookingCheck[]) => async (c: BookingCheck): Promise<Verification> => {
   checks.push(c);
   return { verified: true, problems: [], verdict: null };
 };
 
-Deno.test("booked and verified: said as the business confirmed it on the call, and the errand is done", async () => {
+const ok = async (): Promise<Verification> => ({ verified: true, problems: [], verdict: null });
+
+Deno.test("booked and verified: the facts say so, and the errand is done", async () => {
   const { store, sent, deps } = setup();
   const checks: BookingCheck[] = [];
   deps.verify = passes(checks);
@@ -83,6 +93,8 @@ Deno.test("booked and verified: said as the business confirmed it on the call, a
       reference: "T12",
       verified: true,
       problems: [],
+      conditions: [],
+      decision_open: false,
       captured: "2026-10-23T20:00:00+05:30",
     },
     optOut: false,
@@ -90,14 +102,13 @@ Deno.test("booked and verified: said as the business confirmed it on the call, a
   assertEquals(checks[0].kind, "first");
   assertEquals(checks[0].bookedTime, "2026-10-23T20:00:00+05:30");
   assertEquals(checks[0].defaultToleranceMin, 15);
-  assertEquals(
-    body(sent[0]),
-    "Paragon confirmed it on the call, tonight (Fri 23 Oct) at 8:00 pm, in your name. Reference: T12.",
-  );
+  assertEquals(status(store), "booked_and_verified");
+  assertEquals(facts(store).values, { when: "tonight (Fri 23 Oct) at 8:00 pm", reference: "T12" });
+  assertEquals(body(sent[0]), "booked_and_verified. tonight (Fri 23 Oct) at 8:00 pm T12");
 });
 
-Deno.test("booked but not verified: probably booked, check with them, and flagged with the problems", async () => {
-  const { store, sent, deps } = setup();
+Deno.test("booked but not verified: not called done, and they're told to check, with the number", async () => {
+  const { store, deps } = setup();
   deps.verify = async () => ({
     verified: false,
     problems: ["transcript: unclear (no read-back)"],
@@ -108,25 +119,110 @@ Deno.test("booked but not verified: probably booked, check with them, and flagge
     "c1",
     result("completed", { booking_status: "booked", booked_time: "2026-10-23T20:00:00+05:30" }),
   );
-  assertEquals(store.settled[0].booking, {
-    time: "2026-10-23T20:00:00+05:30",
-    reference: null,
-    verified: false,
-    problems: ["transcript: unclear (no read-back)"],
-    captured: "2026-10-23T20:00:00+05:30",
-  });
-  assertEquals(
-    body(sent[0]),
-    "Paragon said it's booked, tonight (Fri 23 Oct) at 8:00 pm, but I couldn't confirm that from the call, " +
-      "so please check with them yourself: +919800000901.",
-  );
+  assertEquals(store.settled[0].booking?.verified, false);
+  assertEquals(status(store), "business_said_booked_not_verified");
+  assertEquals(facts(store).happened.why_not_verified, ["transcript: unclear (no read-back)"]);
+  assertEquals(facts(store).values.phone, "+919800000901");
+  assertEquals(facts(store).next_step, "check_with_business_themselves");
 });
 
 Deno.test("booked with no verifier wired: never reported as confirmed", async () => {
-  const { store, sent, deps } = setup();
+  const { store, deps } = setup();
   await reportCall(deps, "c1", result("completed", { booking_status: "booked" }));
   assertEquals(store.settled[0].booking?.verified, false);
-  assertEquals(body(sent[0]).includes("please check with them yourself"), true);
+  assertEquals(status(store), "business_said_booked_not_verified");
+});
+
+const valet: Condition = {
+  words: "valet is Rs 100 if you want it",
+  what: "valet",
+  required: false,
+  covered: false,
+};
+const cover: Condition = {
+  words: "there's a Rs 500 cover per head",
+  what: "cover charge",
+  required: true,
+  covered: false,
+};
+
+Deno.test("an optional mention doesn't downgrade a booking, and still reaches the user", async () => {
+  const { store, deps } = setup();
+  deps.verify = async () => ({ verified: true, problems: [], verdict: null, conditions: [valet] });
+  await reportCall(deps, "c1", result("completed", { booking_status: "booked" }));
+  assertEquals(store.settled[0].booking?.verified, true);
+  assertEquals(status(store), "booked_and_verified");
+  assertEquals(facts(store).happened.conditions, [{
+    their_words: valet.words,
+    what: "valet",
+    required: false,
+    already_approved: false,
+  }]);
+  assertEquals(facts(store).next_step, null);
+});
+
+Deno.test("a required condition nobody approved goes to the user as their decision, in their words", async () => {
+  const { store, deps } = setup();
+  deps.verify = async () => ({
+    verified: false,
+    problems: ["condition: cover charge"],
+    verdict: null,
+    conditions: [cover],
+    decisionOpen: true,
+  });
+  await reportCall(deps, "c1", result("completed", { booking_status: "booked" }));
+  assertEquals(store.settled[0].booking?.decision_open, true);
+  assertEquals(store.settled[0].booking?.conditions, [cover]);
+  assertEquals(status(store), "business_said_booked_but_requires_something_not_approved");
+  assertEquals(facts(store).next_step, "decide_on_condition");
+});
+
+Deno.test("the wrong year: stored with no date, the captured words kept, nothing confirmed", async () => {
+  const { store, deps } = setup();
+  store.req!.fields = { ...store.req!.fields, exact_time: "2026-11-08T20:00:00+05:30" };
+  deps.verify = async () => ({
+    verified: false,
+    problems: ["booked 2025-11-08, off"],
+    verdict: null,
+    badYear: true,
+  });
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", { booking_status: "booked", booked_time: "2025-11-08T20:00:00+05:30" }),
+  );
+  const b = store.settled[0].booking!;
+  assertEquals([b.time, b.date, b.verified, b.captured], [
+    null,
+    undefined,
+    false,
+    "2025-11-08T20:00:00+05:30",
+  ]);
+  assertEquals(facts(store).happened.year_doesnt_match, {
+    caller_noted: "2025-11-08T20:00:00+05:30",
+    they_asked_for: "2026-11-08T20:00:00+05:30",
+  });
+});
+
+Deno.test("a booked time the caller couldn't give is taken from the call itself", async () => {
+  const { store, deps } = setup();
+  deps.verify = async () => ({
+    verified: true,
+    problems: [],
+    verdict: null,
+    heard: { time: "2026-11-08T20:00:00+05:30", date: null },
+  });
+  await reportCall(deps, "c1", result("completed", { booking_status: "booked", booked_time: "8 Nov at 8" }));
+  assertEquals(store.settled[0].booking?.time, "2026-11-08T20:00:00+05:30");
+  assertEquals(store.settled[0].booking?.captured, "8 Nov at 8");
+});
+
+Deno.test("a dash for a reference is no reference", async () => {
+  const { store, deps } = setup();
+  deps.verify = ok;
+  await reportCall(deps, "c1", result("completed", { booking_status: "booked", booking_reference: "-" }));
+  assertEquals(store.settled[0].booking?.reference, null);
+  assertEquals("reference" in facts(store).values, false);
 });
 
 Deno.test("call 2: the check gets the picked option", async () => {
@@ -154,12 +250,25 @@ Deno.test("the Genie contract: outcome options_found on call 1 becomes options",
 });
 
 Deno.test("no answer, busy, failed: nothing is done, and the approval is spent", async () => {
+  const want = {
+    no_answer: "no_one_picked_up_nothing_done",
+    busy: "line_busy_nothing_done",
+    failed: "call_did_not_go_through_nothing_done",
+  };
   for (const s of ["no_answer", "busy", "failed"] as const) {
-    const { store, sent, deps } = setup();
+    const { store, deps } = setup();
     await reportCall(deps, "c1", result(s, null));
     assertEquals(store.settled[0].result, "back", s);
-    assertEquals(body(sent[0]).includes("nothing is done yet"), true, s);
+    assertEquals(status(store), want[s]);
+    assertEquals(facts(store).next_step, "offer_to_try_again");
   }
+});
+
+Deno.test("a lost result: what they said can't be told, and they're pointed at the business", async () => {
+  const { store, deps } = setup();
+  await reportCall(deps, "c1", result("failed", null, "no_result"));
+  assertEquals(status(store), "no_result_came_back_cannot_say_what_they_said");
+  assertEquals(facts(store).values.phone, "+919800000901");
 });
 
 Deno.test("anything the outputs don't make clear is never reported as booked", async () => {
@@ -168,66 +277,184 @@ Deno.test("anything the outputs don't make clear is never reported as booked", a
       booking_status: "BOOKED",
     }]
   ) {
-    const { store, sent, deps } = setup();
+    const { store, deps } = setup();
     await reportCall(deps, "c1", result("completed", out));
     assertEquals(store.settled[0].result, "back", JSON.stringify(out));
-    assertEquals(/booked|confirmed/.test(body(sent[0]).replace("treating anything as done", "")), false);
+    assertEquals(/^booked|business_said/.test(String(status(store))), false);
   }
 });
 
-Deno.test("an advance: nothing agreed or paid, said plainly", async () => {
-  const { store, sent, deps } = setup();
+// Advances --------------------------------------------------------------------------------
+
+const terms = {
+  booking_status: "advance_required",
+  advance_amount: 500,
+  advance_redeemable: "adjusted in the final bill",
+  advance_refund: "not refundable after 6 pm",
+  advance_hold: "yes",
+  payment_mode: "upi",
+  payment_address: "paragon@okhdfc",
+  payee_name: "Paragon Restaurant",
+  payment_deadline: "2026-10-23T19:30:00+05:30",
+  booked_time: "2026-10-23T20:15:00+05:30",
+};
+
+Deno.test("an advance: every term is kept and told, nothing is agreed, and the errand waits", async () => {
+  const { store, deps } = setup();
+  await reportCall(deps, "c1", result("completed", terms));
+  const b = store.settled[0];
+  assertEquals(b.result, "advance");
+  assertEquals(b.booking?.amount_rs, 500);
+  assertEquals(b.booking?.upi_id, "paragon@okhdfc");
+  assertEquals(b.booking?.payee_name, "Paragon Restaurant");
+  assertEquals((b.booking?.terms as Record<string, unknown>).redeemable, "adjusted in the final bill");
+  assertEquals(status(store), "business_wants_advance_nothing_agreed");
+  assertEquals(facts(store).values, {
+    advance: "Rs 500",
+    pay_to: "paragon@okhdfc",
+    payee: "Paragon Restaurant",
+    deadline: "Fri 23 Oct 2026, 7:30 pm",
+    slot: "tonight (Fri 23 Oct) at 8:15 pm",
+  });
+  assertEquals(facts(store).happened.adjusted_against_bill_their_words, "adjusted in the final bill");
+  assertEquals(facts(store).happened.refund_their_words, "not refundable after 6 pm");
+  assertEquals(facts(store).happened.keeping_the_slot_meanwhile, "yes");
+  assertEquals(facts(store).next_step, "decide_on_advance");
+  assertEquals(String(facts(store).happened.to_go_ahead).includes("send the screenshot here"), true);
+});
+
+Deno.test("an advance of any size comes back the same way: no cap, nothing lost", async () => {
+  const { store, deps } = setup();
+  await reportCall(deps, "c1", result("completed", { ...terms, advance_amount: 20000 }));
+  assertEquals(store.settled[0].result, "advance");
+  assertEquals(facts(store).values.advance, "Rs 20000");
+});
+
+Deno.test("what the business didn't say is told as not known", async () => {
+  const { store, deps } = setup();
+  await reportCall(deps, "c1", result("completed", { booking_status: "advance_required" }));
+  assertEquals(store.settled[0].result, "advance");
+  assertEquals(facts(store).happened.not_known, [
+    "the amount",
+    "where to pay",
+    "whether it's adjusted against the bill",
+    "whether it's refunded",
+    "by when",
+  ]);
+  assertEquals(facts(store).happened.keeping_the_slot_meanwhile, "they didn't say");
+});
+
+Deno.test("not booked because of an advance is an advance, with or without the status", async () => {
+  const { store, deps } = setup();
   await reportCall(
     deps,
     "c1",
-    result("completed", { booking_status: "held_pending_deposit", advance_amount: 500 }),
+    result("completed", { booking_status: "not_booked", no_match_reason: "advance", advance_amount: 300 }),
   );
-  assertEquals(store.settled[0].result, "back");
-  assertEquals(
-    body(sent[0]),
-    "Paragon will only hold it with an advance of Rs 500. I didn't agree to it or pay anything, so nothing is " +
-      "booked. Do you want to try another time or place?",
-  );
+  assertEquals(store.settled[0].result, "advance");
 });
 
-Deno.test("other times offered: they become options, sent as text to pick from in words", async () => {
+Deno.test("the older outcome name still reads as an advance", () => {
+  assertEquals(readOutcome("first", { outcome: "held_pending_deposit" }, now).kind, "needs_advance");
+  assertEquals(readOutcome("first", { booking_status: "held_pending_deposit" }, now).kind, "needs_advance");
+});
+
+Deno.test("an address that isn't a UPI ID isn't held against the screenshot as one", async () => {
+  const { store, deps } = setup();
+  await reportCall(deps, "c1", result("completed", { ...terms, payment_address: "9812345678" }));
+  assertEquals(store.settled[0].booking?.upi_id, null);
+  assertEquals(facts(store).values.pay_to, "9812345678");
+});
+
+Deno.test("cancelled during the call: the terms are told, the errand ends, nothing waits", async () => {
+  const { store, deps } = setup();
+  store.call!.cancelRequested = true;
+  await reportCall(deps, "c1", result("completed", terms));
+  assertEquals(store.settled[0].result, "back");
+  assertEquals(store.reports[0].end, true);
+  assertEquals(facts(store).happened.errand_dropped_nothing_booked, true);
+  assertEquals(facts(store).values.advance, "Rs 500");
+  assertEquals(facts(store).next_step, null);
+});
+
+// Options, questions ------------------------------------------------------------------------
+
+Deno.test("other times offered: they become options, each value exact, the prompt the words sent", async () => {
   const { store, sent, deps } = setup();
   store.settleResult = { ok: true, request_id: "r1", state: "done", option_ids: ["o1", "o2"] };
-  store.options = [{ id: "o1", label: "tonight (Fri 23 Oct), 8:30 pm", detail: null }, {
-    id: "o2",
-    label: "tonight (Fri 23 Oct), 9:15 pm",
-    detail: null,
-  }];
   await reportCall(
     deps,
     "c1",
     result("completed", {
       booking_status: "not_booked",
       no_match_reason: "no_slot",
-      options: [{ time: "2026-10-23T20:30:00+05:30", party_size: 4 }, { time: "2026-10-23T21:15:00+05:30" }],
+      options: [
+        { time: "2026-10-23T20:30:00+05:30", party_size: 4, price_rs: 1200, conditions: "90 minutes only" },
+        { time: "2026-10-23T21:15:00+05:30", advance_required: true },
+      ],
     }),
   );
   assertEquals(store.settled[0].result, "options");
   assertEquals(store.settled[0].options!.map((o) => o.label), [
-    "tonight (Fri 23 Oct), 8:30 pm",
+    "tonight (Fri 23 Oct), 8:30 pm, Rs 1200, 90 minutes only",
     "tonight (Fri 23 Oct), 9:15 pm",
   ]);
-  assertEquals(sent[0].kind, "text");
-  assertEquals(
-    body(sent[0]).startsWith("Paragon can't do what you asked (that time isn't free). They offered:\n1. "),
-    true,
-  );
+  assertEquals(facts(store).values.option_1, "tonight (Fri 23 Oct), 8:30 pm, Rs 1200, 90 minutes only");
+  assertEquals(facts(store).happened.why_not_what_they_asked, "no_slot");
+  assertEquals(facts(store).next_step, "pick_an_option");
   assertEquals(store.prompt!.kind, "options");
+  assertEquals(store.prompt!.text, body(sent[0]));
 });
 
-Deno.test("a question answered: the business's words, quoted and cleaned", async () => {
-  const { store, sent, deps } = setup("question");
+Deno.test("a question answered: the business's words, cleaned", async () => {
+  const { store, deps } = setup("question");
   await reportCall(deps, "c1", result("completed", { answer: "Yes, Rs 250,‮ ready Friday." }));
   assertEquals(store.settled[0].result, "done");
-  assertEquals(body(sent[0]), 'Paragon said: "Yes, Rs 250, ready Friday."');
+  assertEquals(status(store), "question_answered");
+  assertEquals(facts(store).happened.they_said, "Yes, Rs 250, ready Friday.");
 });
 
-Deno.test("an opt-out is recorded and the user told; a redelivered result says nothing twice", async () => {
+Deno.test("a question call that brings an offer: their answer and the offer both reach the user", async () => {
+  const { store, deps } = setup("question");
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", {
+      answer: "Yes we have tables.",
+      options: [{ time: "2026-10-23T20:30:00+05:30" }],
+    }),
+  );
+  assertEquals(store.settled[0].result, "options");
+  assertEquals(facts(store).happened.they_said, "Yes we have tables.");
+  assertEquals(facts(store).happened.they_offered_to_book, true);
+});
+
+Deno.test("the extra question's answer comes back on any booking call", async () => {
+  const { store, deps } = setup();
+  store.req!.fields = { ...store.req!.fields, also_ask: "parking?" };
+  deps.verify = ok;
+  await reportCall(deps, "c1", result("completed", { booking_status: "booked", also_answer: "Yes, valet." }));
+  assertEquals(facts(store).happened.also_asked, { question: "parking?", their_answer: "Yes, valet." });
+});
+
+Deno.test("the extra question unanswered on call 1 is said; on call 2 it isn't news", async () => {
+  const first = setup();
+  first.store.req!.fields = { ...first.store.req!.fields, also_ask: "parking?" };
+  first.deps.verify = ok;
+  await reportCall(first.deps, "c1", result("completed", { booking_status: "booked" }));
+  assertEquals(facts(first.store).happened.also_asked, {
+    question: "parking?",
+    their_answer: "no clear answer",
+  });
+
+  const second = setup("booking");
+  second.store.req!.fields = { ...second.store.req!.fields, also_ask: "parking?" };
+  second.deps.verify = ok;
+  await reportCall(second.deps, "c1", result("completed", { booking_status: "booked" }));
+  assertEquals("also_asked" in facts(second.store).happened, false);
+});
+
+Deno.test("an opt-out is recorded and told; a redelivered result says nothing twice", async () => {
   const { store, sent, deps } = setup();
   await reportCall(
     deps,
@@ -235,23 +462,19 @@ Deno.test("an opt-out is recorded and the user told; a redelivered result says n
     result("completed", { booking_status: "not_booked", opt_out_requested: "yes" }),
   );
   assertEquals(store.settled[0].optOut, true);
-  assertEquals(
-    body(sent[0]).endsWith("They asked not to be called again, so I won't call them in future."),
-    true,
-  );
+  assertEquals(facts(store).happened.business_asked_not_to_be_called_again_so_it_wont_be, true);
   store.settleResult = { ok: false, reason: "not_calling" };
   await reportCall(deps, "c1", result("completed", { booking_status: "booked" }));
   assertEquals(sent.length, 1);
 });
 
-Deno.test("when an errand ends, the one waiting behind it is brought up", async () => {
+Deno.test("when an errand ends, the one waiting behind it goes in the same message", async () => {
   const { store, sent, deps } = setup("question");
   store.activated = "r2";
   store.waiting = [{ ...store.req!, id: "r2", state: "queued" }];
   await reportCall(deps, "c1", result("completed", { answer: "Yes." }));
-  assertEquals(sent.length, 2);
-  assertEquals(body(sent[0]), 'Paragon said: "Yes."');
-  assertEquals(body(sent[1]), "Next I have your booking for Paragon. Shall I carry on with it?");
+  assertEquals(sent.length, 1);
+  assertEquals(store.deliveries[0].facts?.next_errand, { task: "booking", place: "Paragon" });
 });
 
 Deno.test("readOutcome: options in the past or without a time or label are dropped", () => {
@@ -262,88 +485,54 @@ Deno.test("readOutcome: options in the past or without a time or label are dropp
   assertEquals(o.kind === "options" && o.options.map((x) => x.label), ["Sat lunch"]);
 });
 
-// Advances, confirm calls, cancels and reschedules (0011) -------------------------------
+// Confirm calls, cancels and reschedules -----------------------------------------------------
 
-const ok = async (): Promise<Verification> => ({ verified: true, problems: [], verdict: null });
-
-Deno.test("an advance within the approved cap, with UPI details: held, and the user told how to pay", async () => {
-  const { store, sent, deps } = setup();
-  store.req!.fields = { ...store.req!.fields, max_advance_rs: 500 };
-  await reportCall(
-    deps,
-    "c1",
-    result("completed", {
-      booking_status: "held_pending_deposit",
-      advance_amount: 300,
-      upi_id: "paragon@okhdfc",
-      payee_name: "Paragon Restaurant",
-      payment_deadline: "2026-10-23T19:30:00+05:30",
-      booked_time: "2026-10-23T20:15:00+05:30",
-    }),
-  );
-  assertEquals(store.settled[0].result, "held");
-  assertEquals(store.settled[0].booking?.amount_rs, 300);
-  assertEquals(store.settled[0].booking?.upi_id, "paragon@okhdfc");
-  const text = body(sent[0]);
-  assertEquals(text.includes("Rs 300 advance, to be paid by 7:30 pm"), true);
-  assertEquals(text.includes("Pay paragon@okhdfc (Paragon Restaurant)"), true);
-  assertEquals(text.includes("send me the payment screenshot"), true);
-});
-
-Deno.test("an advance over the cap, or with nowhere to pay, is not held", async () => {
-  for (const out of [{ advance_amount: 800, upi_id: "p@ok" }, { advance_amount: 300 }]) {
-    const { store, deps } = setup();
-    store.req!.fields = { ...store.req!.fields, max_advance_rs: 500 };
-    await reportCall(deps, "c1", result("completed", { booking_status: "held_pending_deposit", ...out }));
-    assertEquals(store.settled[0].result, "back", JSON.stringify(out));
-  }
-});
-
-Deno.test("confirm call: received and booked, verified against the held booking's time", async () => {
-  const { store, sent, deps } = setup("payment_confirm");
+Deno.test("confirm call: received and booked, verified against the booking's time and what was paid", async () => {
+  const { store, deps } = setup("payment_confirm");
   store.call!.bookingTime = "2026-10-23T20:15:00+05:30";
+  store.call!.advanceRs = 500;
   const checks: BookingCheck[] = [];
   deps.verify = passes(checks);
   await reportCall(deps, "c1", result("completed", { payment_status: "received", booking_status: "booked" }));
   assertEquals(checks[0].kind, "booking");
   assertEquals(checks[0].option?.value.time, "2026-10-23T20:15:00+05:30");
   assertEquals(checks[0].bookedTime, "2026-10-23T20:15:00+05:30");
+  assertEquals(checks[0].advancePaidRs, 500);
   assertEquals(store.settled[0].result, "done");
-  assertEquals(body(sent[0]).startsWith("Paragon confirmed they got your payment, and it's booked"), true);
+  assertEquals(status(store), "business_confirmed_payment_and_booking");
+  assertEquals(facts(store).values.paid, "Rs 500");
 });
 
-Deno.test("confirm call: not seen → one redial; not seen again → unconfirmed, with their number", async () => {
+Deno.test("confirm call: 'not seen' is the business's claim, with one redial, then their number", async () => {
   const first = setup("payment_confirm");
   first.store.limits.payment_confirm_retry_minutes = 30;
   await reportCall(first.deps, "c1", result("completed", { payment_status: "not_seen" }));
   assertEquals(first.store.settled[0].result, "retry");
-  assertEquals(
-    body(first.sent[0]),
-    "Paragon hasn't seen your payment yet. I'll call them again in about 30 minutes.",
-  );
+  assertEquals(status(first.store), "business_says_payment_not_seen_desk_will_call_them_again");
+  assertEquals(facts(first.store).happened.desk_calling_them_again_in_minutes, 30);
 
   const second = setup("payment_confirm");
   second.store.call!.isRetry = true;
   await reportCall(second.deps, "c1", result("completed", { outcome: "payment_not_seen" }));
   assertEquals(second.store.settled[0].result, "unconfirmed");
-  assertEquals(body(second.sent[0]).endsWith("+919800000901."), true);
+  assertEquals(status(second.store), "business_says_payment_still_not_seen");
+  assertEquals(facts(second.store).values.phone, "+919800000901");
 });
 
-Deno.test("confirm call: wrong amount or an expired hold: nothing agreed, no refund promised", async () => {
-  const { store, sent, deps } = setup("payment_confirm");
+Deno.test("confirm call: wrong amount: what they said is kept, and nothing is agreed", async () => {
+  const { store, deps } = setup("payment_confirm");
   await reportCall(
     deps,
     "c1",
     result("completed", { payment_status: "wrong_amount", summary: "We got Rs 50, not Rs 500." }),
   );
   assertEquals(store.settled[0].result, "unconfirmed");
-  const text = body(sent[0]);
-  assertEquals(text.includes('They said: "We got Rs 50, not Rs 500."'), true);
-  assertEquals(/refund/i.test(text), false);
+  assertEquals(facts(store).happened.they_said, "We got Rs 50, not Rs 500.");
+  assertEquals(facts(store).happened.nothing_agreed, true);
 });
 
 Deno.test("cancel: cancelled only when the business's words confirm it; a refund only as their words", async () => {
-  const { store, sent, deps } = setup("cancel");
+  const { store, deps } = setup("cancel");
   store.call!.bookingTime = "2026-10-23T20:15:00+05:30";
   deps.checkClaim = ok;
   await reportCall(
@@ -352,26 +541,33 @@ Deno.test("cancel: cancelled only when the business's words confirm it; a refund
     result("completed", { cancel_status: "cancelled", refund_stated: "advance back to UPI in 2 days" }),
   );
   assertEquals(store.settled[0].result, "cancelled");
-  assertEquals(
-    body(sent[0]),
-    "Cancelled: your tonight (Fri 23 Oct) at 8:15 pm booking at Paragon. About the advance they said: " +
-      '"advance back to UPI in 2 days".',
-  );
+  assertEquals(facts(store).values.booking, "tonight (Fri 23 Oct) at 8:15 pm");
+  assertEquals(facts(store).happened.refund_their_words, "advance back to UPI in 2 days");
 
   const unsure = setup("cancel");
   await reportCall(unsure.deps, "c1", result("completed", { cancel_status: "cancelled" }));
   assertEquals(unsure.store.settled[0].result, "unconfirmed");
+  assertEquals(status(unsure.store), "caller_says_cancelled_not_verified_booking_may_still_stand");
 });
 
-Deno.test("cancel: a charge is kept for the next plan, and the booking still stands", async () => {
-  const { store, sent, deps } = setup("cancel");
+Deno.test("cancel: a charge is kept for the next plan, even with no amount, and the booking stands", async () => {
+  const { store, deps } = setup("cancel");
   await reportCall(
     deps,
     "c1",
     result("completed", { cancel_status: "charge_pending", cancel_charge_rs: "200" }),
   );
-  assertEquals(store.settled[0], { result: "back", booking: { fee_rs: 200 }, optOut: false });
-  assertEquals(body(sent[0]).includes("cancelling costs Rs 200. I didn't agree to it"), true);
+  assertEquals(store.settled[0], {
+    result: "back",
+    booking: { fee_rs: 200, charge_stated: true },
+    optOut: false,
+  });
+  assertEquals(facts(store).values.charge, "Rs 200");
+
+  const vague = setup("cancel");
+  await reportCall(vague.deps, "c1", result("completed", { cancel_status: "charge_pending" }));
+  assertEquals(vague.store.settled[0].booking, { fee_rs: null, charge_stated: true });
+  assertEquals("charge" in facts(vague.store).values, false);
 });
 
 Deno.test("reschedule: moved (verified), kept with other times, or unclear", async () => {
@@ -383,26 +579,75 @@ Deno.test("reschedule: moved (verified), kept with other times, or unclear", asy
     result("completed", { original_booking_status: "moved", booked_time: "2026-10-23T21:00:00+05:30" }),
   );
   assertEquals(moved.store.settled[0].result, "done");
-  assertEquals(body(moved.sent[0]), "Moved: Paragon, now tonight (Fri 23 Oct) at 9:00 pm.");
+  assertEquals(status(moved.store), "moved_and_verified");
+  assertEquals(facts(moved.store).values.when, "tonight (Fri 23 Oct) at 9:00 pm");
 
   const kept = setup("reschedule");
+  kept.store.call!.bookingTime = "2026-10-23T20:00:00+05:30";
   kept.store.settleResult = { ok: true, request_id: "r1", state: "done", option_ids: ["o1"] };
-  kept.store.options = [{ id: "o1", label: "tonight (Fri 23 Oct), 9:45 pm", detail: null }];
   await reportCall(
     kept.deps,
     "c1",
     result("completed", { outcome: "kept", options: [{ time: "2026-10-23T21:45:00+05:30" }] }),
   );
   assertEquals(kept.store.settled[0].result, "options");
-  assertEquals(
-    kept.store.prompt!.text.startsWith("Paragon can't move it, and said your booking stands."),
-    true,
-  );
+  assertEquals(facts(kept.store).happened.their_booking_stands, true);
+  assertEquals(facts(kept.store).values.original, "tonight (Fri 23 Oct) at 8:00 pm");
 
   const unclear = setup("reschedule");
   await reportCall(unclear.deps, "c1", result("completed", { outcome: "uncertain" }));
   assertEquals(unclear.store.settled[0].result, "unconfirmed");
-  assertEquals(body(unclear.sent[0]).includes("it's not clear what they did"), true);
+  assertEquals(status(unclear.store), "asked_to_move_outcome_unclear_original_booking_may_still_stand");
+});
+
+Deno.test("a move that didn't verify: the original is said to stand until it does", async () => {
+  const { store, deps } = setup("reschedule");
+  store.call!.bookingTime = "2026-10-23T20:00:00+05:30";
+  deps.verify = async () => ({ verified: false, problems: ["transcript: unclear"], verdict: null });
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", { original_booking_status: "moved", booked_time: "2026-10-23T21:00:00+05:30" }),
+  );
+  assertEquals(status(store), "business_said_moved_not_verified");
+  assertEquals(facts(store).happened.original_booking_stands_until_confirmed, true);
+  assertEquals(facts(store).values.original, "tonight (Fri 23 Oct) at 8:00 pm");
+});
+
+// Cancelling during a call ---------------------------------------------------------------------
+
+Deno.test("cancelled during the call, booked anyway: it stands, and they're asked", async () => {
+  const { store, deps } = setup();
+  store.call!.cancelRequested = true;
+  deps.verify = ok;
+  await reportCall(deps, "c1", result("completed", { booking_status: "booked" }));
+  assertEquals(store.settled[0].result, "done");
+  assertEquals(store.reports[0].end, false);
+  assertEquals(facts(store).happened.it_had_already_happened, true);
+  assertEquals(facts(store).next_step, "say_if_still_cancelling");
+});
+
+Deno.test("cancelled during the call, options found: they're told but not opened", async () => {
+  const { store, deps } = setup();
+  store.call!.cancelRequested = true;
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", { booking_status: "not_booked", options: [{ time: "2026-10-23T21:45:00+05:30" }] }),
+  );
+  assertEquals(store.settled[0].result, "back");
+  assertEquals(store.reports[0].end, true);
+  assertEquals(facts(store).next_step, null);
+  assertEquals(facts(store).happened.nothing_is_open_to_pick_or_pay, true);
+  assertEquals(facts(store).values.option_1, "tonight (Fri 23 Oct), 9:45 pm");
+});
+
+Deno.test("cancelled during a question call: the answer still reaches them, and the errand closes", async () => {
+  const { store, deps } = setup("question");
+  store.call!.cancelRequested = true;
+  await reportCall(deps, "c1", result("completed", { answer: "Open till 11." }));
+  assertEquals(store.reports[0].end, true);
+  assertEquals(facts(store).happened.they_said, "Open till 11.");
 });
 
 // The errand from the extraction ticket, as Sarvam would hand it back: strings, and a list
@@ -410,7 +655,7 @@ Deno.test("reschedule: moved (verified), kept with other times, or unclear", asy
 const TERRACE = "Yes, we do have outdoor seating on our terrace area.";
 
 Deno.test("the contract, as Sarvam returns it, reaches the user with nothing hand-filled", async () => {
-  const { store, sent, deps } = setup();
+  const { store, deps } = setup();
   store.req = {
     ...store.req!,
     fields: {
@@ -438,15 +683,15 @@ Deno.test("the contract, as Sarvam returns it, reaches the user with nothing han
   );
   assertEquals(checks[0].bookedTime, "2026-11-07T19:30:00+05:30");
   assertEquals(store.settled[0].result, "done");
-  assertEquals(body(sent[0]).includes("Paragon confirmed it on the call"), true);
-  assertEquals(body(sent[0]).endsWith(`They said: "${TERRACE}"`), true);
+  assertEquals(status(store), "booked_and_verified");
+  assertEquals((facts(store).happened.also_asked as { their_answer: string }).their_answer, TERRACE);
   assertEquals(store.alerts, []);
   assertEquals(store.brokenCalls, []);
   assertEquals(store.outputsSeen.includes("also_answer"), true);
 });
 
 Deno.test("a caller with only call_summary: not 'nothing is done', and flagged", async () => {
-  const { store, sent, deps } = setup();
+  const { store, deps } = setup();
   deps.verify = passes([]);
   await reportCall(
     deps,
@@ -456,10 +701,12 @@ Deno.test("a caller with only call_summary: not 'nothing is done', and flagged",
     }),
   );
   assertEquals(store.settled[0].result, "back");
-  assertEquals(body(sent[0]).includes("may or may not have gone through"), true);
-  assertEquals(body(sent[0]).includes("before we try again"), true);
-  assertEquals(body(sent[0]).includes("which I can't confirm"), true);
-  assertEquals(body(sent[0]).includes("confirmed it"), false);
+  assertEquals(status(store), "connected_result_missing_may_or_may_not_have_gone_through");
+  assertEquals(
+    facts(store).happened.callers_own_note_unconfirmed,
+    "The agent successfully booked a table for two people for Ihaz at Paragon.",
+  );
+  assertEquals(facts(store).values.phone, "+919800000901");
   assertEquals(store.alerts, [{
     kind: "caller_contract_missing",
     detail: { kind: "first", outputs: ["call_summary"] },

@@ -124,7 +124,7 @@ export class DbCallStore implements CallStore, ReconcileStore {
   }
 
   // The booking a call is about: the one being rescheduled or cancelled (booking_id), else
-  // the request's held one (payment confirm), with its payment and the call that made it.
+  // the one waiting on its advance (payment confirm), with its payment and the call that made it.
   private async bookingInputs(requestId: string, bookingId: string | null): Promise<{
     booking: CallInputs["booking"];
     payment: CallInputs["payment"];
@@ -133,14 +133,14 @@ export class DbCallStore implements CallStore, ReconcileStore {
   }> {
     const q = this.db.from("bookings")
       .select(
-        "id, time, booked_on, reference, deposit_amount, known_fee_rs, call_id, " +
+        "id, time, booked_on, reference, deposit_amount, paid_reported_at, known_fee_rs, call_id, " +
           "requests!bookings_request_id_fkey(fields), " +
           "calls!bookings_call_id_fkey(created_at, outputs)",
       );
     const { data: b, error } =
       await (bookingId
         ? q.eq("id", bookingId)
-        : q.eq("request_id", requestId).eq("status", "held_pending_deposit").order("created_at", {
+        : q.eq("request_id", requestId).eq("status", "advance_due").order("created_at", {
           ascending: false,
         })
           .limit(1)).maybeSingle();
@@ -153,7 +153,7 @@ export class DbCallStore implements CallStore, ReconcileStore {
       date: row.booked_on,
       reference: row.reference,
       customerName: row.requests?.fields?.customer_name ?? null,
-      depositRs: row.deposit_amount === null ? null : Number(row.deposit_amount),
+      depositRs: row.deposit_amount === null || !row.paid_reported_at ? null : Number(row.deposit_amount),
       knownFeeRs: row.known_fee_rs === null ? null : Number(row.known_fee_rs),
     };
     const { data: p } = await this.db.from("payments").select("amount_rs, utr, paid_at, payee")

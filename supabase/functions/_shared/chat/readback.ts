@@ -19,7 +19,7 @@ function callee(p: Place): string {
 }
 
 export type Prompt = {
-  kind: "ask" | "options";
+  kind: "ask";
   optionIds: string[];
   confirmWord: "yes" | "cancel";
   text: string;
@@ -120,15 +120,11 @@ export function fmtWhen(f: Fields, now: Date, full = false): string {
   return "";
 }
 
-// "a table for 4", "your table for 4", or "table for 4" with article "".
-function what(f: Fields, article: "a" | "your" | "" = "a"): string {
-  const own = article === "your" ? "your " : "";
-  if (f.party_size && /^tables?$/i.test(f.service ?? "")) {
-    return `${article ? article + " " : ""}table for ${f.party_size}`;
-  }
-  if (f.service && f.party_size) return `${own}${f.service} for ${f.party_size}`;
-  if (f.service) return `${own}${f.service}`;
-  return `${article ? article + " " : ""}table for ${f.party_size}`;
+// "a table for 4", "your haircut for 2", "a dentist checkup". party_size with no service is
+// a table.
+function what(f: Fields, article: "a" | "your" = "a"): string {
+  const thing = f.service ?? "table";
+  return `${article} ${thing}${f.party_size ? ` for ${f.party_size}` : ""}`;
 }
 
 function rs(n: number): string {
@@ -145,10 +141,9 @@ function withNote(note: string | null | undefined, text: string): string {
 }
 
 // Plans lead with what will happen (place, what, when), then what will be shared, then
-// one plain question. Money comes up only when the user is approving some: with no
-// approved advance the call still agrees to none (max_advance_rs 0), but a plan doesn't
-// say so every time. f.may_book and f.max_advance_rs must already be set from limits, so
-// the consent covers them.
+// one plain question. No call agrees an advance, so a plan doesn't mention one: if the
+// business wants one, its terms come back to the user. f.may_book must already be set from
+// limits, so the consent covers it.
 export function bookingReadback(
   x: { place: Place; f: Fields; customerPhone: string | null; now: Date; note?: string | null },
 ): Prompt {
@@ -164,13 +159,11 @@ export function bookingReadback(
     ));
   }
   const who = x.customerPhone ? `${f.customer_name}, ${maskPhone(x.customerPhone)}` : f.customer_name;
-  const advance = f.max_advance_rs
-    ? ` If they want an advance of up to ${rs(f.max_advance_rs)}, I'll hold it and you pay them directly.`
-    : "";
   return ask(withNote(
     x.note,
-    `I'll call ${callee(place)} and book ${what_}, in your name (${who}).${advance} ` +
-      `If that isn't free, I won't book anything else; I'll come back to you with what they have.${also}` +
+    `I'll call ${callee(place)} and book ${what_}, in your name (${who}). ` +
+      `If that isn't free, or they want an advance, I won't agree to anything; I'll come back to you ` +
+      `with what they say.${also}` +
       "\n\nShall I go ahead?",
   ));
 }
@@ -200,8 +193,13 @@ export type BookingSummary = {
   time: Date | null;
   date?: string | null;
   customerName: string;
-  depositRs: number | null;
+  // An advance the user has paid: asked for and not paid isn't a loss.
+  paidRs: number | null;
   knownFeeRs: number | null;
+  // They said cancelling costs something, even with no amount.
+  chargeStated?: boolean;
+  // The business may not have this booking: the Desk couldn't confirm it.
+  uncertain?: boolean;
 };
 
 // "Paragon · your table for 4, tonight 8:15 pm (Ihaz)"
@@ -236,45 +234,24 @@ export function rescheduleReadback(x: { booking: BookingSummary; f: Fields; now:
 export function cancelReadback(x: { booking: BookingSummary; now: Date }): Prompt {
   const b = x.booking;
   const top = bookingLine(b, x.now);
-  if (b.depositRs) {
+  if (b.paidRs) {
     return ask(
-      `${top}\nYou paid a ${rs(b.depositRs)} advance, and they may keep it. I'll ask about a refund, ` +
+      `${top}\nYou paid a ${rs(b.paidRs)} advance, and they may keep it. I'll ask about a refund, ` +
         "but cancelling could mean losing it.\n\nDo you still want me to cancel?",
       "cancel",
     );
   }
-  if (b.knownFeeRs) {
+  if (b.knownFeeRs || b.chargeStated) {
+    const fee = b.knownFeeRs ? rs(b.knownFeeRs) : "something, though they didn't say how much";
     return ask(
-      `${top}\nThey said cancelling costs ${rs(b.knownFeeRs)}. If you cancel, you may have to pay it.` +
+      `${top}\nThey said cancelling costs ${fee}. If you cancel, you may have to pay it.` +
         "\n\nDo you still want me to cancel?",
       "cancel",
     );
   }
+  const unsure = b.uncertain ? "\nI couldn't confirm they have this booking, so I'll ask them about it." : "";
   return ask(
-    `${top}\nI'll call and cancel it. If they mention a charge, I won't agree to it; I'll check with you first.` +
-      "\n\nShall I call them?",
+    `${top}${unsure}\nI'll call and cancel it. If they mention a charge, I won't agree to it; I'll check ` +
+      "with you first.\n\nShall I call them?",
   );
-}
-
-export type OptionRow = { id: string; label: string; detail: string | null };
-
-// The options after call 1. The user picks one in their own words, and that pick is
-// consent #2 for booking it (approval.ts).
-export function optionsPrompt(
-  x: { place: Place; options: OptionRow[]; lead: string; customerName: string | null },
-): Prompt {
-  const numbered = x.options.map((o, i) => `${i + 1}. ${o.label}${o.detail ? ` (${o.detail})` : ""}`);
-  const who = x.customerName ? ` in your name (${x.customerName})` : "";
-  const advance = x.options.some((o) => o.detail === "advance")
-    ? " I won't agree to an advance without checking with you."
-    : "";
-  const text = [x.lead, ...numbered, "", `Tell me which one and I'll call back to book it${who}.${advance}`]
-    .join("\n");
-  return {
-    kind: "options",
-    optionIds: x.options.map((o) => o.id),
-    confirmWord: "yes",
-    text,
-    message: { kind: "text", body: text },
-  };
 }

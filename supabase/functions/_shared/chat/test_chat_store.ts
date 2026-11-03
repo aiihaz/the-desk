@@ -16,10 +16,13 @@ import type {
   HeldBooking,
   LiveOption,
   Memory,
+  OpenDecision,
   Refused,
   TurnClaim,
+  Unwritten,
   UpcomingBooking,
 } from "./store.ts";
+import type { Facts } from "./tell.ts";
 
 export class FakeChatStore implements ChatStore {
   req: ActiveRequest | null = null;
@@ -29,7 +32,6 @@ export class FakeChatStore implements ChatStore {
   limits: Record<string, number | boolean | null> = {
     max_inbound_per_user_per_day: 60,
     book_on_first_call: true,
-    max_advance_rs: 500,
     match_tolerance_minutes: 15,
   };
   consentResult: ConsentStored | Refused = {
@@ -74,7 +76,7 @@ export class FakeChatStore implements ChatStore {
     return this.lastOut;
   }
   async heldDeposit() {
-    return false;
+    return this.holds.length > 0;
   }
   async inboundSince() {
     return this.inbound;
@@ -223,9 +225,18 @@ export class FakeChatStore implements ChatStore {
     this.payments.push({ passed, payment });
     return passed ? this.paymentResult : { ok: true as const, consent_id: null };
   }
-  held: HeldBooking | null = null;
-  async heldBooking() {
-    return this.held;
+  holds: HeldBooking[] = [];
+  async heldBookings() {
+    return this.holds;
+  }
+  decisions: OpenDecision[] = [];
+  async openDecisions() {
+    return this.decisions;
+  }
+  accepted: { bookingId: string; basis: Record<string, unknown> }[] = [];
+  async acceptCondition(bookingId: string, _u: string, basis: Record<string, unknown>) {
+    this.accepted.push({ bookingId, basis });
+    return { ok: true as const };
   }
   settled: CallSettlement[] = [];
   settleResult: { ok: true; request_id: string; state: "done"; option_ids: string[] } | Refused = {
@@ -234,42 +245,72 @@ export class FakeChatStore implements ChatStore {
     state: "done",
     option_ids: [],
   };
-  // Like settle_and_report: the parts are stored with the settlement, in order.
-  deliveries: (Delivery & { status: string; final?: boolean })[] = [];
+  // Like settle_and_report: the facts are stored with the settlement, to be written.
+  deliveries: (Delivery & { status: string; final?: boolean; facts?: Facts; written?: number })[] = [];
   reports: CallReport[] = [];
   async settleCall(_c: string, s: CallSettlement, report?: CallReport) {
     this.settled.push(structuredClone(s));
     if (!this.settleResult.ok || !report) return this.settleResult;
     this.reports.push(structuredClone(report));
-    if (report.prompt) {
+    const next = report.next && this.activated === report.next.request_id ? report.next.facts : null;
+    this.owe({ ...report.facts, ...(next ? { next_errand: next } : {}) }, s.result === "options");
+    return this.settleResult;
+  }
+  private owe(facts: Facts, options = false) {
+    const id = `d${this.deliveries.length + 1}`;
+    this.deliveries.push({
+      id,
+      userId: "u1",
+      waId: "919812345678",
+      message: undefined as unknown as Outbound,
+      attempts: 0,
+      kind: "report",
+      status: "pending",
+      facts,
+    });
+    if (options) this.optionDeliveries.add(id);
+  }
+  optionDeliveries = new Set<string>();
+  owedFacts: { key: string; facts: Facts }[] = [];
+  async oweFacts(_u: string, _r: string | null, key: string, _k: "notice", facts: Facts) {
+    if (this.owedFacts.some((o) => o.key === key)) return;
+    this.owedFacts.push({ key, facts });
+    this.owe(facts);
+  }
+  createdAt = new Date("2026-10-23T12:00:00+05:30");
+  async takeUnwritten(): Promise<Unwritten[]> {
+    return this.deliveries.filter((d) => d.status === "pending" && !d.message && d.facts).map((d) => ({
+      id: d.id,
+      userId: d.userId,
+      requestId: "r1",
+      facts: d.facts!,
+      attempts: d.written ?? 0,
+      createdAt: this.createdAt,
+    }));
+  }
+  async deliveryWritten(id: string, message: Outbound) {
+    const d = this.deliveries.find((x) => x.id === id)!;
+    d.message = message;
+    if (this.optionDeliveries.has(id)) {
       this.prompt = {
-        id: report.prompt.id,
+        id: "p-options",
         kind: "options",
-        optionIds: this.settleResult.option_ids,
+        optionIds: this.settleResult.ok ? this.settleResult.option_ids : [],
         confirmWord: "yes",
         waMessageId: null,
         sentAt: this.promptAt,
-        text: report.prompt.text,
-        message: report.prompt.message,
+        text: (message as { body: string }).body,
+        message,
       };
     }
-    const msgs = [
-      ...(report.prompt ? [report.prompt.message] : []),
-      ...report.parts.map((p) => p.message),
-      ...(report.next && this.activated === report.next.request_id ? [report.next.message] : []),
-    ];
-    for (const message of msgs) {
-      this.deliveries.push({
-        id: `d${this.deliveries.length + 1}`,
-        userId: "u1",
-        waId: "919812345678",
-        message,
-        attempts: 0,
-        kind: "report",
-        status: "pending",
-      });
-    }
-    return this.settleResult;
+  }
+  unwritten: string[] = [];
+  async deliveryUnwritten(id: string, error: string) {
+    this.unwritten.push(error);
+    const d = this.deliveries.find((x) => x.id === id)!;
+    d.written = (d.written ?? 0) + 1;
+    // Backed off: not due again in this test unless it asks.
+    d.status = "backing_off";
   }
   alerts: { kind: string; detail: Record<string, unknown> }[] = [];
   outputsSeen: string[] = [];
@@ -290,7 +331,7 @@ export class FakeChatStore implements ChatStore {
   takenAt: (Date | undefined)[] = [];
   async takeDeliveries(now?: Date) {
     this.takenAt.push(now);
-    const d = this.deliveries.find((x) => x.status === "pending" && x.attempts === 0);
+    const d = this.deliveries.find((x) => x.status === "pending" && x.attempts === 0 && x.message);
     if (!d) return [];
     d.attempts++;
     return [d];
@@ -308,9 +349,10 @@ export class FakeChatStore implements ChatStore {
   async dueFollowUps() {
     return this.due;
   }
-  queuedFollowUps: { reason: string; message: Outbound }[] = [];
-  async queueFollowUp(_r: string, reason: string, _s: number, message: Outbound) {
-    this.queuedFollowUps.push({ reason, message });
+  queuedFollowUps: { reason: string; facts: Facts }[] = [];
+  async queueFollowUp(_r: string, reason: string, _s: number, facts: Facts) {
+    this.queuedFollowUps.push({ reason, facts });
+    this.owe(facts);
     return true;
   }
   followUps: { waitingFor: string | null; remindAt: string | null }[] = [];

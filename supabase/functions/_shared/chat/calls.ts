@@ -1,38 +1,36 @@
 // After a stored consent: start the call it allows, through dial() (eng plan 5.4).
-// If the call can't start, the request ends (call_not_started) and the user hears why
-// in plain words, so nothing waits in calling_1 for a call that isn't coming.
+// If the call can't start, the request ends (call_not_started) and the user is told why,
+// so nothing waits in calling_1 for a call that isn't coming.
 // The result comes back through sarvam-webhook to report.ts.
 import type { DialArgs, DialResult } from "../dial.ts";
 import type { User } from "../store.ts";
 import type { CallKind } from "../sarvam.ts";
+import { tell } from "./followup.ts";
 import type { Task } from "./states.ts";
 import type { ConsentStored } from "./store.ts";
-import type { PromptDeps } from "./turn.ts";
+import type { TellDeps } from "./tell.ts";
 
-export type CallDeps = PromptDeps & {
-  dial: (a: DialArgs) => Promise<DialResult>;
-  trace?: (event: string, data: unknown) => void;
-};
+export type CallDeps = TellDeps & { dial: (a: DialArgs) => Promise<DialResult> };
 
-// check_dial() reasons a user can act on. Anything else is on the Desk's side.
+// check_dial() reasons a user can act on, as facts. Anything else is on the Desk's side.
 const WHY: Record<string, string> = {
-  business_closed: "They're closed right now; try again when they're open.",
-  outside_calling_window: "It's outside calling hours; try again later.",
-  provider_blocked_hours: "It's outside calling hours; try again later.",
-  too_late: "The time you asked for has already passed.",
-  opted_out: "This business has asked not to be called.",
-  user_block: "You've blocked this business.",
-  user_stopped: "You've stopped me; reply START first.",
-  limit_user_day: "You've reached today's call limit; try again tomorrow.",
-  limit_business_day: "They've had too many calls today; try again tomorrow.",
-  limit_business_number_day: "They've had too many calls today; try again tomorrow.",
-  limit_request: "This request has used all its calls.",
-  limit_availability_calls: "This request has used all its calls.",
-  limit_booking_calls: "This request has used all its calls.",
-  limit_retries: "I've already tried them again and they didn't pick up; you could call them yourself.",
-  retry_too_soon: "I only just tried them; give it a few minutes and ask me again.",
+  business_closed: "the business is closed right now; they can try when it's open",
+  outside_calling_window: "it's outside calling hours; they can try later",
+  provider_blocked_hours: "it's outside calling hours; they can try later",
+  too_late: "the time they asked for has already passed",
+  opted_out: "this business has asked not to be called",
+  user_block: "they blocked this business",
+  user_stopped: "they stopped the Desk; they need to reply START first",
+  limit_user_day: "they've reached today's call limit; they can try tomorrow",
+  limit_business_day: "this business has had too many calls today; they can try tomorrow",
+  limit_business_number_day: "this business has had too many calls today; they can try tomorrow",
+  limit_request: "this errand has used all its calls",
+  limit_availability_calls: "this errand has used all its calls",
+  limit_booking_calls: "this errand has used all its calls",
+  limit_retries: "the Desk already tried them again with no answer; they could call themselves",
+  retry_too_soon: "the Desk only just tried them; they can ask again in a few minutes",
 };
-const OUR_SIDE = "Calls aren't working on my side right now; please try again later.";
+const OUR_SIDE = "calls aren't working on the Desk's side right now; they can try again later";
 
 // The call a consent allows: the pick books (or, for a reschedule, moves to) one option;
 // the screenshot allows the confirm call; a plan's YES allows the task's call.
@@ -78,12 +76,14 @@ export async function callAfterConsent(
   if (res.error === "refused" && res.reason.startsWith("caller_contract_")) {
     await deps.store.raiseAlert(res.reason, c.request_id, null, { kind });
   }
-  const why = res.error === "refused" ? WHY[res.reason] ?? OUR_SIDE : OUR_SIDE;
-  const { language } = await deps.store.user(user.id);
-  const tpl = await deps.store.template("call_not_started", language);
-  await deps.send(user, {
-    kind: "text",
-    body: (tpl ?? "I couldn't start the call. {reason}").replace("{reason}", why),
+  await tell(deps, user, c.request_id, `dial:${c.consent_id}`, {
+    event: "call_not_started",
+    happened: {
+      status: "the_call_did_not_start_nothing_done",
+      why: res.error === "refused" ? WHY[res.reason] ?? OUR_SIDE : OUR_SIDE,
+    },
+    values: {},
+    next_step: null,
   });
   return { started: false };
 }

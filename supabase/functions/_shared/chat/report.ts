@@ -1,19 +1,22 @@
-// After a call (sarvam-webhook hand-off): read what the voice agent reported, settle the
-// request (settle_call), and tell the user what actually happened. The message is built
-// by code from the caller's outputs, so it can't say more than the call established:
-// nothing is "booked" unless the agent reported booking_status booked, and anything the
-// outputs don't make clear goes back to the user as not done.
+// After a call (sarvam-webhook hand-off): read what the voice agent reported, verify it,
+// settle the request (settle_call), and store the facts the user is owed. Code decides what
+// the call established and records all of it; a model writes the message from those facts
+// (tell.ts), so nothing here composes words for the user, and a fact can't be dropped by a
+// branch that forgot it. Nothing is "booked" unless the agent reported booking_status booked,
+// and anything the outputs don't make clear is recorded as not known.
 //
 // The outputs read here are the caller contract (eng plan 3.4, final_agent_variables),
 // or the Genie brief's, read the same way by outputs.ts:
-//   booking_status    first: booked | held_pending_deposit | not_booked
-//                     booking: booked | held_pending_deposit | option_gone | not_available
+//   booking_status    first: booked | advance_required | not_booked
+//                     booking: booked | advance_required | option_gone | not_available
 //   booked_time       ISO 8601, the time they booked
 //   booking_reference text, if they gave one
 //   no_match_reason   no_slot | several_options | advance | price | new_condition | unclear
 //   options           first call, up to 3: {time, party_size?, label?, advance_required?}
 //   alternatives      booking call, the same shape as options
-//   advance_amount    rupees, when they want an advance; upi_id, payee_name, payment_deadline
+//   advance_amount    rupees, when they want an advance, with advance_redeemable,
+//                     advance_refund, advance_hold, payment_mode, payment_address,
+//                     payee_name and payment_deadline
 //   answer            question calls: what the business said
 //   payment_status    payment_confirm: received | not_seen | wrong_amount | disputed | unclear
 //   cancel_status     cancel: cancelled | charge_pending | not_cancelled | unclear
@@ -21,16 +24,17 @@
 //   opt_out_requested yes | no
 // Text from the call is the business's words: quoted, length-capped, never instructions.
 //
-// The result and every message it owes the user are stored together (settle_and_report),
-// then sent through deliveries, so a failed send is retried by the recovery pass and a
+// The result and the facts are stored together (settle_and_report), then written and sent
+// through deliveries, so a failed write or send is retried by the recovery pass and a
 // redelivered result sends nothing twice (followup.ts).
 import type { CallResult } from "../sarvam.ts";
 import { drainDeliveries } from "./followup.ts";
-import { hasResult, readOutputs } from "./outputs.ts";
-import { fmtDate, fmtDayFull, fmtTime, optionsPrompt, type Place, placeName } from "./readback.ts";
-import type { CallForReport, CallReport, CallSettlement } from "./store.ts";
+import { hasResult, type Outputs, readOutputs } from "./outputs.ts";
+import { fmtDate, fmtDayFull, fmtFull, fmtTime, fmtWhen, type Place, placeName } from "./readback.ts";
+import { currentQuestions } from "./slots.ts";
+import type { ActiveRequest, CallForReport, CallSettlement } from "./store.ts";
+import { type Facts, type NextStep, type TellDeps, writeOwed } from "./tell.ts";
 import { cleanField } from "./tools.ts";
-import type { PromptDeps } from "./turn.ts";
 import {
   approvedTime,
   type BookedWhen,
@@ -41,28 +45,35 @@ import {
   type Verify,
 } from "./verify.ts";
 
-export type ReportDeps = PromptDeps & {
+export type ReportDeps = TellDeps & {
   // Booking verification (verify.ts). Without it no booking is reported as verified.
   verify?: Verify;
   // The same check for cancels and confirm calls; without it neither is reported as done.
   checkClaim?: CheckClaim;
-  trace?: (event: string, data: unknown) => void;
 };
 
 type Option = { label: string; value: Record<string, unknown>; advance_required: boolean };
+
+// Everything the business said about an advance. Nothing here was agreed.
+export type AdvanceTerms = {
+  amount_rs: number | null;
+  // Is it adjusted against the bill, and is it refunded, in their words.
+  redeemable: string | null;
+  refund: string | null;
+  // Whether they're keeping the slot until the customer decides.
+  holding: "yes" | "no" | null;
+  mode: string | null;
+  address: string | null;
+  payee: string | null;
+  deadline: string | null;
+  time: string | null;
+};
 
 // What the outputs establish, and nothing more.
 export type Outcome =
   // captured: booked_time as the caller reported it; only verifying decides what stands.
   | { kind: "booked"; captured: string | null; reference: string | null }
-  | {
-    kind: "needs_advance";
-    amountRs: number | null;
-    upiId: string | null;
-    payee: string | null;
-    deadline: string | null;
-    time: string | null;
-  }
+  | { kind: "needs_advance"; terms: AdvanceTerms }
   | { kind: "options"; options: Option[]; reason: string | null }
   | { kind: "not_available"; reason: string | null }
   // offer: a question call where the business offered to book. Brought back for the user
@@ -73,12 +84,20 @@ export type Outcome =
 // deno-lint-ignore no-explicit-any
 type Json = any;
 
-const REASONS: Record<string, string> = {
-  no_slot: "that time isn't free",
-  advance: "they want an advance",
-  price: "it's over your price limit",
-  new_condition: "they had a condition I couldn't agree to for you",
-};
+function advanceTerms(out: Outputs): AdvanceTerms {
+  const hold = out.advance_hold?.trim().toLowerCase();
+  return {
+    amount_rs: out.advance_amount ?? null,
+    redeemable: cleanField(out.advance_redeemable, 200),
+    refund: cleanField(out.advance_refund, 200),
+    holding: hold === "yes" || hold === "no" ? hold : null,
+    mode: cleanField(out.payment_mode, 40),
+    address: cleanField(out.payment_address, 120),
+    payee: cleanField(out.payee_name, 80),
+    deadline: instant(out.payment_deadline),
+    time: instant(out.booked_time),
+  };
+}
 
 export function readOutcome(kind: string, raw: Json, now: Date): Outcome {
   const out = readOutputs(kind, raw);
@@ -96,21 +115,15 @@ export function readOutcome(kind: string, raw: Json, now: Date): Outcome {
       reference: cleanField(out.booking_reference, 40),
     };
   }
-  if (status === "held_pending_deposit") {
-    return {
-      kind: "needs_advance",
-      amountRs: out.advance_amount ?? null,
-      upiId: cleanField(out.upi_id, 80),
-      payee: cleanField(out.payee_name, 80),
-      deadline: instant(out.payment_deadline),
-      time: instant(out.booked_time),
-    };
-  }
+  if (status === "advance_required") return { kind: "needs_advance", terms: advanceTerms(out) };
   if (status && ["not_booked", "option_gone", "not_available"].includes(status)) {
     const offered = (kind === "booking" ? out.alternatives : out.options) ?? out.options ?? [];
     const options = usable(offered, now);
-    const reason = typeof out.no_match_reason === "string" ? REASONS[out.no_match_reason] ?? null : null;
-    return options.length ? { kind: "options", options, reason } : { kind: "not_available", reason };
+    const reason = typeof out.no_match_reason === "string" ? out.no_match_reason : null;
+    if (options.length) return { kind: "options", options, reason };
+    return reason === "advance"
+      ? { kind: "needs_advance", terms: advanceTerms(out) }
+      : { kind: "not_available", reason };
   }
   return { kind: "unclear" };
 }
@@ -133,22 +146,17 @@ function option(o: Json, now: Date): Option | null {
   if (!when) return null;
   const price = typeof o.price_rs === "number" && o.price_rs > 0 ? o.price_rs : null;
   const conditions = cleanField(o.conditions, 120);
-  const label = [
-    when,
-    // A label that only repeats the time adds nothing.
-    time && words && !/\d\s*(:|am|pm)/i.test(words) ? words : null,
-    price ? `they quoted Rs ${price}` : null,
-    conditions,
-  ].filter(Boolean).join(", ");
+  const label = [when, price ? `Rs ${price}` : null, conditions].filter(Boolean).join(", ");
   const value: Record<string, unknown> = {};
   if (time) value.time = time;
+  if (time && words) value.note = words;
   if (Number.isInteger(o.party_size)) value.party_size = o.party_size;
   if (price) value.price_rs = price;
   if (conditions) value.conditions = conditions;
   return { label, value, advance_required: o.advance_required === true };
 }
 
-// What a verified or unverified booking is stored as, and how the user hears its time.
+// What a verified or unverified booking is stored as.
 type Booked = {
   v: Verification;
   time: string | null;
@@ -163,17 +171,12 @@ function bookingRow(b: Booked, reference: string | null): NonNullable<CallSettle
     reference,
     verified: b.v.verified,
     problems: b.v.problems,
+    conditions: b.v.conditions ?? [],
+    decision_open: !!b.v.decisionOpen,
     ...(b.date ? { date: b.date } : {}),
     ...(b.when.captured ? { captured: b.when.captured } : {}),
     ...(b.approved ? { approved: b.approved } : {}),
-    ...(b.v.correction ? { correction: b.v.correction } : {}),
   };
-}
-
-// ", tonight (Fri 23 Oct) at 8:00 pm", ", for Sat 8 Nov, no time confirmed", or nothing.
-function bookedAt(b: Booked, now: Date): string {
-  if (b.time) return `, ${when(b.time, now)}`;
-  return b.date ? `, for ${fmtDate(b.date, now)}, no time confirmed` : "";
 }
 
 async function verifyCall(
@@ -181,18 +184,19 @@ async function verifyCall(
   call: CallForReport,
   captured: string | null,
   r: CallResult,
+  now: Date,
 ): Promise<Booked> {
   const req = await deps.store.request(call.requestId);
   const tol = (await deps.store.limitInt("match_tolerance_minutes", call.userId)) ?? 15;
   // A confirm call must confirm the held booking's time; a reschedule after options, the
   // option; a reschedule on call 1, the new window, as a first call would.
   const option = call.kind === "payment_confirm"
-    ? (call.bookingTime ? { label: "the held booking", value: { time: call.bookingTime } } : null)
+    ? (call.bookingTime ? { label: "the booking", value: { time: call.bookingTime } } : null)
     : call.option;
   const kind = call.kind === "booking" || option ? "booking" : "first";
   const fields = req.fields as Record<string, unknown>;
   const approved = approvedTime({ kind, option, fields });
-  const heard = readBookedWhen(captured, approved);
+  const heard = readBookedWhen(captured);
   const v = deps.verify
     ? await deps.verify({
       kind,
@@ -202,14 +206,15 @@ async function verifyCall(
       bookedDate: heard.date,
       transcript: r.transcript,
       defaultToleranceMin: tol,
-      maxAdvanceRs: typeof req.fields.max_advance_rs === "number" ? req.fields.max_advance_rs : 0,
+      advancePaidRs: call.kind === "payment_confirm" ? call.advanceRs ?? 0 : 0,
+      today: fmtFull(now),
     }, call.userId)
     : { verified: false, problems: ["no verifier"], verdict: null };
   deps.trace?.("verify", v);
   return {
     v,
-    time: v.correction?.to ?? (v.badYear ? null : heard.time),
-    date: v.badYear ? null : heard.date,
+    time: v.badYear ? null : v.heard?.time ?? heard.time,
+    date: v.badYear ? null : v.heard?.date ?? heard.date,
     when: heard,
     approved,
   };
@@ -223,130 +228,205 @@ async function claimHolds(deps: ReportDeps, call: CallForReport, claim: string, 
   return v;
 }
 
-function when(t: string | null, now: Date): string {
-  return t ? `${fmtDayFull(new Date(t), now)} at ${fmtTime(new Date(t))}` : "";
+function when(t: string, now: Date): string {
+  return `${fmtDayFull(new Date(t), now)} at ${fmtTime(new Date(t))}`;
 }
 
-function quote(s: string | null | undefined): string {
-  return s ? ` They said: "${s}".` : "";
+// What the call means for the user, as facts. values go into the message exactly.
+type Told = {
+  status: string;
+  detail?: Record<string, unknown>;
+  values?: Record<string, string | null | undefined>;
+  next?: NextStep | null;
+};
+
+type Decision = { settle: CallSettlement; told: Told };
+
+function conditionFacts(v: Verification) {
+  return (v.conditions ?? []).map((c) => ({
+    their_words: c.words,
+    what: c.what,
+    required: c.required,
+    already_approved: c.covered,
+  }));
 }
 
-// said: what the business answered, kept apart so a cancel during the call can't lose it.
-type Decision = { settle: CallSettlement; text: string; lead?: string; said?: string };
+// The facts of a booking the business says it made, however that verified.
+function bookedFacts(
+  b: Booked,
+  reference: string | null,
+  verified: string,
+  unverified: string,
+  call: CallForReport,
+  now: Date,
+): Told {
+  const at = b.time ? when(b.time, now) : b.date ? `${fmtDate(b.date, now)}, no time confirmed` : null;
+  const conditions = conditionFacts(b.v);
+  const detail: Record<string, unknown> = {
+    ...(conditions.length ? { conditions } : {}),
+    ...(b.v.badYear
+      ? { year_doesnt_match: { caller_noted: b.when.captured, they_asked_for: b.approved } }
+      : {}),
+    ...(!b.v.verified && b.when.captured && !b.time && !b.date ? { caller_noted: b.when.captured } : {}),
+  };
+  if (b.v.verified) {
+    return { status: verified, detail, values: { when: at, reference } };
+  }
+  if (b.v.decisionOpen) {
+    return {
+      status: `${unverified}_but_requires_something_not_approved`,
+      detail,
+      values: { when: at, reference },
+      next: "decide_on_condition",
+    };
+  }
+  return {
+    status: `${unverified}_not_verified`,
+    detail: { ...detail, why_not_verified: b.v.problems },
+    values: { when: at, reference, phone: call.phone },
+    next: "check_with_business_themselves",
+  };
+}
 
-// First and booking calls: booked (verified or not), an advance hold, other times, nothing.
+const offered = (options: Option[], extra: Record<string, unknown> = {}): Told => ({
+  status: "options_offered",
+  detail: {
+    ...extra,
+    options: options.map((o, i) => ({
+      value: `option_${i + 1}`,
+      // Only ever what they said: an option with no mention of one says nothing either way.
+      ...(o.advance_required ? { advance_required: true } : {}),
+      ...(typeof o.value.note === "string" ? { note: o.value.note } : {}),
+    })),
+  },
+  values: Object.fromEntries(options.map((o, i) => [`option_${i + 1}`, o.label])),
+  next: "pick_an_option",
+});
+
+// A shape, not a word: an address like name@bank can be checked against a UPI screenshot.
+const UPI = /^[^@\s]+@[^@\s]+$/;
+
+// They want an advance. Nothing is agreed: the terms go to the user, who decides and pays
+// them directly, and the request waits with them.
+function advanceDecision(t: AdvanceTerms, now: Date): Decision {
+  const unknown = [
+    t.amount_rs === null ? "the amount" : null,
+    t.address || t.payee ? null : "where to pay",
+    t.redeemable ? null : "whether it's adjusted against the bill",
+    t.refund ? null : "whether it's refunded",
+    t.deadline ? null : "by when",
+  ].filter(Boolean);
+  return {
+    settle: {
+      result: "advance",
+      booking: {
+        time: t.time,
+        amount_rs: t.amount_rs,
+        upi_id: t.address && UPI.test(t.address) ? t.address : null,
+        payee_name: t.payee,
+        deadline: t.deadline,
+        terms: t,
+      },
+    },
+    told: {
+      status: "business_wants_advance_nothing_agreed",
+      detail: {
+        to_go_ahead:
+          "they pay the business themselves and send the screenshot here; the desk then calls to say it's done",
+        ...(t.redeemable ? { adjusted_against_bill_their_words: t.redeemable } : {}),
+        ...(t.refund ? { refund_their_words: t.refund } : {}),
+        keeping_the_slot_meanwhile: t.holding ?? "they didn't say",
+        ...(t.mode ? { payment_mode: t.mode } : {}),
+        ...(unknown.length ? { not_known: unknown } : {}),
+      },
+      values: {
+        advance: t.amount_rs === null ? null : `Rs ${t.amount_rs}`,
+        pay_to: t.address,
+        payee: t.payee,
+        deadline: t.deadline ? fmtFull(new Date(t.deadline)) : null,
+        slot: t.time ? when(t.time, now) : null,
+      },
+      next: "decide_on_advance",
+    },
+  };
+}
+
+// First and booking calls: booked (verified or not), an advance, other times, nothing.
 async function decideBooking(
   deps: ReportDeps,
   call: CallForReport,
   r: CallResult,
   outcome: Outcome,
-  place: Place,
   now: Date,
 ): Promise<Decision> {
   switch (outcome.kind) {
     case "booked": {
-      const b = await verifyCall(deps, call, outcome.captured, r);
-      const at = bookedAt(b, now);
+      const b = await verifyCall(deps, call, outcome.captured, r, now);
       return {
         settle: { result: "done", booking: bookingRow(b, outcome.reference) },
-        text: b.v.verified
-          ? `${place.name} confirmed it on the call${at}, in your name.` +
-            (outcome.reference ? ` Reference: ${outcome.reference}.` : "")
-          : `${place.name} said it's booked${at}, but I couldn't confirm that from the call, so please ` +
-            `check with them yourself: ${call.phone}.`,
+        told: bookedFacts(b, outcome.reference, "booked_and_verified", "business_said_booked", call, now),
       };
     }
-    case "needs_advance": {
-      const o = outcome;
-      const req = await deps.store.request(call.requestId);
-      const cap = typeof req.fields.max_advance_rs === "number" ? req.fields.max_advance_rs : 0;
-      // A hold only within the cap the user approved, and only with somewhere to pay.
-      if (o.amountRs !== null && o.amountRs > 0 && o.amountRs <= cap && (o.upiId || o.payee)) {
-        const by = o.deadline ? ` by ${fmtTime(new Date(o.deadline))}` : "";
-        const at = o.time ? ` for ${when(o.time, now)}` : "";
-        return {
-          settle: {
-            result: "held",
-            booking: {
-              time: o.time,
-              amount_rs: o.amountRs,
-              upi_id: o.upiId,
-              payee_name: o.payee,
-              deadline: o.deadline,
-            },
-          },
-          text: `${place.name} is holding it${at} for a Rs ${o.amountRs} advance, to be paid${by}. ` +
-            `Pay ${o.upiId ?? o.payee}${o.upiId && o.payee ? ` (${o.payee})` : ""} from your own UPI app; ` +
-            "they may also send you a QR on WhatsApp. Then send me the payment screenshot here and I'll call " +
-            "them to confirm. It isn't booked until they confirm the payment.",
-        };
-      }
-      return {
-        settle: { result: "back" },
-        text: `${place.name} will only hold it with an advance${o.amountRs ? ` of Rs ${o.amountRs}` : ""}. ` +
-          "I didn't agree to it or pay anything, so nothing is booked. Do you want to try another time or place?",
-      };
-    }
+    case "needs_advance":
+      return advanceDecision(outcome.terms, now);
     case "options":
       return {
         settle: { result: "options", options: outcome.options },
-        text: "",
-        lead: `${place.name} can't do what you asked${
-          outcome.reason ? ` (${outcome.reason})` : ""
-        }. They offered:`,
+        told: offered(outcome.options, { why_not_what_they_asked: outcome.reason }),
       };
     case "not_available":
       return {
         settle: { result: "back" },
-        text: `${place.name} can't do it${outcome.reason ? `: ${outcome.reason}` : ""}, and didn't offer ` +
-          "anything else. Nothing is booked. Want to try another time or place?",
+        told: {
+          status: "not_available_nothing_offered_nothing_booked",
+          detail: { why: outcome.reason },
+          next: "offer_to_try_again",
+        },
       };
     case "answered": {
-      const said = outcome.answer ? `${place.name} said: "${outcome.answer}"` : "";
+      const said = outcome.answer ? { they_said: outcome.answer } : {};
       if (outcome.offer.length) {
         return {
           settle: { result: "options", options: outcome.offer },
-          text: "",
-          lead: [said, `${said ? "They also" : `${place.name}`} offered to book:`].filter(Boolean).join(
-            "\n\n",
-          ),
-          said,
+          told: offered(outcome.offer, { ...said, they_offered_to_book: true }),
         };
       }
-      return { settle: { result: "done" }, text: said };
+      return { settle: { result: "done" }, told: { status: "question_answered", detail: said } };
     }
     default:
       return {
         settle: { result: "back" },
-        text: `The call to ${place.name} connected, but I didn't get a clear answer, so I'm not treating ` +
-          "anything as done. Want me to try again?",
+        told: { status: "connected_no_clear_answer_nothing_done", next: "offer_to_try_again" },
       };
   }
 }
 
-// The confirm call after a payment screenshot (eng plan 2.2 step 4).
+// The confirm call after a payment screenshot (eng plan 2.2 step 4). What the business said
+// about the money is their claim: a payment they haven't seen isn't a payment that failed.
 async function decidePayment(
   deps: ReportDeps,
   call: CallForReport,
   r: CallResult,
-  place: Place,
   now: Date,
 ): Promise<Decision> {
   const out = readOutputs(call.kind, r.outputs) ?? {};
   const said = cleanField(out.summary ?? out.answer, 200);
   const status = out.payment_status;
+  const paid = call.advanceRs ? { paid: `Rs ${call.advanceRs}` } : {};
   if (status === "received" && out.booking_status === "booked") {
-    const b = await verifyCall(deps, call, out.booked_time ?? call.bookingTime, r);
+    const b = await verifyCall(deps, call, out.booked_time ?? call.bookingTime, r, now);
     const ref = cleanField(out.booking_reference, 40);
+    const told = bookedFacts(
+      b,
+      ref,
+      "business_confirmed_payment_and_booking",
+      "business_said_paid_and_booked",
+      call,
+      now,
+    );
     return {
       settle: { result: "done", booking: bookingRow(b, ref) },
-      text: b.v.verified
-        ? `${place.name} confirmed they got your payment, and it's booked${
-          b.time ? `: ${when(b.time, now)}` : ""
-        }, ` +
-          `in your name.${ref ? ` Reference: ${ref}.` : ""}`
-        : `${place.name} said they got your payment and it's booked, but I couldn't confirm that from the call, ` +
-          `so please check with them yourself: ${call.phone}.`,
+      told: { ...told, values: { ...told.values, ...paid } },
     };
   }
   if (status === "not_seen" || out.outcome === "payment_not_seen") {
@@ -354,22 +434,32 @@ async function decidePayment(
       const mins = (await deps.store.limitInt("payment_confirm_retry_minutes", call.userId)) ?? 30;
       return {
         settle: { result: "retry" },
-        text: `${place.name} hasn't seen your payment yet. I'll call them again in about ${mins} minutes.`,
+        told: {
+          status: "business_says_payment_not_seen_desk_will_call_them_again",
+          detail: { desk_calling_them_again_in_minutes: mins, they_said: said },
+        },
       };
     }
     return {
       settle: { result: "unconfirmed", booking: { said } },
-      text: `You've paid, but ${place.name} still hasn't confirmed it. Please check with them directly: ` +
-        `${call.phone}.`,
+      told: {
+        status: "business_says_payment_still_not_seen",
+        detail: { they_said: said, the_user_reports_having_paid: true },
+        values: { phone: call.phone, ...paid },
+        next: "check_with_business_themselves",
+      },
     };
   }
   // Wrong amount, a dispute, an expired hold, or anything unclear: report what they said,
   // agree nothing, promise nothing.
   return {
     settle: { result: "unconfirmed", booking: { said } },
-    text:
-      `${place.name} didn't confirm your payment and booking.${quote(said)} I haven't agreed to anything ` +
-      `for you. Please talk to them directly: ${call.phone}.`,
+    told: {
+      status: "business_did_not_confirm_payment_or_booking",
+      detail: { they_said: said, payment_status: status ?? "unclear", nothing_agreed: true },
+      values: { phone: call.phone, ...paid },
+      next: "check_with_business_themselves",
+    },
   };
 }
 
@@ -378,153 +468,223 @@ async function decideCancel(
   deps: ReportDeps,
   call: CallForReport,
   r: CallResult,
-  place: Place,
   now: Date,
 ): Promise<Decision> {
   const out = readOutputs(call.kind, r.outputs) ?? {};
   const status = out.cancel_status ?? (out.outcome === "cancelled" ? "cancelled" : undefined);
-  const booking = call.bookingTime ? `your ${when(call.bookingTime, now)} booking` : "your booking";
+  const booking = call.bookingTime ? when(call.bookingTime, now) : null;
+  const values = { booking };
+  const said = cleanField(out.summary, 200);
   const refund = cleanField(out.refund_stated, 200);
   if (status === "cancelled") {
-    const v = await claimHolds(
-      deps,
-      call,
-      `The business cancelled ${booking.replace("your", "the customer's")}.`,
-      r,
-    );
+    const claim = `The business cancelled the customer's booking${booking ? ` for ${booking}` : ""}.`;
+    const v = await claimHolds(deps, call, claim, r);
+    const conditions = conditionFacts(v);
     if (v.verified) {
       return {
         settle: { result: "cancelled" },
-        text: `Cancelled: ${booking} at ${place.name}.${
-          refund ? ` About the advance they said: "${refund}".` : ""
-        }`,
+        told: {
+          status: "cancelled_and_verified",
+          detail: {
+            ...(refund ? { refund_their_words: refund } : {}),
+            ...(conditions.length ? { conditions } : {}),
+          },
+          values,
+        },
       };
     }
     return {
       settle: { result: "unconfirmed", booking: { problems: v.problems } },
-      text:
-        `${place.name} may have cancelled ${booking}, but I couldn't confirm it from the call. Please check ` +
-        `with them: ${call.phone}.`,
+      told: {
+        status: "caller_says_cancelled_not_verified_booking_may_still_stand",
+        detail: { why_not_verified: v.problems, ...(conditions.length ? { conditions } : {}) },
+        values: { ...values, phone: call.phone },
+        next: "check_with_business_themselves",
+      },
     };
   }
   if (status === "charge_pending") {
     const fee = out.cancel_charge_rs ?? null;
     return {
-      settle: { result: "back", booking: { fee_rs: fee } },
-      text:
-        `${place.name} said cancelling costs${fee ? ` Rs ${fee}` : " something"}. I didn't agree to it, so ` +
-        `${booking} still stands. Do you want me to cancel anyway?`,
+      settle: { result: "back", booking: { fee_rs: fee, charge_stated: true } },
+      told: {
+        status: "business_says_cancelling_costs_money_not_agreed_booking_stands",
+        detail: { they_said: said },
+        values: { ...values, charge: fee ? `Rs ${fee}` : null },
+        next: "say_if_still_cancelling_despite_charge",
+      },
     };
   }
   if (status === "not_cancelled") {
     return {
       settle: { result: "back" },
-      text: `${place.name} didn't cancel it, so ${booking} still stands.${
-        quote(cleanField(out.summary, 200))
-      }`,
+      told: { status: "business_did_not_cancel_booking_stands", detail: { they_said: said }, values },
     };
   }
   return {
-    settle: { result: "unconfirmed", booking: { said: cleanField(out.summary, 200) } },
-    text:
-      `I asked ${place.name} to cancel ${booking}, but it's not clear it went through. Please check with ` +
-      `them: ${call.phone}.`,
+    settle: { result: "unconfirmed", booking: { said } },
+    told: {
+      status: "asked_to_cancel_outcome_unclear_booking_may_still_stand",
+      detail: { they_said: said },
+      values: { ...values, phone: call.phone },
+      next: "check_with_business_themselves",
+    },
   };
 }
 
 // Moving a Desk booking (E4 design 2.7): moved, kept (maybe with other times), or unclear.
+// Until the move verifies, the original booking is what's known to stand.
 async function decideReschedule(
   deps: ReportDeps,
   call: CallForReport,
   r: CallResult,
-  place: Place,
   now: Date,
 ): Promise<Decision> {
   const out = readOutputs(call.kind, r.outputs) ?? {};
   const orig = out.original_booking_status ??
     (out.outcome === "moved" || out.outcome === "kept" ? out.outcome : null);
-  const booking = call.bookingTime ? `your ${when(call.bookingTime, now)} booking` : "your booking";
+  const original = call.bookingTime ? when(call.bookingTime, now) : null;
+  const said = cleanField(out.summary, 200);
   if (orig === "moved" || (!orig && out.booking_status === "booked")) {
-    const b = await verifyCall(deps, call, out.booked_time ?? null, r);
+    const b = await verifyCall(deps, call, out.booked_time ?? null, r, now);
     const ref = cleanField(out.booking_reference, 40);
+    const told = bookedFacts(b, ref, "moved_and_verified", "business_said_moved", call, now);
     return {
       settle: { result: "done", booking: bookingRow(b, ref) },
-      text: b.v.verified
-        ? `Moved: ${place.name}, now ${when(b.time, now)}.${ref ? ` Reference: ${ref}.` : ""}`
-        : `${place.name} said they moved it${
-          b.time ? ` to ${when(b.time, now)}` : ""
-        }, but I couldn't confirm that ` +
-          `from the call, so please check with them: ${call.phone}.`,
+      told: {
+        ...told,
+        detail: {
+          ...told.detail,
+          ...(b.v.verified ? {} : { original_booking_stands_until_confirmed: true }),
+        },
+        values: { ...told.values, original },
+      },
     };
   }
   if (orig === "kept") {
-    const offered = usable(out.alternatives ?? out.options ?? [], now);
-    if (offered.length) {
+    const options = usable(out.alternatives ?? out.options ?? [], now);
+    if (options.length) {
       return {
-        settle: { result: "options", options: offered },
-        text: "",
-        lead: `${place.name} can't move it, and said ${booking} stands. They offered:`,
+        settle: { result: "options", options },
+        told: {
+          ...offered(options, { could_not_move_it: true, their_booking_stands: true }),
+          values: { ...offered(options).values, original },
+        },
       };
     }
     return {
       settle: { result: "done" },
-      text: `${place.name} can't move it. They said ${booking} stands.`,
+      told: {
+        status: "could_not_move_it_booking_stands",
+        detail: { they_said: said },
+        values: { original },
+      },
     };
   }
   return {
-    settle: { result: "unconfirmed", booking: { said: cleanField(out.summary, 200) } },
-    text:
-      `I asked ${place.name} to move ${booking}, but it's not clear what they did. Please check with them ` +
-      `directly: ${call.phone}.`,
+    settle: { result: "unconfirmed", booking: { said } },
+    told: {
+      status: "asked_to_move_outcome_unclear_original_booking_may_still_stand",
+      detail: { they_said: said },
+      values: { original, phone: call.phone },
+      next: "check_with_business_themselves",
+    },
   };
 }
 
-// The user said cancel while the call ran. Nothing booked: the errand ends, and options
-// are mentioned but not opened for a pick. Booked: it stands until they say otherwise,
-// because only they can decide to undo what the business already agreed.
-function afterCancel(d: Decision, place: Place): boolean {
+// The user said cancel while the call ran. Nothing booked or agreed: the errand ends, and
+// what the call found is still told, as a record. Booked: it stands until they say
+// otherwise, because only they can decide to undo what the business already agreed.
+function afterCancel(d: Decision): { decision: Decision; end: boolean } {
   const { result } = d.settle;
-  if (result === "options" || result === "back") {
-    // The errand is over, so a closing "Want me to try again?" no longer applies.
-    const record = d.text.replace(/\s*[^.!?"]*\?$/, "");
-    const said = result === "options"
-      ? `${d.said ? ` ${d.said}` : ""} They had other options, but I've dropped them too.`
-      : record
-      ? ` For the record: ${record}`
-      : "";
-    d.settle = { result: "back", booking: d.settle.booking, optOut: d.settle.optOut };
-    d.text =
-      `You asked me to cancel during the call, so I've dropped this errand. Nothing was booked.${said}`;
-    d.lead = undefined;
-    return true;
+  const told = (extra: Record<string, unknown>, next: NextStep | null = null): Told => ({
+    ...d.told,
+    detail: { ...d.told.detail, they_asked_to_cancel_during_the_call: true, ...extra },
+    next,
+  });
+  if (result === "options" || result === "back" || result === "advance") {
+    return {
+      decision: {
+        settle: { result: "back", optOut: d.settle.optOut },
+        told: told({ errand_dropped_nothing_booked: true, nothing_is_open_to_pick_or_pay: true }),
+      },
+      end: true,
+    };
   }
-  if (result === "done" && d.settle.booking) {
-    d.text += `\n\nThat went through before I could stop it. If you still want it cancelled, say so and ` +
-      `I'll call ${place.name} back.`;
-  } else if (result === "held") {
-    d.text += `\n\nThat happened before I could stop it. If you'd rather drop it, tell me and don't pay.`;
-  } else if (result === "done") {
-    // Answered, nothing booked: what the call got still reaches them, and the errand
-    // closes as the cancel they asked for.
-    d.text += `\n\nYou asked me to cancel during the call. It had already got this far, so I've closed ` +
-      "the errand and nothing more will happen.";
-    return true;
-  } else if (result === "unconfirmed" || result === "cancelled") {
-    d.text += `\n\nYou asked me to cancel during the call, but it was already under way.`;
+  if (result === "done" && !d.settle.booking) {
+    return { decision: { ...d, told: told({ errand_closed: true }) }, end: true };
   }
-  return false;
+  return {
+    decision: {
+      ...d,
+      told: told(
+        { it_had_already_happened: true },
+        result === "done" ? "say_if_still_cancelling" : d.told.next,
+      ),
+    },
+    end: false,
+  };
 }
 
-// The extra question on a booking call. The plan promised to ask, so the report says what
-// came back, or that nothing did. A booking call asks only if the first call didn't get
-// an answer, so only its answer is news.
-async function alsoLine(deps: ReportDeps, call: CallForReport, r: CallResult): Promise<string | null> {
+function errandFacts(req: ActiveRequest, call: CallForReport, now: Date): Record<string, unknown> {
+  const f = req.fields;
+  const qs = currentQuestions(f);
+  return {
+    task: call.task,
+    call: call.kind,
+    what: f.party_size ? `table for ${f.party_size}` : f.service,
+    when: fmtWhen(f, now) || null,
+    ...(qs.length ? { questions: qs } : {}),
+    ...(call.option ? { picked: call.option.label } : {}),
+  };
+}
+
+// The extra question: the plan promised to ask, so the facts say what came back, or that
+// nothing did. A booking call asks only if the first call didn't get an answer, so only
+// its answer is news.
+function alsoAsked(req: ActiveRequest, call: CallForReport, r: CallResult): Record<string, unknown> | null {
   if (r.status !== "completed" || (call.kind !== "first" && call.kind !== "booking")) return null;
-  const ask = (await deps.store.request(call.requestId)).fields.also_ask;
+  const ask = req.fields.also_ask;
   if (!ask) return null;
   const answer = cleanField(readOutputs(call.kind, r.outputs)?.also_answer, 300);
-  if (answer) return `You also asked: "${ask}". They said: "${answer}"`;
-  return call.kind === "first" ? `You also asked: "${ask}". I didn't get a clear answer to that.` : null;
+  if (!answer && call.kind !== "first") return null;
+  return { also_asked: { question: ask, their_answer: answer ?? "no clear answer" } };
+}
+
+function notConnected(r: CallResult, call: CallForReport): Decision {
+  const unpaid = call.kind === "payment_confirm" ? { payment_still_unconfirmed: true } : {};
+  switch (r.status) {
+    case "no_answer":
+      return {
+        settle: { result: "back" },
+        told: { status: "no_one_picked_up_nothing_done", detail: unpaid, next: "offer_to_try_again" },
+      };
+    case "busy":
+      return {
+        settle: { result: "back" },
+        told: { status: "line_busy_nothing_done", detail: unpaid, next: "offer_to_try_again" },
+      };
+    default:
+      // reconcile: the call may have happened, but no result ever came back.
+      return r.failureReason === "no_result"
+        ? {
+          settle: { result: "back" },
+          told: {
+            status: "no_result_came_back_cannot_say_what_they_said",
+            detail: unpaid,
+            values: { phone: call.phone },
+            next: "check_with_business_themselves",
+          },
+        }
+        : {
+          settle: { result: "back" },
+          told: {
+            status: "call_did_not_go_through_nothing_done",
+            detail: unpaid,
+            next: "offer_to_try_again",
+          },
+        };
+  }
 }
 
 export async function reportCall(deps: ReportDeps, callId: string, r: CallResult): Promise<void> {
@@ -532,109 +692,67 @@ export async function reportCall(deps: ReportDeps, callId: string, r: CallResult
   const now = deps.now?.() ?? new Date();
   const call = await store.callForReport(callId);
   if (!call) return console.warn("report: unknown call", callId);
-  const place = await store.place(call.businessId);
-  const where = placeName(place);
-  const optOut = readOutputs(call.kind, r.outputs)?.opt_out_requested === "yes";
+  const place: Place = await store.place(call.businessId);
+  const req = await store.request(call.requestId);
+  const outputs = readOutputs(call.kind, r.outputs);
+  const optOut = outputs?.opt_out_requested === "yes";
 
   let d: Decision;
-  switch (r.status) {
-    case "no_answer":
-      d = {
-        settle: { result: "back" },
-        text: `I called ${where}, but no one picked up, so nothing is done yet. Want me to try again later?`,
-      };
-      break;
-    case "busy":
-      d = {
-        settle: { result: "back" },
-        text: `${where}'s line was busy, so nothing is done yet. Want me to try again in a bit?`,
-      };
-      break;
-    case "failed":
-      d = {
-        settle: { result: "back" },
-        // reconcile: the call may have happened, but no result ever came back.
-        text: r.failureReason === "no_result"
-          ? `I didn't get a result back from my call to ${where}, so I can't tell you what they said. ` +
-            `Please check with them directly: ${call.phone}.`
-          : `The call to ${where} didn't go through, so nothing is done yet. Want me to try again?`,
-      };
-      break;
-    default:
-      switch (call.kind) {
-        case "payment_confirm":
-          d = await decidePayment(deps, call, r, place, now);
-          break;
-        case "cancel":
-          d = await decideCancel(deps, call, r, place, now);
-          break;
-        case "reschedule":
-          d = await decideReschedule(deps, call, r, place, now);
-          break;
-        default:
-          d = await decideBooking(deps, call, r, readOutcome(call.kind, r.outputs, now), place, now);
-      }
-  }
-  // A confirm call that didn't connect leaves the hold as it is: the user can ask again.
-  if (call.kind === "payment_confirm" && r.status !== "completed") {
-    d.text = d.text.replace("nothing is done yet", "your payment isn't confirmed yet");
-  }
-  const end = !!call.cancelRequested && call.kind !== "payment_confirm" && afterCancel(d, place);
+  if (r.status !== "completed") d = notConnected(r, call);
+  else if (call.kind === "payment_confirm") d = await decidePayment(deps, call, r, now);
+  else if (call.kind === "cancel") d = await decideCancel(deps, call, r, now);
+  else if (call.kind === "reschedule") d = await decideReschedule(deps, call, r, now);
+  else d = await decideBooking(deps, call, r, readOutcome(call.kind, r.outputs, now), now);
+
+  let end = false;
+  if (call.cancelRequested && call.kind !== "payment_confirm") ({ decision: d, end } = afterCancel(d));
+
   // The call connected and the caller reported no result: an agent without the output
   // contract (agent/contract.json). It may well have booked, so "nothing is done, try
-  // again?" could book twice. Say what isn't known, quote its note as its note, flag it,
+  // again?" could book twice. Record what isn't known, its note as its note, flag it,
   // and block the version for real businesses (0013).
-  const blind = r.status === "completed" && !hasResult(readOutputs(call.kind, r.outputs));
+  const blind = r.status === "completed" && !hasResult(outputs);
   if (blind && d.settle.result === "back") {
-    const note = cleanField(readOutputs(call.kind, r.outputs)?.summary, 240);
-    d.text = `The call to ${place.name} connected, but its result didn't come back properly, so it may or ` +
-      `may not have gone through. Please check with them before we try again: ${call.phone}.` +
-      (note ? ` My caller's note, which I can't confirm: "${note}"` : "");
+    d.told = {
+      status: "connected_result_missing_may_or_may_not_have_gone_through",
+      detail: { ...d.told.detail, callers_own_note_unconfirmed: cleanField(outputs?.summary, 240) },
+      values: { phone: call.phone },
+      next: "check_with_business_themselves",
+    };
   }
-  const also = await alsoLine(deps, call, r);
-  if (also && d.settle.result === "options") d.lead = `${also}\n\n${d.lead ?? `${place.name} offered:`}`;
-  else if (also) d.text = `${d.text}\n\n${also}`;
+
   const settle = d.settle;
   settle.optOut = optOut;
+  const values = Object.fromEntries(
+    Object.entries(d.told.values ?? {}).filter((e): e is [string, string] => !!e[1]),
+  );
+  const facts: Facts = {
+    event: "call_result",
+    place: placeName(place),
+    errand: errandFacts(req, call, now),
+    happened: {
+      status: d.told.status,
+      ...d.told.detail,
+      ...alsoAsked(req, call, r),
+      ...(optOut ? { business_asked_not_to_be_called_again_so_it_wont_be: true } : {}),
+    },
+    values,
+    next_step: d.told.next ?? null,
+  };
 
-  const report: CallReport = { parts: [], end };
-  const lines: string[] = [];
-  if (settle.result === "options") {
-    const shown = settle.options!.map((o, i) => ({
-      id: String(i),
-      label: o.label,
-      detail: o.advance_required ? "advance" : null,
-    }));
-    const req = await store.request(call.requestId);
-    const p = optionsPrompt({
-      place,
-      options: shown,
-      lead: d.lead ?? `${place.name} offered:`,
-      customerName: req.fields.customer_name ?? (await store.user(call.userId)).name,
-    });
-    report.prompt = { id: crypto.randomUUID(), text: p.text, message: p.message };
-  } else lines.push(d.text);
-  if (optOut) lines.push("They asked not to be called again, so I won't call them in future.");
-  if (lines.length) report.parts.push({ key: "result", message: { kind: "text", body: lines.join("\n\n") } });
-
+  let next = null;
   if (end || ["done", "unconfirmed", "cancelled"].includes(settle.result)) {
     const n = await store.queued(call.userId);
     if (n) {
-      const at = n.businessId ? ` for ${(await store.place(n.businessId)).name}` : "";
-      report.next = {
+      next = {
         request_id: n.id,
-        message: {
-          kind: "text",
-          body: `Next I have your ${
-            n.task === "question" ? "question" : "booking"
-          }${at}. Shall I carry on with it?`,
-        },
+        facts: { task: n.task, place: n.businessId ? (await store.place(n.businessId)).name : null },
       };
     }
   }
 
-  const res = await store.settleCall(callId, settle, report);
-  deps.trace?.("settle_call", { callId, settle, res });
+  const res = await store.settleCall(callId, settle, { facts, next, end });
+  deps.trace?.("settle_call", { callId, settle, facts, res });
   // Already settled (a redelivered result): the user has heard, or the recovery pass will
   // finish telling them.
   if (!res.ok) return;
@@ -646,5 +764,6 @@ export async function reportCall(deps: ReportDeps, callId: string, r: CallResult
       outputs: Object.keys(r.outputs ?? {}),
     });
   }
+  await writeOwed(deps, callId);
   await drainDeliveries(deps, callId);
 }

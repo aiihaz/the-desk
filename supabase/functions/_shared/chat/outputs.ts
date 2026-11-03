@@ -8,8 +8,8 @@
 type Json = any;
 
 export type Outputs = {
-  // first: booked | held_pending_deposit | not_booked
-  // booking: booked | held_pending_deposit | option_gone | not_available
+  // first: booked | advance_required | not_booked
+  // booking: booked | advance_required | option_gone | not_available
   booking_status?: string;
   // The Genie outcome when it has no booking_status equivalent (moved, kept, cancelled,
   // payment_not_seen, hold_expired, wrong_number, ...).
@@ -20,7 +20,14 @@ export type Outputs = {
   options?: Json[];
   alternatives?: Json[];
   advance_amount?: number;
-  upi_id?: string;
+  // Is it adjusted against the bill, and is it refunded if they don't come, in their words.
+  advance_redeemable?: string;
+  advance_refund?: string;
+  // yes | no: are they keeping the slot until the customer decides.
+  advance_hold?: string;
+  // upi | bank_transfer | qr | link | cash | other, and where to pay.
+  payment_mode?: string;
+  payment_address?: string;
   payee_name?: string;
   payment_deadline?: string;
   payment_status?: string;
@@ -42,7 +49,9 @@ export type Outputs = {
 // booking (voicemail, a phone menu, a dropped line) map to nothing, which reads as unclear.
 const OUTCOME: Record<string, Record<string, string>> = {
   booked: { first: "booked", booking: "booked" },
-  held_pending_deposit: { first: "held_pending_deposit", booking: "held_pending_deposit" },
+  advance_required: { first: "advance_required", booking: "advance_required" },
+  // What the outcome was called before an advance stopped being agreed on the call.
+  held_pending_deposit: { first: "advance_required", booking: "advance_required" },
   options_found: { first: "not_booked", booking: "option_gone" },
   unavailable: { first: "not_booked", booking: "not_available" },
   refused: { first: "not_booked", booking: "not_available" },
@@ -63,7 +72,7 @@ export function readOutputs(kind: string, raw: unknown): Outputs | null {
 
   const status = text(r.booking_status);
   const outcome = text(r.outcome);
-  if (status) o.booking_status = status;
+  if (status) o.booking_status = status === "held_pending_deposit" ? "advance_required" : status;
   else if (outcome && OUTCOME[outcome]?.[kind]) o.booking_status = OUTCOME[outcome][kind];
   if (outcome) o.outcome = outcome;
   // A shop that wants the customer to decide (a card, a fee) is a new condition.
@@ -74,7 +83,11 @@ export function readOutputs(kind: string, raw: unknown): Outputs | null {
     const k of [
       "booked_time",
       "booking_reference",
-      "upi_id",
+      "advance_redeemable",
+      "advance_refund",
+      "advance_hold",
+      "payment_mode",
+      "payment_address",
       "payee_name",
       "payment_deadline",
       "payment_status",
@@ -90,6 +103,10 @@ export function readOutputs(kind: string, raw: unknown): Outputs | null {
   ) {
     const v = text(r[k]);
     if (v) o[k] = v;
+  }
+  if (!o.payment_address) {
+    const a = text(r.upi_id);
+    if (a) o.payment_address = a;
   }
   if (!o.summary) {
     const s = text(r.call_summary);
@@ -134,10 +151,11 @@ function option(x: Json): Json {
   return out;
 }
 
+// A value with no letter or digit in any script ("-", "n/a" isn't one) says nothing.
 function text(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const t = v.trim();
-  return t && t.toLowerCase() !== "null" && t.toLowerCase() !== "none" ? t : null;
+  return /[\p{L}\p{N}]/u.test(t) && t.toLowerCase() !== "null" && t.toLowerCase() !== "none" ? t : null;
 }
 
 function num(v: unknown): number | null {

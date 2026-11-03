@@ -120,8 +120,8 @@ export async function sendPrompt(
 
 // Luna asked to propose the plan (propose_plan). Refused while anything is missing or the
 // request is paused. First writes the code-only fields the consent must cover (may_book,
-// max_advance_rs, tolerance, the profile name to book under), so a later change to a
-// limit can't change what the user approved. note: Luna's own short line before the plan.
+// tolerance, the profile name to book under), so a later change to a limit can't change
+// what the user approved. note: Luna's own short line before the plan.
 export async function proposePlan(
   deps: PromptDeps,
   user: User,
@@ -157,9 +157,8 @@ export async function proposePlan(
 
   const code: Record<string, unknown> = {};
   if (mayBook !== undefined) code.may_book = mayBook;
-  if (r.task === "booking") {
-    code.max_advance_rs = await store.limitInt("max_advance_rs", user.id) ?? 0;
-    if (mayBook && !r.fields.customer_name && info.name) code.customer_name = info.name;
+  if (r.task === "booking" && mayBook && !r.fields.customer_name && info.name) {
+    code.customer_name = info.name;
   }
   if (r.task === "question" && r.fields.share_name && !r.fields.customer_name && info.name) {
     code.customer_name = info.name;

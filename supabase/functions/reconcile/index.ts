@@ -32,6 +32,7 @@ const send: ReportDeps["send"] = (user, msg) => deliver(waStore, (to, m) => waSe
 const report: ReportDeps = {
   store: chat,
   send,
+  create: openai,
   verify: verifier(chat, openai),
   checkClaim: claimChecker(chat, openai),
 };

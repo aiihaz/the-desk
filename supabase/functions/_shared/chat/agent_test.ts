@@ -7,6 +7,7 @@ import { callAfterConsent } from "./calls.ts";
 import { runCommand } from "./commands.ts";
 import { inbound } from "./gate_test.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
+import { fakeWriter } from "./test_writer.ts";
 import { proposePlan } from "./turn.ts";
 
 const user: User = { id: "u1", waId: "919812345678", blocked: false };
@@ -181,7 +182,7 @@ function consentSetup(res: DialResult) {
     dialed.push(a);
     return res;
   };
-  return { store, sent, dialed, deps: { ...deps, dial } };
+  return { store, sent, dialed, deps: { ...deps, dial, create: fakeWriter } };
 }
 
 const consent = {
@@ -204,19 +205,22 @@ Deno.test("a consent starts the call its request allows; the kind comes from the
   assertEquals([store.notStarted, sent], [[], []]);
 });
 
-Deno.test("a refused call ends the request and tells the user why, in plain words", async () => {
+Deno.test("a refused call ends the request and owes the user why", async () => {
   const { store, sent, deps } = consentSetup({ ok: false, error: "refused", reason: "business_closed" });
   assertEquals(await callAfterConsent(deps, user, consent), { started: false });
   assertEquals(store.notStarted, ["r1"]);
-  assertEquals(sent, [{ kind: "text", body: "[call_not_started]" }]);
+  assertEquals(
+    store.owedFacts[0].facts.happened.why,
+    "the business is closed right now; they can try when it's open",
+  );
+  assertEquals(sent.length, 1);
 
   const ours = consentSetup({ ok: false, error: "refused", reason: "agent_not_gated" });
-  ours.store.template = async () => "I couldn't start the call. {reason}";
   await callAfterConsent(ours.deps, user, consent);
-  assertEquals(ours.sent, [{
-    kind: "text",
-    body: "I couldn't start the call. Calls aren't working on my side right now; please try again later.",
-  }]);
+  assertEquals(
+    ours.store.owedFacts[0].facts.happened.why,
+    "calls aren't working on the Desk's side right now; they can try again later",
+  );
 });
 
 Deno.test("a refused dial for the caller contract raises an alert and tells the user it's on our side", async () => {
@@ -233,11 +237,15 @@ Deno.test("a refused dial for the caller contract raises an alert and tells the 
     pausedAt: null,
   };
   const res = await callAfterConsent(
-    { ...deps, dial: async () => ({ ok: false, error: "refused", reason: "caller_contract_mismatch" }) },
+    {
+      ...deps,
+      create: fakeWriter,
+      dial: async () => ({ ok: false, error: "refused", reason: "caller_contract_mismatch" }),
+    },
     user,
     { ok: true, consent_id: "k1", kind: "ask", request_id: "r1", option_id: null },
   );
   assertEquals(res, { started: false });
   assertEquals(store.alerts.map((a) => a.kind), ["caller_contract_mismatch"]);
-  assertEquals((sent[0] as { body: string }).body.includes("[call_not_started]"), true);
+  assertEquals(sent.length, 1);
 });

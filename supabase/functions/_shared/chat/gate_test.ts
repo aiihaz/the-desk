@@ -75,7 +75,7 @@ Deno.test("a reaction goes to Luna as what it is; a removed one is ignored; medi
   });
 });
 
-Deno.test("a screenshot while a deposit is held goes to the payment check", () => {
+Deno.test("an image while an advance is due goes to the payment check", () => {
   assertEquals(classify(inbound({ type: "image" }), { ...ctx, heldDeposit: true }), { kind: "screenshot" });
   assertEquals(classify(inbound({ type: "image" }), ctx).kind, "luna");
 });

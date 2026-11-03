@@ -61,11 +61,11 @@ function setup(verdict: Record<string, unknown> | Error, lines: ChatLine[], befo
   return { store, deps, shown, started };
 }
 
-const yes = (evidence: string) => ({ decision: "approve", evidence, why: "they said go ahead" });
+const yes = (message = 1) => ({ decision: "yes", message, why: "they said go ahead" });
 const user1 = (text: string, s = 5): ChatLine => ({ from: "user", text, at: after(s) });
 
 Deno.test("a clear answer in the user's own words is a consent, with its basis recorded", async () => {
-  const { store, deps, started, shown } = setup(yes("haan kar do"), [user1("haan kar do")]);
+  const { store, deps, started, shown } = setup(yes(), [user1("haan kar do")]);
   const r = await approvePlan(deps, user, null, "wamid.in2");
   assertEquals(r, { ok: true, consent_id: "k1", call: "started" });
   assertEquals(started.length, 1);
@@ -78,25 +78,40 @@ Deno.test("a clear answer in the user's own words is a consent, with its basis r
 });
 
 Deno.test("a 👍 reaction on the plan can approve it; the check sees what it points at", async () => {
-  const { deps, shown } = setup(yes("👍"), [{ ...user1("[reacted 👍]"), quoted: PLAN }]);
+  const { deps, shown } = setup(yes(), [{ ...user1("[reacted 👍]"), quoted: PLAN }]);
   assertEquals((await approvePlan(deps, user, null, "m")).ok, true);
   assertEquals(String(shown[0][0].content).includes("user (replying to: \"I'll call Paragon"), true);
 });
 
-Deno.test("the check's quote must be words the user actually sent", async () => {
-  const { store, deps, started } = setup(yes("yes go ahead"), [user1("hmm let me think")]);
-  const r = await approvePlan(deps, user, null, "wamid.in2");
-  assertEquals(r.ok, false);
-  assertEquals([store.consents, started], [[], []]);
+Deno.test("the check must point at a real message from the user", async () => {
+  for (const message of [9, 0, null]) {
+    const { store, deps, started } = setup(yes(message as number), [user1("hmm let me think")]);
+    assertEquals((await approvePlan(deps, user, null, "wamid.in2")).ok, false, String(message));
+    assertEquals([store.consents, started], [[], []]);
+  }
+  // A line from the desk is no one's approval.
+  const desk: ChatLine = { from: "desk", text: "Shall I call them now?", at: after(3) };
+  const { store, deps } = setup(yes(1), [desk, user1("hmm")]);
+  assertEquals((await approvePlan(deps, user, null, "m")).ok, false);
+  assertEquals(store.consents, []);
+});
+
+Deno.test("an approval in any language or wording needs no matching: what's kept is their message", async () => {
+  const { store, deps } = setup(yes(2), [
+    { from: "desk", text: "Anything else?", at: after(3) },
+    user1("ശരി, ചെയ്തോളൂ"),
+  ]);
+  assertEquals((await approvePlan(deps, user, null, "m")).ok, true);
+  assertEquals((store.consents[0] as { basis: { evidence: string } }).basis.evidence, "ശരി, ചെയ്തോളൂ");
 });
 
 Deno.test("not approved or unclear: no consent, and Luna is told to ask or deal with it", async () => {
   for (
-    const v of [{ decision: "not_approved", evidence: "", why: "they changed the time" }, {
+    const v of [{ decision: "no", message: null, why: "they changed the time" }, {
       decision: "unclear",
-      evidence: "",
+      message: null,
       why: "",
-    }, { decision: "approve", evidence: "", why: "no quote" }]
+    }]
   ) {
     const { store, deps } = setup(v, [user1("yes but make it 7")]);
     const r = await approvePlan(deps, user, null, "wamid.in2");
@@ -108,21 +123,21 @@ Deno.test("not approved or unclear: no consent, and Luna is told to ask or deal 
 Deno.test("an unreadable or failed check is not an approval", async () => {
   const bad = setup(new Error("openai 503"), [user1("ok")]);
   assertEquals((await approvePlan(bad.deps, user, null, "m")).ok, false);
-  const garbled = setup({ decision: "APPROVE!!", evidence: "ok" }, [user1("ok")]);
+  const garbled = setup({ decision: "APPROVE!!", message: 1 }, [user1("ok")]);
   assertEquals((await approvePlan(garbled.deps, user, null, "m")).ok, false);
   assertEquals([bad.store.consents, garbled.store.consents], [[], []]);
 });
 
 Deno.test("no answer since the plan was sent: refused before any check", async () => {
   // Stored before the plan went out, whatever its timestamp says.
-  const { store, deps, shown } = setup(yes("ok"), [], [{ from: "user", text: "ok", at: after(30) }]);
+  const { store, deps, shown } = setup(yes(), [], [{ from: "user", text: "ok", at: after(30) }]);
   const r = await approvePlan(deps, user, null, "m");
   assertEquals(r, { ok: false, reason: "they haven't answered the plan yet" });
   assertEquals([shown, store.consents], [[], []]);
 });
 
 Deno.test("the user wrote again during the turn: nothing is approved, the next turn reads it all", async () => {
-  const { store, deps, shown } = setup(yes("yes"), [user1("yes")]);
+  const { store, deps, shown } = setup(yes(), [user1("yes")]);
   store.unhandled = true;
   const r = await approvePlan(deps, user, null, "m");
   assertEquals(r.ok === false && r.end_turn, true);
@@ -130,17 +145,17 @@ Deno.test("the user wrote again during the turn: nothing is approved, the next t
 });
 
 Deno.test("no open plan (edited, stale or never sent), or paused: refused", async () => {
-  const none = setup(yes("ok"), [user1("ok")]);
+  const none = setup(yes(), [user1("ok")]);
   none.store.prompt = null;
   assertEquals((await approvePlan(none.deps, user, null, "m")).ok, false);
-  const paused = setup(yes("ok"), [user1("ok")]);
+  const paused = setup(yes(), [user1("ok")]);
   paused.store.req = { ...paused.store.req!, pausedAt: sentAt };
   assertEquals((await approvePlan(paused.deps, user, null, "m")).ok, false);
   assertEquals([none.store.consents, paused.store.consents], [[], []]);
 });
 
 Deno.test("the database's refusal wins (stopped, closed, stale version): no call", async () => {
-  const { store, deps, started } = setup(yes("ok go"), [user1("ok go")]);
+  const { store, deps, started } = setup(yes(), [user1("ok go")]);
   store.consentResult = { ok: false, reason: "stopped" };
   const r = await approvePlan(deps, user, null, "m");
   assertEquals(r, { ok: false, reason: "the plan can't be approved now (stopped)" });
@@ -148,13 +163,13 @@ Deno.test("the database's refusal wins (stopped, closed, stale version): no call
 });
 
 Deno.test("a call that couldn't start is reported as such", async () => {
-  const { deps } = setup(yes("ok"), [user1("ok")]);
+  const { deps } = setup(yes(), [user1("ok")]);
   deps.onApproved = async () => ({ started: false });
   assertEquals(await approvePlan(deps, user, null, "m"), { ok: true, consent_id: "k1", call: "not_started" });
 });
 
 Deno.test("options: the pick must name an option on the list, and the check is told which", async () => {
-  const { store, deps, shown } = setup(yes("the 9:30 one"), [user1("the 9:30 one")]);
+  const { store, deps, shown } = setup(yes(), [user1("the 9:30 one")]);
   store.req = { ...store.req!, state: "awaiting_pick" };
   store.prompt = { ...store.prompt!, kind: "options", optionIds: ["o1", "o2"] };
   store.options = [{ id: "o1", label: "9:30 pm", detail: null }, {

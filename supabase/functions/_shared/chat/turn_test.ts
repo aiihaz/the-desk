@@ -55,7 +55,7 @@ Deno.test("a plan: code fields are written first, then the plan is sent as text 
   const { store, sent, deps } = setup();
   store.req = { ...tonight };
   const res = await proposePlan(deps, user, "r1");
-  assertEquals(store.slotWrites, [{ may_book: true, max_advance_rs: 500 }]);
+  assertEquals(store.slotWrites, [{ may_book: true }]);
   assertEquals(res.ok, true);
   assertEquals(sent.length, 1);
   assertEquals(sent[0].kind, "text");
@@ -65,7 +65,7 @@ Deno.test("a plan: code fields are written first, then the plan is sent as text 
 
 Deno.test("a plan with nothing to change writes no slots (no needless version bump)", async () => {
   const { store, deps } = setup();
-  store.req = { ...tonight, fields: { ...tonight.fields, may_book: true, max_advance_rs: 500 } };
+  store.req = { ...tonight, fields: { ...tonight.fields, may_book: true } };
   await proposePlan(deps, user, "r1");
   assertEquals(store.slotWrites, []);
 });

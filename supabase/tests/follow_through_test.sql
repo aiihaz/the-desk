@@ -8,7 +8,8 @@ create function pg_temp.at(hhmm text, d text default '2026-10-23') returns times
 language sql as $$ select (d || ' ' || hhmm || ':00+05:30')::timestamptz $$;
 
 insert into users (id, wa_id, name, phone_e164) values
-  ('a0000000-0000-0000-0000-000000000001', '919800000001', 'Ihaz', '+919800000001');
+  ('a0000000-0000-0000-0000-000000000001', '919800000001', 'Ihaz', '+919800000001'),
+  ('a0000000-0000-0000-0000-000000000002', '919800000002', 'Asha', '+919800000002');
 insert into businesses (id, place_id, phone_e164, name, city, source, opening_hours) values
   ('b0000000-0000-0000-0000-000000000001', 'places/paragon', '+914952700001', 'Paragon', 'Kozhikode', 'places', null);
 insert into caller_numbers (id, e164, provider, a2p_declared_at) values
@@ -23,15 +24,16 @@ create temp table t (name text primary key, id uuid);
 create function pg_temp.id(n text) returns uuid language sql as $$ select id from t where name = n $$;
 
 -- A request in calling_1 with a call open.
-create function pg_temp.calling(n text) returns void language plpgsql as $$
+create function pg_temp.calling(n text, u uuid default 'a0000000-0000-0000-0000-000000000001') returns void
+language plpgsql as $$
 declare
   rid uuid;
   cid uuid := gen_random_uuid();
 begin
-  rid := (start_request('a0000000-0000-0000-0000-000000000001', 'booking', pg_temp.at('11:00')) ->> 'request_id')::uuid;
+  rid := (start_request(u, 'booking', pg_temp.at('11:00')) ->> 'request_id')::uuid;
   update requests set state = 'calling_1', business_id = 'b0000000-0000-0000-0000-000000000001' where id = rid;
   insert into calls (id, request_id, user_id, business_id, caller_number_id, kind, agent_version, status, created_at)
-  values (cid, rid, 'a0000000-0000-0000-0000-000000000001', 'b0000000-0000-0000-0000-000000000001',
+  values (cid, rid, u, 'b0000000-0000-0000-0000-000000000001',
           'c0000000-0000-0000-0000-000000000001', 'first', '7', 'completed', pg_temp.at('11:05'));
   insert into t values (n, rid), (n || '_call', cid);
 end $$;
@@ -41,52 +43,42 @@ end $$;
 select pg_temp.calling('r1');
 select is((settle_and_report(pg_temp.id('r1_call'), 'done', '[]',
   '{"time": null, "date": "2026-11-08", "captured": "November 8", "approved": "2026-11-08T20:00:00+05:30", "verified": false, "problems": ["date only"]}',
-  false, '[{"key": "result", "message": {"kind": "text", "body": "Booked, no time."}}]',
+  false, '{"event": "call_result", "happened": {"status": "booked"}}',
   p_now => pg_temp.at('11:10')) ->> 'state'), 'done', 'the result settles');
 select is((select count(*)::int from deliveries where call_id = pg_temp.id('r1_call') and status = 'pending'), 1,
           'what the user is owed is stored with the settlement');
+select is((select message from deliveries where call_id = pg_temp.id('r1_call')), null,
+          'as facts: a model writes the message after');
 select results_eq(
   $$select time, booked_on, captured_time from bookings where request_id = pg_temp.id('r1')$$,
   $$values (null::timestamptz, '2026-11-08'::date, 'November 8'::text)$$,
   'a date stays a date: no time, and the captured value is kept');
 
-select is((settle_and_report(pg_temp.id('r1_call'), 'done', p_parts =>
-  '[{"key": "result", "message": {"kind": "text", "body": "again"}}]', p_now => pg_temp.at('11:11')) ->> 'ok'),
+select is((settle_and_report(pg_temp.id('r1_call'), 'done', p_facts =>
+  '{"event": "again"}', p_now => pg_temp.at('11:11')) ->> 'ok'),
   'false', 'a redelivered result settles nothing');
 select is((select count(*)::int from deliveries where call_id = pg_temp.id('r1_call')), 1, 'and queues nothing');
 
--- A correction is kept and raised.
-select pg_temp.calling('r2');
-select settle_and_report(pg_temp.id('r2_call'), 'done', '[]',
-  '{"time": "2026-11-08T20:00:00+05:30", "captured": "2025-11-08T20:00:00+05:30", "verified": true, "problems": [], "correction": {"from": "2025-11-08T20:00:00+05:30", "to": "2026-11-08T20:00:00+05:30", "why": "wrong year"}}',
-  p_now => pg_temp.at('11:12'));
-select is((select time_correction ->> 'why' from bookings where request_id = pg_temp.id('r2')), 'wrong year',
-          'the booking keeps why its date differs from what was captured');
-select is((select count(*)::int from alerts where kind = 'booking_date_corrected'), 1, 'and the correction is visible');
-
--- Options: the prompt opens in the same transaction, and its message is tracked.
-select pg_temp.calling('r3');
+-- Options: the prompt waits for the message, so what's approved is what was read.
+select pg_temp.calling('r3', 'a0000000-0000-0000-0000-000000000002');
 select settle_and_report(pg_temp.id('r3_call'), 'options',
-  '[{"label": "8:30 pm", "value": {}}]', p_prompt =>
-  '{"id": "e0000000-0000-0000-0000-000000000001", "text": "They offered", "message": {"kind": "text", "body": "They offered"}}',
-  p_now => pg_temp.at('11:13'));
-select is((select state from requests where id = pg_temp.id('r3')), 'awaiting_pick', 'options open a prompt at once');
-select is((select prompt_id from deliveries where call_id = pg_temp.id('r3_call')),
-          'e0000000-0000-0000-0000-000000000001'::uuid, 'and its message is tracked');
+  '[{"label": "8:30 pm", "value": {}}]', p_facts => '{"event": "call_result"}', p_now => pg_temp.at('11:13'));
+select is((select state from requests where id = pg_temp.id('r3')), 'options_ready', 'no prompt until it is written');
+select is((select count(*)::int from consent_prompts where request_id = pg_temp.id('r3')), 0, 'none at all');
 
 -- Cancelled during the call, nothing booked: the errand ends.
 select pg_temp.calling('r4');
 select is((request_cancel_after_call(pg_temp.id('r4')) ->> 'ok'), 'true', 'cancel can be asked during a call');
-select settle_and_report(pg_temp.id('r4_call'), 'back', p_parts =>
-  '[{"key": "result", "message": {"kind": "text", "body": "Dropped."}}]', p_end => true, p_now => pg_temp.at('11:14'));
+select settle_and_report(pg_temp.id('r4_call'), 'back', p_facts => '{"event": "call_result"}',
+  p_end => true, p_now => pg_temp.at('11:14'));
 select results_eq($$select state, end_reason from requests where id = pg_temp.id('r4')$$,
                   $$values ('cancelled'::text, 'user'::text)$$, 'and ends the errand with the result');
 select is((request_cancel_after_call(pg_temp.id('r4')) ->> 'reason'), 'not_calling', 'not when no call is running');
 
 -- An answered question cancelled during its call: settled, then closed as the cancel.
 select pg_temp.calling('r7');
-select settle_and_report(pg_temp.id('r7_call'), 'done', p_parts =>
-  '[{"key": "result", "message": {"kind": "text", "body": "Answer, and closed."}}]', p_end => true, p_now => pg_temp.at('11:14'));
+select settle_and_report(pg_temp.id('r7_call'), 'done', p_facts => '{"event": "call_result"}',
+  p_end => true, p_now => pg_temp.at('11:14'));
 select results_eq($$select state, end_reason from requests where id = pg_temp.id('r7')$$,
                   $$values ('cancelled'::text, 'user'::text)$$, 'an answered question closes as cancelled');
 select is((select count(*)::int from deliveries where call_id = pg_temp.id('r7_call')), 1, 'and its answer is still owed');
@@ -94,33 +86,71 @@ select is((select count(*)::int from deliveries where call_id = pg_temp.id('r7_c
 -- A waiting errand becomes current, and is said only if it did.
 select pg_temp.calling('r5');
 insert into t values ('q1', (queue_request('a0000000-0000-0000-0000-000000000001', 'question', pg_temp.at('11:15')) ->> 'request_id')::uuid);
-select settle_and_report(pg_temp.id('r5_call'), 'done', p_parts =>
-  '[{"key": "result", "message": {"kind": "text", "body": "Done."}}]',
-  p_next => jsonb_build_object('request_id', pg_temp.id('q1'), 'message', '{"kind": "text", "body": "Next."}'::jsonb),
+select settle_and_report(pg_temp.id('r5_call'), 'done', p_facts => '{"event": "call_result"}',
+  p_next => jsonb_build_object('request_id', pg_temp.id('q1'), 'facts', '{"task": "question"}'::jsonb),
   p_now => pg_temp.at('11:16'));
 select is((select state from requests where id = pg_temp.id('q1')), 'collecting', 'the errand behind it becomes current');
-select is((select count(*)::int from deliveries where call_id = pg_temp.id('r5_call')), 2, 'and the user hears about it');
+select is((select facts -> 'next_errand' ->> 'task' from deliveries where call_id = pg_temp.id('r5_call')), 'question',
+          'and the same message says so');
 
--- Deliveries ------------------------------------------------------------------------
+-- Writing ---------------------------------------------------------------------------
 
-update deliveries set status = 'sent' where call_id <> pg_temp.id('r5_call');
-select is(jsonb_array_length(take_deliveries(pg_temp.at('11:20'))), 1, 'one part per call at a time');
-select is(jsonb_array_length(take_deliveries(pg_temp.at('11:20'))), 0, 'a taken part is leased');
-select is(delivery_failed((select id from deliveries where call_id = pg_temp.id('r5_call') order by seq limit 1),
-                          'whatsapp down', false, pg_temp.at('11:20')), 'pending', 'a failed send stays owed');
-select is(jsonb_array_length(take_deliveries(pg_temp.at('11:20'))), 0, 'it backs off, and the next part waits behind it');
-select is(jsonb_array_length(take_deliveries(pg_temp.at('11:30'))), 1, 'then it is tried again');
-select delivery_sent((select id from deliveries where call_id = pg_temp.id('r5_call') order by seq limit 1), 'wamid.1', pg_temp.at('11:30'));
-select is(((take_deliveries(pg_temp.at('11:31')) -> 0 -> 'message') ->> 'body'), 'Next.', 'parts go in order');
-select is(delivery_failed((select id from deliveries where call_id = pg_temp.id('r5_call') order by seq desc limit 1),
-                          'outside window', true, pg_temp.at('11:31')), 'failed', 'a message that can''t go is failed');
+update deliveries set status = 'sent' where call_id not in (pg_temp.id('r5_call'), pg_temp.id('r3_call'));
+select is(jsonb_array_length(take_deliveries(pg_temp.at('11:20'))), 0, 'nothing unwritten can be sent');
+create temp table taken as select jsonb_array_elements(take_unwritten(pg_temp.at('11:20'))) as d;
+select is((select count(*)::int from taken), 2, 'what is owed comes out to be written');
+select is(jsonb_array_length(take_unwritten(pg_temp.at('11:20'))), 0, 'a write being done is leased');
+
+-- A write that fails stays owed, backs off, tells the review surface once, and never fails.
+select delivery_unwritten((select id from deliveries where call_id = pg_temp.id('r5_call')), 'model down', pg_temp.at('11:20'));
+select is((select status from deliveries where call_id = pg_temp.id('r5_call')), 'pending', 'a failed write stays owed');
+select is(jsonb_array_length(take_unwritten(pg_temp.at('11:20'))), 0, 'and backs off');
+update deliveries set write_attempts = 4 where call_id = pg_temp.id('r5_call');
+select delivery_unwritten((select id from deliveries where call_id = pg_temp.id('r5_call')), 'model down', pg_temp.at('11:21'));
+update deliveries set write_attempts = 5 where call_id = pg_temp.id('r5_call');
+select delivery_unwritten((select id from deliveries where call_id = pg_temp.id('r5_call')), 'model down', pg_temp.at('11:22'));
+select is((select count(*)::int from alerts where kind = 'report_unwritten'), 1, 'the review surface hears once');
+select is((select message from deliveries where call_id = pg_temp.id('r5_call')), null, 'and nothing stands in for it');
+
+select delivery_written((select id from deliveries where call_id = pg_temp.id('r5_call')),
+                        '{"kind": "text", "body": "Done."}', pg_temp.at('11:23'));
+select is((select status from deliveries where call_id = pg_temp.id('r5_call')), 'pending', 'written, then sent');
+select is(((take_deliveries(pg_temp.at('11:23')) -> 0 -> 'message') ->> 'body'), 'Done.', 'a written message goes out');
+select is(jsonb_array_length(take_deliveries(pg_temp.at('11:23'))), 0, 'a taken message is leased');
+select is(delivery_failed((select id from deliveries where call_id = pg_temp.id('r5_call')),
+                          'whatsapp down', false, pg_temp.at('11:23')), 'pending', 'a failed send stays owed');
+select is(jsonb_array_length(take_deliveries(pg_temp.at('11:23'))), 0, 'it backs off');
+select is(jsonb_array_length(take_deliveries(pg_temp.at('11:40'))), 1, 'then it is tried again');
+select is(delivery_failed((select id from deliveries where call_id = pg_temp.id('r5_call')),
+                          'outside window', true, pg_temp.at('11:41')), 'failed', 'a message that can''t go is failed');
 select is((select count(*)::int from alerts where kind = 'delivery_failed'), 1, 'and raised, not lost');
 
--- The options message's id lands on its prompt.
-update deliveries set status = 'pending', next_attempt_at = pg_temp.at('11:00') where call_id = pg_temp.id('r3_call');
-select delivery_sent((select id from deliveries where call_id = pg_temp.id('r3_call')), 'wamid.opts', pg_temp.at('11:32'));
-select is((select wa_message_id from consent_prompts where id = 'e0000000-0000-0000-0000-000000000001'), 'wamid.opts',
-          'the prompt learns which message showed it');
+-- The options message opens its prompt with exactly the text the user reads.
+select delivery_written((select id from deliveries where call_id = pg_temp.id('r3_call')),
+                        '{"kind": "text", "body": "They offered: 1. 8:30 pm"}', pg_temp.at('11:42'));
+select is((select state from requests where id = pg_temp.id('r3')), 'awaiting_pick', 'the prompt opens when it is written');
+select is((select text_shown from consent_prompts where request_id = pg_temp.id('r3')), 'They offered: 1. 8:30 pm',
+          'with the words the user gets');
+select delivery_sent((select id from deliveries where call_id = pg_temp.id('r3_call')), 'wamid.opts', pg_temp.at('11:43'));
+select is((select wa_message_id from consent_prompts where request_id = pg_temp.id('r3')), 'wamid.opts',
+          'and learns which message showed it');
+
+-- The errand moved on while the report waited: the message still goes, with no prompt.
+select pg_temp.calling('r8', 'a0000000-0000-0000-0000-000000000002');
+select settle_and_report(pg_temp.id('r8_call'), 'options', '[{"label": "9 pm", "value": {}}]',
+  p_facts => '{"event": "call_result"}', p_now => pg_temp.at('11:50'));
+select cancel_request(pg_temp.id('r8'), pg_temp.at('11:51'));
+select delivery_written((select id from deliveries where call_id = pg_temp.id('r8_call')),
+                        '{"kind": "text", "body": "They offered 9 pm"}', pg_temp.at('11:52'));
+select is((select message ->> 'body' from deliveries where call_id = pg_temp.id('r8_call')), 'They offered 9 pm',
+          'what happened is still told');
+select is((select count(*)::int from consent_prompts where request_id = pg_temp.id('r8') and closed_at is null), 0,
+          'but no prompt opens on an errand that ended');
+
+-- Something owed outside a call result is owed once.
+select owe_facts('a0000000-0000-0000-0000-000000000001', null, 'payment:wamid.1', 'notice', '{"event": "payment_check"}', pg_temp.at('11:53'));
+select owe_facts('a0000000-0000-0000-0000-000000000001', null, 'payment:wamid.1', 'notice', '{"event": "payment_check"}', pg_temp.at('11:54'));
+select is((select count(*)::int from deliveries where dedupe_key = 'tell:payment:wamid.1'), 1, 'owed once');
 
 -- Follow-ups -------------------------------------------------------------------------
 
@@ -130,8 +160,8 @@ select is((select waiting_for from requests where id = pg_temp.id('q1')), 'Asha 
 select is(jsonb_array_length(due_follow_ups(pg_temp.at('17:00'))), 0, 'not due yet');
 create temp table due as select jsonb_array_elements(due_follow_ups(pg_temp.at('18:01'))) as d;
 select is((select count(*)::int from due where d ->> 'reason' = 'reminder'), 1, 'due at its time');
-select ok(queue_follow_up(pg_temp.id('q1'), 'reminder', 1, '{"kind": "text", "body": "Reminder"}', pg_temp.at('18:01')), 'queued');
-select ok(not queue_follow_up(pg_temp.id('q1'), 'reminder', 1, '{"kind": "text", "body": "Reminder"}', pg_temp.at('18:02')),
+select ok(queue_follow_up(pg_temp.id('q1'), 'reminder', 1, '{"event": "follow_up"}', pg_temp.at('18:01')), 'queued');
+select ok(not queue_follow_up(pg_temp.id('q1'), 'reminder', 1, '{"event": "follow_up"}', pg_temp.at('18:02')),
           'a job that runs twice can''t queue it twice');
 select is((select remind_at from requests where id = pg_temp.id('q1')), null, 'a reminder fires once');
 select is((set_follow_up(pg_temp.id('r1'), 'x', null) ->> 'reason'), 'not_active', 'an ended errand waits for nothing');
@@ -151,7 +181,7 @@ update requests set state = 'confirming', business_id = 'b0000000-0000-0000-0000
 select open_prompt('e0000000-0000-0000-0000-000000000002', pg_temp.id('n1'), 'ask', '{}', 'yes', 'Plan', '{"kind": "text", "body": "Plan"}', pg_temp.at('12:05'));
 select is((select count(*)::int from jsonb_array_elements(due_follow_ups(pg_temp.at('14:00'))) x where x ->> 'reason' = 'nudge'), 0, 'not before nudge_after_minutes');
 select is((select count(*)::int from jsonb_array_elements(due_follow_ups(pg_temp.at('15:10'))) x where x ->> 'reason' = 'nudge'), 1, 'then once');
-select queue_follow_up(pg_temp.id('n1'), 'nudge', 1, '{"kind": "text", "body": "Still?"}', pg_temp.at('15:10'));
+select queue_follow_up(pg_temp.id('n1'), 'nudge', 1, '{"event": "follow_up"}', pg_temp.at('15:10'));
 select is((select count(*)::int from jsonb_array_elements(due_follow_ups(pg_temp.at('20:00'))) x where x ->> 'reason' = 'nudge'), 0, 'only once');
 
 -- An expired errand is told, once.
@@ -161,14 +191,14 @@ select is((select count(*)::int from jsonb_array_elements(due_follow_ups(pg_temp
 
 -- A stopped user gets no nudges, but still hears how a call went.
 select pg_temp.calling('r6');
-select settle_and_report(pg_temp.id('r6_call'), 'back', p_parts =>
-  '[{"key": "result", "message": {"kind": "text", "body": "No answer."}}]', p_now => pg_temp.at('12:10', '2026-10-25'));
+select settle_and_report(pg_temp.id('r6_call'), 'back', p_facts => '{"event": "call_result"}',
+  p_now => pg_temp.at('12:10', '2026-10-25'));
 update deliveries set status = 'pending', next_attempt_at = pg_temp.at('11:00')
  where dedupe_key like 'nudge:%';
 select stop_user('a0000000-0000-0000-0000-000000000001', pg_temp.at('12:11', '2026-10-25'));
-select take_deliveries(pg_temp.at('12:12', '2026-10-25'));
+select take_unwritten(pg_temp.at('12:12', '2026-10-25'));
 select is((select status from deliveries where dedupe_key like 'nudge:%'), 'dropped', 'a stopped user gets no nudge');
-select is((select attempts from deliveries where call_id = pg_temp.id('r6_call')), 1, 'but a call report still goes');
+select is((select write_attempts from deliveries where call_id = pg_temp.id('r6_call')), 1, 'but a call report still goes');
 select resume_user('a0000000-0000-0000-0000-000000000001');
 
 -- Memory ----------------------------------------------------------------------------

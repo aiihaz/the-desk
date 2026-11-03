@@ -21,7 +21,7 @@ export type CallInputs = {
   // Booking calls: the last completed first call on this request. Reschedule and cancel:
   // the call that made the booking.
   prev: { at: string; contactName: string | null; summary: string | null; alsoAnswered?: boolean } | null;
-  // Reschedule, cancel: the Desk booking being changed. Payment confirm: the held one.
+  // Reschedule, cancel: the Desk booking being changed. Payment confirm: the one paid for.
   booking: BookingInput | null;
   // Payment confirm: what the screenshot that passed the check showed.
   payment: { amountRs: number; ref: string; paidAt: string | null; payee: string | null } | null;
@@ -37,6 +37,7 @@ export type BookingInput = {
   date?: string | null;
   reference: string | null;
   customerName: string | null;
+  // An advance actually paid. Asked for and unpaid is nothing the customer can lose.
   depositRs: number | null;
   knownFeeRs: number | null;
 };
@@ -126,6 +127,11 @@ function resolvedWhen(f: Record<string, unknown>, o: CallInputs["option"]): stri
   return null;
 }
 
+// Never agreed on a call. The customer decides, with everything the business said.
+const ADVANCE = "No advance: if they want one, don't agree. Take down the amount, whether it's adjusted " +
+  "against the bill, whether it's refunded, how and where to pay, by when, and whether they'll keep the " +
+  "slot meanwhile, then say you'll check with the customer and get back to them.";
+
 // The errand as settled before the call. Every line comes from what the user approved.
 function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars {
   const f = x.fields;
@@ -134,7 +140,6 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
   const what = requestWhat(f);
   const picked = !!o;
   const mayBook = picked || (kind !== "question" && v.may_book === true);
-  const cap = typeof v.max_advance_rs === "number" ? v.max_advance_rs : 0;
   const conditions = typeof o?.value.conditions === "string" ? o.value.conditions : null;
 
   const decided = kind === "question"
@@ -166,17 +171,17 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
       ? `A loss of up to Rs ${x.approvedLossRs}. Anything more: don't cancel, come back.`
       : "No charge. If there is one: don't cancel, come back.")
     : kind === "payment_confirm"
-    ? "Only their word that it was received. Agree nothing new."
+    ? "Tell them the advance is paid and ask them to confirm the booking. Only their word that it was received. Agree nothing new."
     : mayBook
     ? [
       `Book only what is decided above${
         typeof f.max_price_rs === "number" ? `, up to Rs ${f.max_price_rs}` : ""
       }.`,
       conditions ? `The customer accepted: ${conditions}.` : null,
-      cap ? `An advance of up to Rs ${cap} makes it a hold, paid by the customer.` : "No advance.",
+      ADVANCE,
       "Anything else: don't accept, come back with it.",
     ].filter(Boolean).join(" ")
-    : "Nothing yet: ask what's possible and come back.";
+    : `Nothing yet: ask what's possible and come back. ${ADVANCE}`;
 
   const prev = typeof v.prev_summary === "string"
     ? `Called earlier${
@@ -218,7 +223,6 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean,
         max_price: num("max_price_rs"),
         max_price_rs: num("max_price_rs"),
         may_book: mayBook,
-        max_advance_rs: num("max_advance_rs") ?? 0,
         // Name and number go only when booking on this call: the plan for a call that
         // only asks tells the user neither is shared.
         customer_name: mayBook ? str("customer_name") : null,
@@ -259,7 +263,6 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean,
         approved_conditions: typeof o?.value.conditions === "string" ? o.value.conditions : null,
         party_size: num("party_size"),
         service: str("service"),
-        max_advance_rs: num("max_advance_rs") ?? 0,
         // A question call that turned into an offer has no name stored yet.
         customer_name: str("customer_name") ?? x.profileName ?? null,
         customer_phone: x.customerPhone,
@@ -329,7 +332,9 @@ export function callVariables(kind: CallKind, x: CallInputs, mustReask: boolean,
         payment_ref: p?.ref ?? null,
         paid_at: p?.paidAt ?? null,
         payee: p?.payee ?? null,
-        customer_name: b?.customerName ?? str("customer_name"),
+        // Paying is what makes the booking, so this is the call that gives their details.
+        customer_name: b?.customerName ?? str("customer_name") ?? x.profileName ?? null,
+        customer_phone: x.customerPhone,
       };
       if (!b) missing.push("held_booking");
       if (!p) missing.push("payment");

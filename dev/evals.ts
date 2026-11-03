@@ -42,6 +42,12 @@ type Out = { id: string; msg: { kind: string; body?: string; buttons?: { id: str
 const isReadback = (o: Out) =>
   o.msg.kind === "text" &&
   /\n\n(Shall I (go ahead|call them)|Do you still want me to cancel)\?$/.test(o.msg.body ?? "");
+// What a settled call told the user: the facts the message was written from.
+const settledFacts = (ev: Event[]) =>
+  ev.filter((e) => e.type === "decision:settle_call").map((e) =>
+    (e.data as { facts: { happened: Record<string, unknown>; next_step: string | null } }).facts
+  );
+const lastPlan = (r: Run) => outs(r.events).findLast(isReadback);
 const consented = (ev: Event[]) =>
   ev.some((e) => e.type === "decision:consent" && (e.data as { ok: boolean }).ok);
 
@@ -151,7 +157,6 @@ const JOURNEYS: Case[] = [
       const all = texts(r.events);
       return [
         ...need(consents(r.events) >= 1, "first errand not approved"),
-        ...need(all.some((t) => t.includes("Next I have your")), "the waiting errand was never brought up"),
         ...need(all.some((t) => /jeans/i.test(t) && /Shall I/.test(t)), "no plan for the second errand"),
       ];
     },
@@ -187,7 +192,10 @@ const JOURNEYS: Case[] = [
       { sim: "call_booked" },
     ],
     check: (r) =>
-      need(last(r.events).includes("went through before I could stop it"), `said: "${last(r.events)}"`),
+      need(
+        settledFacts(r.events).at(-1)?.happened.it_had_already_happened === true,
+        `said: "${last(r.events)}"`,
+      ),
   },
   {
     name: "waiting on someone, with a reminder that really goes out",
@@ -206,6 +214,92 @@ const JOURNEYS: Case[] = [
     },
   },
   {
+    name: "an advance: terms come back, stay open, and only they close it",
+    messages: [
+      { text: tomorrowTable },
+      { text: "go ahead" },
+      {
+        sim: "call_result",
+        args: {
+          outputs: {
+            outcome: "advance_required",
+            advance_amount_rs: "500",
+            advance_redeemable: "adjusted in the final bill",
+            advance_refund: "not refundable",
+            advance_hold: "no",
+            payment_mode: "upi",
+            payment_address: "paragon@okhdfc",
+            payee_name: "Paragon Restaurant",
+            summary: "They want Rs 500 first.",
+          },
+        },
+      },
+      { text: "whats the upi id again" },
+      { sim: "tick", args: { minutes: 60 * 24 * 5 } },
+      { text: "leave it, drop this one" },
+    ],
+    check: (r) => {
+      const all = texts(r.events);
+      const dropped = r.events.filter((e) => e.type === "decision:cancel_request");
+      return [
+        ...need(
+          settledFacts(r.events)[0]?.next_step === "decide_on_advance",
+          "not brought back as a decision",
+        ),
+        ...need(
+          all.filter((t) => t.includes("paragon@okhdfc")).length >= 2,
+          "the terms were lost after the report",
+        ),
+        ...need(dropped.some((e) => (e.data as { ok: boolean }).ok), "they couldn't drop it"),
+      ];
+    },
+  },
+  {
+    name: "a required condition is theirs: accepted, it's booked",
+    messages: [
+      { text: tomorrowTable },
+      { text: "go ahead" },
+      {
+        sim: "call_result",
+        args: {
+          outputs: { outcome: "booked" },
+          transcript: [
+            { role: "agent", en_text: "Table for 4 tomorrow around 8 pm, name Ihaz. Is that confirmed?" },
+            {
+              role: "user",
+              en_text:
+                "Yes, 8 pm tomorrow, table for 4, booked. There's a Rs 500 cover per person, compulsory.",
+            },
+          ],
+        },
+      },
+      { text: "ok fine, the cover charge is ok with me" },
+    ],
+    check: (r) => {
+      const asked = settledFacts(r.events)[0]?.next_step === "decide_on_condition";
+      const took = r.events.some((e) =>
+        e.type === "decision:accept_condition" && (e.data as { ok: boolean }).ok
+      );
+      return [...need(asked, "not brought to them"), ...need(took, "their yes wasn't recorded")];
+    },
+  },
+  {
+    name: "a booking is found by what's known about it, and bound by ref",
+    messages: [
+      { text: tomorrowTable },
+      { text: "go ahead" },
+      { sim: "call_booked" },
+      { text: "cancel my paragon booking" },
+    ],
+    check: (r) => {
+      const set = r.events.some((e) => e.type === "decision:set_request_booking");
+      return [
+        ...need(set, "the booking was never bound"),
+        ...need(!!lastPlan(r), `no plan: "${last(r.events)}"`),
+      ];
+    },
+  },
+  {
     name: "an unanswered plan gets one nudge, and only one",
     messages: [
       { text: tomorrowTable },
@@ -213,7 +307,8 @@ const JOURNEYS: Case[] = [
       { sim: "tick", args: { minutes: 200 } },
     ],
     check: (r) => {
-      const n = texts(r.events).filter((t) => t.includes("still waiting on you")).length;
+      const n = r.events.filter((e) => e.type === "decision:follow_through")
+        .reduce((sum, e) => sum + (e.data as { queued: number }).queued, 0);
       return need(n === 1, `${n} nudges`);
     },
   },
@@ -273,7 +368,8 @@ const JOURNEYS: Case[] = [
       { sim: "tick", args: { minutes: 10 } },
     ],
     check: (r) => {
-      const n = texts(r.events).filter((t) => t.includes("confirmed it on the call")).length;
+      const n =
+        outs(r.events).filter((o) => /booked|confirmed/i.test(o.msg.body ?? "") && !isReadback(o)).length;
       return need(n === 1, `the report arrived ${n} times`);
     },
   },
@@ -346,7 +442,7 @@ const JOURNEYS: Case[] = [
     check: (r) => {
       const all = texts(r.events);
       return [
-        ...need(all.some((t) => t.includes("offered to book")), "the offer wasn't brought back"),
+        ...need(settledFacts(r.events)[0]?.next_step === "pick_an_option", "the offer wasn't brought back"),
         ...need(all.some((t) => t.includes("no refunds")), "its conditions were lost"),
         ...need(consents(r.events) === 2, `${consents(r.events)} consents; the pick needs its own`),
       ];

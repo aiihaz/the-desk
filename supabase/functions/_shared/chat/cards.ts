@@ -1,9 +1,9 @@
 // The cards Luna sees on each turn (E4 design 1.1): profile, task, recent requests.
 // Built by code from rows, never written by a model. Plain lines, well under 3k tokens.
-import { fmtWhen, maskPhone, type Place, placeName } from "./readback.ts";
+import { fmtFull, fmtWhen, maskPhone, type Place, placeName } from "./readback.ts";
 import { currentQuestions, type Fields, type Has, missing } from "./slots.ts";
-import { type State, type Task, toolsFor } from "./states.ts";
-import type { Memory } from "./store.ts";
+import { type Open, type State, type Task, toolsFor } from "./states.ts";
+import type { HeldBooking, Memory, OpenDecision } from "./store.ts";
 
 export type Profile = {
   name: string | null;
@@ -87,13 +87,46 @@ export function memoryCard(ms: Memory[]): string {
   ].join("\n");
 }
 
-export function taskCard(t: TaskView | null, now: Date, waiting: TaskView[] = []): string {
+// What's waiting on the user outside the current errand, with everything the business said,
+// so nothing has to be asked twice.
+export function openCard(advances: HeldBooking[], decisions: OpenDecision[]): string {
+  if (!advances.length && !decisions.length) return "OPEN\nnothing";
+  return [
+    "OPEN",
+    ...advances.map((a) => {
+      const t = (a.terms ?? {}) as Record<string, string | number | null>;
+      return [
+        `advance ${errandRef(a.requestId)} at ${a.place ?? "the business"}: ${
+          a.paid
+            ? "their screenshot passed; the business hasn't confirmed it yet"
+            : "not paid, nothing agreed"
+        }`,
+        a.amountRs !== null ? `Rs ${a.amountRs}` : null,
+        a.time ? `slot ${fmtFull(a.time)}` : null,
+        t.address ? `pay to ${t.address}` : null,
+        a.payeeName ? `payee ${a.payeeName}` : null,
+        t.mode ? `by ${t.mode}` : null,
+        a.deadline ? `by ${fmtFull(a.deadline)}` : "no deadline given",
+        t.redeemable ? `adjusted against the bill: "${t.redeemable}"` : null,
+        t.refund ? `refund: "${t.refund}"` : null,
+        `keeping the slot: ${t.holding ?? "they didn't say"}`,
+      ].filter(Boolean).join("; ");
+    }),
+    ...decisions.map((d) =>
+      `decision ${d.bookingId.slice(0, 8)} at ${d.place}${
+        d.time ? `, ${fmtFull(d.time)}` : ""
+      }: they require ${d.conditions.map((c) => `"${c.words}"`).join(", ")}, not yet accepted`
+    ),
+  ].join("\n");
+}
+
+export function taskCard(t: TaskView | null, now: Date, waiting: TaskView[] = [], open: Open = {}): string {
   if (!t) {
     return [
       "TASK",
       "none active",
       ...waiting.map((w) => `waiting: ${errandLine(w, now)}`),
-      `tools: ${toolsFor(null).join(", ")}`,
+      `tools: ${toolsFor(null, false, open).join(", ")}`,
     ].join("\n");
   }
   const need = missing(t.task, t.fields, { business: !!t.place, booking: t.hasBooking, ...t.has });
@@ -119,7 +152,7 @@ export function taskCard(t: TaskView | null, now: Date, waiting: TaskView[] = []
     );
   }
   for (const w of waiting) lines.push(`waiting behind it: ${errandLine(w, now)}`);
-  lines.push(`tools: ${toolsFor(t.state, t.paused).join(", ")}`);
+  lines.push(`tools: ${toolsFor(t.state, t.paused, open).join(", ")}`);
   return lines.join("\n");
 }
 

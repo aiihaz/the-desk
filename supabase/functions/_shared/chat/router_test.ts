@@ -1,6 +1,6 @@
 import { assertEquals } from "jsr:@std/assert@1.0.8";
 import type { AskJev, ChoiceAnswer } from "../jev.ts";
-import { checkOutput, decide, route } from "./router.ts";
+import { checkOutput, decide, mayClaim, route } from "./router.ts";
 
 const th = { offscope: 0.85, injection: 0.8 };
 const intent = (choice: string, p: number): ChoiceAnswer => ({
@@ -33,19 +33,37 @@ Deno.test("a router timeout or error means task mode", async () => {
 });
 
 Deno.test("claims are allowed only while a call is under way or done", async () => {
-  const ask: AskJev = async () => ({ claims_action: noul(0.9), off_task_content: noul(0.05) });
-  const o = { claims: 0.5, offtask: 0.3 };
-  const before = await checkOutput(ask, "jev-1", state, "awaiting_yes", "Booked!", o, 1500);
-  const during = await checkOutput(ask, "jev-1", state, "calling_1", "Calling them now.", o, 1500);
+  const ask: AskJev = async () => ({
+    claims_action: noul(0.9),
+    off_task_content: noul(0.05),
+    promises_follow_up: noul(0),
+  });
+  const o = { claims: 0.5, offtask: 0.3, promise: 0.6 };
+  const before = await checkOutput(ask, "jev-1", state, mayClaim("awaiting_yes", false), "Booked!", o, 1500);
+  const during = await checkOutput(ask, "jev-1", state, mayClaim("calling_1", false), "Calling.", o, 1500);
+  const report = await checkOutput(ask, "jev-1", state, mayClaim(null, true), "It's booked.", o, 1500);
+  assertEquals(report.ran && report.failed, []);
   assertEquals(before.ran && before.failed, ["claims_action"]);
   assertEquals(during.ran && during.failed, []);
 });
 
 Deno.test("off-task content fails in any state; a Jev error is reported, not thrown", async () => {
-  const ask: AskJev = async () => ({ claims_action: noul(0), off_task_content: noul(0.4) });
-  const o = { claims: 0.5, offtask: 0.3 };
-  const r = await checkOutput(ask, "jev-1", state, null, "Paris. Want a table?", o, 1500);
+  const ask: AskJev = async () => ({
+    claims_action: noul(0),
+    off_task_content: noul(0.4),
+    promises_follow_up: noul(0),
+  });
+  const o = { claims: 0.5, offtask: 0.3, promise: 0.6 };
+  const r = await checkOutput(ask, "jev-1", state, false, "Paris. Want a table?", o, 1500);
   assertEquals(r.ran && r.failed, ["off_task_content"]);
-  const down = await checkOutput(() => Promise.reject(new Error("503")), "jev-1", state, null, "Hi", o, 1500);
+  const down = await checkOutput(
+    () => Promise.reject(new Error("503")),
+    "jev-1",
+    state,
+    false,
+    "Hi",
+    o,
+    1500,
+  );
   assertEquals(down, { ran: false, error: "503" });
 });

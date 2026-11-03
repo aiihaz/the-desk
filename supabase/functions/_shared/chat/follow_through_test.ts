@@ -6,14 +6,23 @@ import type { CallResult } from "../sarvam.ts";
 import type { User } from "../store.ts";
 import type { Item, ResponseOut } from "../openai.ts";
 import type { Outbound } from "../whatsapp.ts";
-import { checkApproval } from "./approval.ts";
-import { type DueFollowUp, followUpText, runFollowThrough } from "./followup.ts";
+import { CHECK } from "./approval.ts";
+import { type DueFollowUp, followUpFacts, runFollowThrough } from "./followup.ts";
 import { inbound } from "./gate_test.ts";
 import { type LunaDeps, runLuna } from "./luna.ts";
 import { reportCall, type ReportDeps } from "./report.ts";
 import type { ActiveRequest } from "./store.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
-import { forget, remember, type RememberArgs, setFollowUp, setSlots } from "./tools.ts";
+import { fakeWriter, say } from "./test_writer.ts";
+import {
+  acceptCondition,
+  findBooking,
+  forget,
+  remember,
+  type RememberArgs,
+  setFollowUp,
+  setSlots,
+} from "./tools.ts";
 import { handleTurn, type TurnDeps } from "./turn.ts";
 
 const user: User = { id: "u1", waId: "919812345678", blocked: false };
@@ -53,6 +62,7 @@ function report(kind: "first" | "question" = "first") {
   let failing = 0;
   const deps: ReportDeps = {
     store,
+    create: fakeWriter,
     send: async (_u, m) => {
       if (failing-- > 0) throw new Error("whatsapp down");
       sent.push(m);
@@ -85,7 +95,7 @@ Deno.test("a failed send keeps the report: stored, retried, and sent once", asyn
   // The recovery pass.
   store.deliveries[0].attempts = 0;
   await runFollowThrough(deps);
-  assertEquals(sent.map(body), ['Paragon said: "Open till 9."']);
+  assertEquals(sent.map(body), ["question_answered."]);
   assertEquals(store.deliveries.map((d) => d.status), ["sent"]);
 
   await runFollowThrough(deps);
@@ -129,13 +139,13 @@ Deno.test("past the 24-hour window with a template, the message goes as its para
     kind: "template",
     name: "desk_update",
     language: "en",
-    params: ['Paragon said: "Open till 9."'],
+    params: ["question_answered."],
   }]);
   assertEquals(store.deliveries[0].status, "sent");
 });
 
 Deno.test("an offer on a question call comes back as options with its conditions, accepted by no one", async () => {
-  const { store, sent, deps } = report("question");
+  const { store, deps } = report("question");
   store.settleResult = { ok: true, request_id: "r1", state: "done", option_ids: ["o1"] };
   await reportCall(
     deps,
@@ -153,65 +163,16 @@ Deno.test("an offer on a question call comes back as options with its conditions
   );
   assertEquals(store.settled[0].result, "options");
   const o = store.settled[0].options![0];
-  assertEquals(
-    o.label,
-    "tomorrow (Sat 24 Oct), 7:30 pm, garden table, they quoted Rs 1200, no refunds",
-  );
+  assertEquals(o.label, "tomorrow (Sat 24 Oct), 7:30 pm, Rs 1200, no refunds");
   assertEquals(o.value.conditions, "no refunds");
+  assertEquals(o.value.note, "garden table");
   assertEquals(store.settled[0].booking, undefined);
-  const text = body(sent[0]);
-  assertEquals(
-    text.startsWith('Paragon said: "Yes, we have tables Saturday."\n\nThey also offered to book:\n1. '),
-    true,
-  );
-  assertEquals(text.includes("Tell me which one and I'll call back to book it in your name (Ihaz)."), true);
+  assertEquals(store.reports[0].facts.happened.they_said, "Yes, we have tables Saturday.");
   assertEquals(store.prompt!.kind, "options");
 });
 
-Deno.test("first call: an option's conditions and price reach the user", async () => {
-  const { store, deps } = report();
-  store.settleResult = { ok: true, request_id: "r1", state: "done", option_ids: ["o1"] };
-  await reportCall(
-    deps,
-    "c1",
-    result({
-      booking_status: "not_booked",
-      options: [{ time: "2026-10-23T21:00:00+05:30", conditions: "minimum spend Rs 2000" }],
-    }),
-  );
-  assertEquals(store.settled[0].options![0].label.includes("minimum spend Rs 2000"), true);
-});
-
-Deno.test("cancel during the call, nothing booked: the errand ends and options aren't opened", async () => {
-  const { store, sent, deps } = report();
-  store.call!.cancelRequested = true;
-  store.settleResult = { ok: true, request_id: "r1", state: "done", option_ids: [] };
-  await reportCall(
-    deps,
-    "c1",
-    result({ booking_status: "not_booked", options: [{ time: "2026-10-23T21:00:00+05:30" }] }),
-  );
-  assertEquals(store.settled[0].result, "back");
-  assertEquals(store.reports[0].end, true);
-  assertEquals(store.reports[0].prompt, undefined);
-  assertEquals(body(sent[0]).startsWith("You asked me to cancel during the call"), true);
-});
-
-Deno.test("cancel during the call, booked: the booking stands and the user is told plainly", async () => {
-  const { store, sent, deps } = report();
-  store.call!.cancelRequested = true;
-  deps.verify = async () => ({ verified: true, problems: [], verdict: null });
-  await reportCall(
-    deps,
-    "c1",
-    result({ booking_status: "booked", booked_time: "2026-10-23T20:00:00+05:30" }),
-  );
-  assertEquals(store.reports[0].end, false);
-  assertEquals(body(sent[0]).includes("That went through before I could stop it."), true);
-});
-
 Deno.test("a date with no time stays a date: no fabricated midnight", async () => {
-  const { store, sent, deps } = report();
+  const { store, deps } = report();
   store.req = open({
     state: "calling_1",
     fields: { party_size: 4, exact_time: "2026-11-08T20:00:00+05:30" },
@@ -221,50 +182,10 @@ Deno.test("a date with no time stays a date: no fabricated midnight", async () =
     problems: [`date only: ${c.bookedDate}`],
     verdict: null,
   });
-  await reportCall(deps, "c1", result({ booking_status: "booked", booked_time: "November 8" }));
+  await reportCall(deps, "c1", result({ booking_status: "booked", booked_time: "2026-11-08" }));
   const b = store.settled[0].booking!;
-  assertEquals([b.time, b.date, b.captured], [null, "2026-11-08", "November 8"]);
-  assertEquals(body(sent[0]).includes("for Sun 8 Nov, no time confirmed"), true);
-  assertEquals(body(sent[0]).includes("12:00 am"), false);
-});
-
-Deno.test("a wrong year the call didn't settle is neither stored nor shown", async () => {
-  const { store, sent, deps } = report();
-  store.req = open({
-    state: "calling_1",
-    fields: { party_size: 4, exact_time: "2026-11-08T20:00:00+05:30" },
-  });
-  deps.verify = async () => ({ verified: false, problems: ["time"], verdict: null, badYear: true });
-  await reportCall(
-    deps,
-    "c1",
-    result({ booking_status: "booked", booked_time: "2025-11-08T20:00:00+05:30" }),
-  );
-  const b = store.settled[0].booking!;
-  assertEquals([b.time, b.captured], [null, "2025-11-08T20:00:00+05:30"]);
-  assertEquals(body(sent[0]).includes("2025"), false);
-});
-
-Deno.test("a corrected year: the approved date is stored, with both values and why", async () => {
-  const { store, sent, deps } = report();
-  store.req = open({
-    state: "calling_1",
-    fields: { party_size: 4, exact_time: "2026-11-08T20:00:00+05:30" },
-  });
-  const correction = {
-    from: "2025-11-08T20:00:00+05:30",
-    to: "2026-11-08T20:00:00+05:30",
-    why: "wrong year",
-  };
-  deps.verify = async () => ({ verified: true, problems: [], verdict: null, correction });
-  await reportCall(
-    deps,
-    "c1",
-    result({ booking_status: "booked", booked_time: "2025-11-08T20:00:00+05:30" }),
-  );
-  const b = store.settled[0].booking!;
-  assertEquals([b.time, b.correction, b.approved], [correction.to, correction, "2026-11-08T20:00:00+05:30"]);
-  assertEquals(body(sent[0]).includes("confirmed it on the call"), true);
+  assertEquals([b.time, b.date, b.captured], [null, "2026-11-08", "2026-11-08"]);
+  assertEquals(store.reports[0].facts.values.when, "Sun 8 Nov, no time confirmed");
 });
 
 const withAlso = (kind: "first" = "first") => {
@@ -278,8 +199,10 @@ const withAlso = (kind: "first" = "first") => {
   return t;
 };
 
+const also = (t: { store: FakeChatStore }) => t.store.reports[0].facts.happened.also_asked;
+
 Deno.test("the extra question's answer is in the report, whatever happened to the booking", async () => {
-  const line = 'You also asked: "whether they have parking". They said: "Yes, parking is available."';
+  const want = { question: "whether they have parking", their_answer: "Yes, parking is available." };
   const answer = { also_answer: "Yes, parking is available." };
   const booked = withAlso();
   await reportCall(
@@ -287,11 +210,11 @@ Deno.test("the extra question's answer is in the report, whatever happened to th
     "c1",
     result({ ...answer, booking_status: "booked", booked_time: "2026-10-24T11:00:00+05:30" }),
   );
-  assertEquals(body(booked.sent[0]).endsWith(line), true);
+  assertEquals(also(booked), want);
 
   const none = withAlso();
   await reportCall(none.deps, "c1", result({ ...answer, booking_status: "not_booked" }));
-  assertEquals(body(none.sent[0]).endsWith(line), true);
+  assertEquals(also(none), want);
 
   const options = withAlso();
   await reportCall(
@@ -303,56 +226,31 @@ Deno.test("the extra question's answer is in the report, whatever happened to th
       options: [{ time: "2026-10-24T13:00:00+05:30" }],
     }),
   );
-  assertEquals(body(options.sent[0]).startsWith(line), true);
-  assertEquals(body(options.sent[0]).includes("They offered:\n1. "), true);
+  assertEquals(also(options), want);
 });
 
 Deno.test("an answer in the older answer field counts, and a missing one is said", async () => {
   const old = withAlso();
   await reportCall(old.deps, "c1", result({ booking_status: "not_booked", answer: "Yes." }));
-  assertEquals(body(old.sent[0]).endsWith('They said: "Yes."'), true);
+  assertEquals((also(old) as { their_answer: string }).their_answer, "Yes.");
 
   const none = withAlso();
   await reportCall(none.deps, "c1", result({ booking_status: "not_booked" }));
-  assertEquals(body(none.sent[0]).endsWith("I didn't get a clear answer to that."), true);
+  assertEquals((also(none) as { their_answer: string }).their_answer, "no clear answer");
 });
 
 Deno.test("no connection, no claim about the extra question", async () => {
   const t = withAlso();
   await reportCall(t.deps, "c1", { ...result({}), status: "no_answer" });
-  assertEquals(body(t.sent[0]).includes("You also asked"), false);
-});
-
-Deno.test("cancel during a question call that was answered: the answer arrives, the errand closes cancelled", async () => {
-  const { store, sent, deps } = report("question");
-  store.call!.cancelRequested = true;
-  await reportCall(deps, "c1", result({ answer: "Open till 9." }));
-  assertEquals(store.reports[0].end, true);
-  assertEquals(body(sent[0]).startsWith('Paragon said: "Open till 9."'), true);
-  assertEquals(body(sent[0]).includes("You asked me to cancel during the call."), true);
-});
-
-Deno.test("cancel during a question call with an offer: the answer still arrives", async () => {
-  const { store, sent, deps } = report("question");
-  store.call!.cancelRequested = true;
-  store.settleResult = { ok: true, request_id: "r1", state: "done", option_ids: [] };
-  await reportCall(
-    deps,
-    "c1",
-    result({ answer: "Open till 9.", options: [{ time: "2026-10-24T13:00:00+05:30" }] }),
-  );
-  assertEquals(store.reports[0].end, true);
-  assertEquals(store.reports[0].prompt, undefined);
-  assertEquals(body(sent[0]).includes('Paragon said: "Open till 9."'), true);
-  assertEquals(body(sent[0]).includes("dropped them too"), true);
+  assertEquals(also(t), undefined);
 });
 
 Deno.test("cancel during a call nobody answered: no offer to try again on a closed errand", async () => {
-  const { store, sent, deps } = report();
+  const { store, deps } = report();
   store.call!.cancelRequested = true;
   await reportCall(deps, "c1", { ...result({}), status: "no_answer" });
   assertEquals(store.reports[0].end, true);
-  assertEquals(body(sent[0]).includes("?"), false);
+  assertEquals(store.reports[0].facts.next_step, null);
 });
 
 const due = (over: Partial<DueFollowUp>): DueFollowUp => ({
@@ -371,28 +269,42 @@ const due = (over: Partial<DueFollowUp>): DueFollowUp => ({
   ...over,
 });
 
-Deno.test("follow-ups say what's waiting and the next step, and never claim more", () => {
+Deno.test("follow-ups carry what's waiting and the next step, and claim nothing more", () => {
+  const reminder = followUpFacts(due({ waitingFor: "Asha to confirm the time" }));
+  assertEquals(reminder.happened, {
+    status: "reminder_they_asked_for",
+    waiting_for: "Asha to confirm the time",
+  });
+  assertEquals(reminder.next_step, null);
   assertEquals(
-    followUpText(due({ waitingFor: "Asha to confirm the time" })),
-    "Reminder about your table for 4 at Paragon: Asha to confirm the time. Shall I carry on with it?",
+    followUpFacts(due({ reason: "nudge", state: "awaiting_yes" })).next_step,
+    "answer_the_open_plan",
   );
   assertEquals(
-    followUpText(due({ reason: "nudge", state: "awaiting_yes" })),
-    "Your table for 4 at Paragon is still waiting on you. Shall I go ahead?",
+    followUpFacts(due({ reason: "expired", endReason: "window_passed" })).happened.status,
+    "closed_because_the_time_passed",
   );
-  assertEquals(
-    followUpText(due({ reason: "expired", endReason: "window_passed" })),
-    "The time for your table for 4 at Paragon has passed, so I've closed it. Nothing was booked.",
-  );
-  assertEquals(
-    followUpText(due({
-      reason: "payment",
-      state: "awaiting_payment",
-      amountRs: 300,
-      deadline: new Date("2026-10-23T18:00:00+05:30"),
-    })),
-    "Your hold at Paragon needs the Rs 300 advance by 6:00 pm. Send me the payment screenshot once you've paid.",
-  );
+  const pay = followUpFacts(due({
+    reason: "payment",
+    state: "awaiting_payment",
+    amountRs: 300,
+    deadline: new Date("2026-10-23T18:00:00+05:30"),
+    terms: { refund: "no refunds" },
+  }));
+  assertEquals(pay.values, { advance: "Rs 300", deadline: "Fri 23 Oct 2026, 6:00 pm" });
+  assertEquals(pay.next_step, "send_payment_screenshot");
+});
+
+Deno.test("a passed deadline is the user's to decide, and never says the business dropped it", () => {
+  const f = followUpFacts(due({
+    reason: "deadline",
+    state: "awaiting_payment",
+    amountRs: 300,
+    deadline: new Date("2026-10-23T18:00:00+05:30"),
+  }));
+  assertEquals(f.happened.status, "payment_deadline_passed_nothing_paid");
+  assertEquals(f.happened.note, "the errand stays open; nothing says the business has dropped it");
+  assertEquals(f.next_step, "check_with_business_or_drop");
 });
 
 Deno.test("due follow-ups are queued, then go out through the same tracked path", async () => {
@@ -423,15 +335,28 @@ Deno.test("set_follow_up: stored on the errand; a past time is refused", async (
 
 const NARROW = { window_start: "2026-10-24T20:00:00+05:30", window_end: "2026-10-24T20:05:00+05:30" };
 
-Deno.test("a narrow window needs a range in their own words", async () => {
+Deno.test("a narrow window stands only if a second reading finds they asked for that range", async () => {
+  for (const [verdict, ok] of [["yes", true], ["no", false], ["unclear", false]] as const) {
+    const { store, deps } = report();
+    store.req = open();
+    store.lines = [{ from: "user", text: "kal aath se sawa aath ke beech", at: now }];
+    const seen: string[] = [];
+    deps.create = async (req) => {
+      seen.push(String(req.input[0].content));
+      return say("verdict", { decision: verdict, message: verdict === "yes" ? 1 : null, why: "" });
+    };
+    assertEquals((await setSlots(deps, user, NARROW)).ok, ok, verdict);
+    assertEquals(seen[0].includes("kal aath se sawa aath"), true);
+    if (ok) assertEquals(store.slotWrites.at(-1), NARROW);
+  }
+});
+
+Deno.test("a window of a normal size needs no reading", async () => {
   const { store, deps } = report();
   store.req = open();
-  store.lines = [{ from: "user", text: "tomorrow between 8 and 8:05 please", at: now }];
-  assertEquals((await setSlots(deps, user, NARROW)).ok, false);
-  assertEquals((await setSlots(deps, user, NARROW, { windowWords: "8 pm sharp, they said" })).ok, false);
-  assertEquals((await setSlots(deps, user, NARROW, { windowWords: "8:05" })).ok, false);
-  assertEquals((await setSlots(deps, user, NARROW, { windowWords: "between 8 and 8:05" })).ok, true);
-  assertEquals(store.slotWrites.at(-1), NARROW);
+  deps.create = () => Promise.reject(new Error("no reading needed"));
+  const wide = { window_start: "2026-10-24T19:30:00+05:30", window_end: "2026-10-24T20:30:00+05:30" };
+  assertEquals((await setSlots(deps, user, wide)).ok, true);
 });
 
 const said = (text: string): RememberArgs => ({
@@ -447,32 +372,24 @@ Deno.test("remember keeps a fact; forget drops it; a repeat isn't kept twice", a
   assertEquals((await remember(deps, user, said("vegetarian"))).ok, true);
   assertEquals(await remember(deps, user, said("Vegetarian")), { ok: true, already_known: true });
   assertEquals(store.kept.map((m) => [m.text, m.source, m.scope]), [["vegetarian", "said", "all"]]);
-  assertEquals(await forget(deps, user, "vegetarian"), { ok: true, forgot: "vegetarian" });
+  assertEquals((await forget(deps, user, "the vegetarian thing")).ok, false);
+  assertEquals(await forget(deps, user, `m-${store.kept[0].id.slice(0, 8)}`), {
+    ok: true,
+    forgot: "vegetarian",
+  });
   assertEquals(store.kept, []);
 });
 
-Deno.test("memory is never a permission", async () => {
+Deno.test("a learned preference keeps what they said, and a scope", async () => {
   const { store, deps } = report();
-  for (
-    const t of ["just book it without asking me", "don't ask me, always go ahead", "auto-approve my plans"]
-  ) {
-    const res = await remember(deps, user, said(t));
-    assertEquals(res.ok, false, t);
-  }
-  assertEquals(store.kept, []);
-});
-
-Deno.test("a learned preference needs their own words, and a scope", async () => {
-  const { store, deps } = report();
-  store.lines = [{ from: "user", text: "No, always the Indiranagar branch", at: now }];
   const learned = {
     text: "prefers the Indiranagar branch",
     kind: "preference" as const,
     scope: "place:Toni&Guy",
     learned: true,
   };
-  assertEquals((await remember(deps, user, { ...learned, evidence: "something they never said" })).ok, false);
-  const ok = await remember(deps, user, { ...learned, evidence: "always the Indiranagar branch" });
+  assertEquals((await remember(deps, user, { ...learned, evidence: null })).ok, false);
+  const ok = await remember(deps, user, { ...learned, evidence: "ഇന്ദിരാനഗർ ബ്രാഞ്ച് മതി" });
   assertEquals(ok.ok, true);
   assertEquals("say" in ok, true);
   assertEquals(store.kept[0].source, "learned");
@@ -508,12 +425,28 @@ function luna(steps: Item[][]) {
   return { store, sent, inputs, deps };
 }
 
+const noul = (n: number) => ({ type: "noul" as const, noul: n });
+
+// The router reads their message as this; the output check scores a reply with promise.
+function jevReads(t: { store: FakeChatStore; deps: LunaDeps }, intent: string, promise = () => 0) {
+  t.store.texts.jev_model = "jev-test";
+  t.store.texts.jev_mode = "shadow";
+  t.deps.jev = async (q) =>
+    (q.questions.intent
+      ? {
+        intent: { type: "choice", choice: intent, confidence: 0.9, probabilities: { [intent]: 0.9 } },
+        injection: noul(0),
+      }
+      : { claims_action: noul(0), off_task_content: noul(0), promises_follow_up: noul(promise()) }) as never;
+}
+
 Deno.test("nothing needs saying: stay_quiet sends nothing and no fallback", async () => {
-  const { store, sent, deps } = luna([[call("stay_quiet", { why: "just thanks" })]]);
-  store.lines = [{ from: "desk", text: "All done.", at: now }, { from: "user", text: "thanks", at: now }];
-  await runLuna(deps, user, now);
-  assertEquals(sent, []);
-  assertEquals(store.routes[0].l3Result, "pass");
+  const t = luna([[call("stay_quiet", { why: "just thanks" })]]);
+  jevReads(t, "greeting");
+  t.store.lines = [{ from: "desk", text: "All done.", at: now }, { from: "user", text: "shukriya", at: now }];
+  await runLuna(t.deps, user, now);
+  assertEquals(t.sent, []);
+  assertEquals(t.store.routes[0].l3Result, "pass");
 });
 
 const refused = async (setupFn: (s: FakeChatStore) => void) => {
@@ -523,23 +456,14 @@ const refused = async (setupFn: (s: FakeChatStore) => void) => {
   return t;
 };
 
-Deno.test("stay_quiet is refused when they asked something", async () => {
-  const { sent, inputs } = await refused((s) => {
-    s.lines = [{ from: "user", text: "are you there?", at: now }];
-  });
-  assertEquals(sent.length, 1);
-  assertEquals(JSON.parse(inputs[1].at(-1)!.output).reason, "they asked something; answer it");
-});
-
-Deno.test("stay_quiet is refused when the Desk's question is waiting", async () => {
-  const { sent } = await refused((s) => {
-    s.lines = [{ from: "desk", text: "Want me to try again?", at: now }, {
-      from: "user",
-      text: "ok thanks",
-      at: now,
-    }];
-  });
-  assertEquals(sent.length, 1);
+Deno.test("stay_quiet is refused when the router reads anything but small talk, in any language", async () => {
+  const t = luna([[call("stay_quiet", {})], [call("reply", { text: "Yes, I'm here." })]]);
+  jevReads(t, "status");
+  // No question mark, and not English: the reading doesn't depend on either.
+  t.store.lines = [{ from: "user", text: "നിങ്ങൾ അവിടെ ഉണ്ടോ", at: now }];
+  await runLuna(t.deps, user, now);
+  assertEquals(t.sent.length, 1);
+  assertEquals(JSON.parse(t.inputs[1].at(-1)!.output).reason, "their message needs an answer");
 });
 
 Deno.test("stay_quiet is refused while a plan is open", async () => {
@@ -577,18 +501,115 @@ Deno.test("a long useful reply is not rejected for its length", async () => {
   assertEquals(sent, [{ kind: "text", body: text }]);
 });
 
-Deno.test("a promised reminder has to exist", async () => {
-  const { sent, inputs, deps, store } = luna([
-    [call("reply", { text: "Sure, I'll remind you tomorrow." }, "a")],
+Deno.test("a promised reminder has to exist, however it's worded", async () => {
+  const t = luna([
+    [call("reply", { text: "Theek hai, kal yaad dila dungi." }, "a")],
     [
       call("set_follow_up", { waiting_for: "their call", remind_at: "2026-10-24T10:00:00+05:30" }),
-      call("reply", { text: "I'll remind you tomorrow at 10." }, "b"),
+      call("reply", { text: "Kal 10 baje yaad dila dungi." }, "b"),
     ],
   ]);
-  store.req = open();
-  await runLuna(deps, user, now);
-  assertEquals(JSON.parse(inputs[1].at(-1)!.output).reason.startsWith("you promised a reminder"), true);
-  assertEquals(sent, [{ kind: "text", body: "I'll remind you tomorrow at 10." }]);
+  jevReads(t, "later", () => 0.9);
+  t.store.req = open();
+  await runLuna(t.deps, user, now);
+  assertEquals(JSON.parse(t.inputs[1].at(-1)!.output).reason.startsWith("you promised a reminder"), true);
+  assertEquals(t.sent, [{ kind: "text", body: "Kal 10 baje yaad dila dungi." }]);
+});
+
+Deno.test("one message is one errand of a kind, unless they asked for two", async () => {
+  const t = luna([
+    [
+      call("start_new_request", { task: "booking" }, "a"),
+      call("start_new_request", { task: "booking", mode: "after" }, "b"),
+    ],
+    [call("reply", { text: "Which place?" })],
+  ]);
+  const started: string[] = [];
+  const start = ((_u: string, task: string) => {
+    started.push(task);
+    return Promise.resolve({
+      ok: true,
+      request_id: "r1000000-0000",
+      state: "collecting",
+      replaced_request_id: null,
+    });
+  }) as never;
+  t.store.startRequest = start;
+  await runLuna(t.deps, user, now);
+  assertEquals(started, ["booking"]);
+  assertEquals(t.store.queuedTasks, []);
+
+  const two = luna([
+    [
+      call("start_new_request", { task: "booking" }, "a"),
+      call("start_new_request", { task: "booking", mode: "after", separate: true }, "b"),
+    ],
+    [call("reply", { text: "Which places?" })],
+  ]);
+  two.store.startRequest = start;
+  await runLuna(two.deps, user, now);
+  assertEquals(two.store.queuedTasks, ["booking"]);
+});
+
+const upcoming = (over: Record<string, unknown>) => ({
+  id: "aaaaaaaa-0000",
+  status: "booked",
+  time: new Date("2026-10-24T20:00:00+05:30"),
+  place: "Paragon",
+  what: "table for 4",
+  reference: null,
+  ...over,
+});
+
+Deno.test("find_booking shows every booking with what's known, each kept together, and binds by ref", async () => {
+  const { store, deps } = report();
+  store.req = open({ task: "reschedule" });
+  store.bookings = [
+    upcoming({}),
+    upcoming({ id: "bbbbbbbb-0000", status: "probably_booked", time: new Date("2026-10-25T20:00:00+05:30") }),
+    upcoming({ id: "cccccccc-0000", status: "advance_due" }),
+  ];
+  const r = await findBooking(deps, user, null) as unknown as { bookings: Record<string, string>[] };
+  assertEquals(r.bookings.map((b) => [b.ref, b.when, b.known]), [
+    ["aaaaaaaa", "Sat 24 Oct 2026, 8:00 pm", "booked"],
+    ["bbbbbbbb", "Sun 25 Oct 2026, 8:00 pm", "not confirmed by the business"],
+    ["cccccccc", "Sat 24 Oct 2026, 8:00 pm", "advance not paid; nothing agreed"],
+  ]);
+  assertEquals(store.bookingSet, []);
+  assertEquals((await findBooking(deps, user, "bbbbbbbb")).ok, true);
+  assertEquals(store.bookingSet, ["bbbbbbbb-0000"]);
+  assertEquals((await findBooking(deps, user, "nope")).ok, false);
+});
+
+Deno.test("one booking binds at once; no words are matched to get there", async () => {
+  const { store, deps } = report();
+  store.req = open({ task: "cancel" });
+  store.bookings = [upcoming({})];
+  assertEquals((await findBooking(deps, user, null)).ok, true);
+  assertEquals(store.bookingSet, ["aaaaaaaa-0000"]);
+});
+
+const decision = {
+  bookingId: "dddddddd-0000",
+  place: "Paragon",
+  time: null,
+  conditions: [{ words: "Rs 500 cover per head", what: "cover charge" }],
+};
+
+Deno.test("accepting a condition needs a second reading, and keeps their message", async () => {
+  const { store, deps } = report();
+  store.decisions = [decision];
+  store.lines = [{ from: "user", text: "ok fine, theek hai", at: now }];
+  deps.create = async () => say("verdict", { decision: "yes", message: 1, why: "accepted" });
+  assertEquals((await acceptCondition(deps, user, "dddddddd")).ok, true);
+  assertEquals(store.accepted[0].bookingId, "dddddddd-0000");
+  assertEquals(store.accepted[0].basis.evidence, "ok fine, theek hai");
+
+  const no = report();
+  no.store.decisions = [decision];
+  no.deps.create = async () => say("verdict", { decision: "no", message: null, why: "still deciding" });
+  assertEquals((await acceptCondition(no.deps, user, "dddddddd")).ok, false);
+  assertEquals(no.store.accepted, []);
 });
 
 Deno.test("cancel during a live call: told how it ends, the flag is set", async () => {
@@ -647,18 +668,7 @@ Deno.test("with no plan open, a casual 👍 triggers nothing", async () => {
   assertEquals(seen, []);
 });
 
-Deno.test("the approval check is told a plain 'ok thanks' and a 👍 on the plan count", async () => {
-  let instructions = "";
-  await checkApproval(
-    async (req) => {
-      instructions = req.instructions;
-      return { output: [], usage: { input_tokens: 0, output_tokens: 0 } };
-    },
-    "m",
-    "low",
-    { text: "Plan", choice: null },
-    [{ from: "user", text: "ok thanks", at: now }],
-  );
-  assertEquals(instructions.includes('"ok thanks"'), true);
-  assertEquals(instructions.includes("[reacted 👍]"), true);
+Deno.test("the approval check is told a plain 'ok thanks' and a 👍 on the plan count", () => {
+  assertEquals(CHECK.includes('"ok thanks"'), true);
+  assertEquals(CHECK.includes("[reacted 👍]"), true);
 });

@@ -37,7 +37,7 @@ begin
   insert into t values (n, rid);
 end $$;
 
-select is((select count(*)::int from caller_contract), 22, 'the contract is seeded');
+select is((select count(*)::int from caller_contract), 26, 'the contract is seeded');
 
 select pg_temp.approved('real', 'b0000000-0000-0000-0000-000000000001');
 select is((check_dial(pg_temp.id('real'), 'first', p_now => pg_temp.at('12:03')) ->> 'reason'), 'caller_contract_mismatch',

@@ -25,7 +25,7 @@ function setup(hits: PlaceHit[] = fixture) {
   return { store, queries, deps };
 }
 
-type Match = { name: string; area: string | null; city: string | null; has_every_word_typed?: boolean };
+type Match = { name: string; area: string | null; city: string | null };
 const matches = (r: { ok: boolean; [k: string]: unknown }) => (r.matches ?? []) as Match[];
 
 Deno.test("results are facts, not a script: callable places with name, area and city", async () => {
@@ -33,11 +33,11 @@ Deno.test("results are facts, not a script: callable places with name, area and 
   const r = await findBusiness(deps, user, { query: "navu", area: null, city: "Bengaluru", byKind: false });
   assertEquals(queries, ["navu, Bengaluru"]);
   // No phone and permanently closed are dropped: they can't be called. Google's guess
-  // (Toit) stays, flagged, for Luna to weigh against what the user meant.
-  assertEquals(matches(r).map((m) => [m.name, m.area, m.has_every_word_typed]), [
-    ["Navu Bar & Kitchen", "Ashok Nagar", true],
-    ["Navu", "Indiranagar", true],
-    ["Toit Brewpub", null, false],
+  // (Toit) stays, for Luna to weigh against what the user meant.
+  assertEquals(matches(r).map((m) => [m.name, m.area]), [
+    ["Navu Bar & Kitchen", "Ashok Nagar"],
+    ["Navu", "Indiranagar"],
+    ["Toit Brewpub", null],
   ]);
   assertEquals(r.searched_in, "Bengaluru");
   assertEquals("next" in r, false);
@@ -80,7 +80,6 @@ Deno.test("search by kind: allowed by the limit, listed unranked; refused when i
   });
   assertEquals(queries, ["dentist, Koramangala, Bengaluru"]);
   assertEquals(r.by_kind, true);
-  assertEquals(matches(r).every((m) => !("has_every_word_typed" in m)), true);
   store.limits.place_search_by_kind = false;
   const off = await findBusiness(deps, user, { query: "dentist", area: null, city: null, byKind: true });
   assertEquals(off.ok, false);

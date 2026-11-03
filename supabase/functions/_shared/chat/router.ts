@@ -141,7 +141,13 @@ export async function route(
 export const OUTPUT_QUESTIONS: Record<string, Question> = {
   claims_action: {
     type: "noul",
-    instructions: "Does the reply say that a call, booking or payment has happened or is happening?",
+    instructions:
+      "Does the reply state, as a fact, that a call, booking or payment has already happened or is happening now? A question, an offer, or a plan to do it isn't that.",
+  },
+  promises_follow_up: {
+    type: "noul",
+    instructions:
+      "Does the reply promise that the assistant will come back to the user later, on its own: a reminder, a nudge, a follow-up? Saying it will report back after a call it's making now isn't that.",
   },
   off_task_content: {
     type: "noul",
@@ -162,34 +168,47 @@ const CLAIMS_ALLOWED: (State | null)[] = [
   "done",
 ];
 
-export type OutputThresholds = { claims: number; offtask: number };
+export type OutputThresholds = { claims: number; offtask: number; promise: number };
 
 export type OutputCheck =
-  | { ran: true; failed: string[]; problem: string | null; claims: number; offtask: number }
+  | {
+    ran: true;
+    failed: string[];
+    problem: string | null;
+    claims: number;
+    offtask: number;
+    // Promised a reminder. Luna's turn knows whether one exists, so it decides.
+    promised: boolean;
+  }
   | { ran: false; error: string };
+
+// Whether the reply may talk about a call or booking: this state, or something finished
+// or still open that it could be reporting on.
+export function mayClaim(state: State | null, somethingToReport: boolean): boolean {
+  return somethingToReport || CLAIMS_ALLOWED.includes(state);
+}
 
 export async function checkOutput(
   ask: AskJev,
   model: string,
   state: JevState,
-  requestState: State | null,
+  claimable: boolean,
   reply: string,
   th: OutputThresholds,
   timeoutMs: number,
 ): Promise<OutputCheck> {
-  let claims: number, offtask: number;
+  let claims: number, offtask: number, promise: number;
   try {
     const a = await ask({ model, state: { ...state, reply }, questions: OUTPUT_QUESTIONS, timeoutMs });
     claims = (a.claims_action as NoulAnswer).noul;
     offtask = (a.off_task_content as NoulAnswer).noul;
+    promise = (a.promises_follow_up as NoulAnswer).noul;
   } catch (e) {
     return { ran: false, error: String((e as Error)?.message ?? e) };
   }
   const failed: string[] = [];
   const problems: string[] = [];
-  // RECENT holds a finished errand: the reply may report on it.
-  const finished = /\n\S+ \d+ (done|cancelled)/.test(state.recent ?? "");
-  if (claims >= th.claims && !CLAIMS_ALLOWED.includes(requestState) && !finished) {
+  if (claims >= th.claims && !claimable) {
     failed.push("claims_action");
     problems.push("it says a call, booking or payment happened or is happening, and none has");
   }
@@ -197,5 +216,12 @@ export async function checkOutput(
     failed.push("off_task_content");
     problems.push("it helps with something other than calling a business; drop that part");
   }
-  return { ran: true, failed, problem: problems.length ? problems.join("; ") : null, claims, offtask };
+  return {
+    ran: true,
+    failed,
+    problem: problems.length ? problems.join("; ") : null,
+    claims,
+    offtask,
+    promised: promise >= th.promise,
+  };
 }

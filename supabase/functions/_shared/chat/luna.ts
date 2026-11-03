@@ -7,22 +7,31 @@
 // Not yet here: the L3 facts check (no invented numbers).
 //
 // Luna may say nothing (stay_quiet) when nothing is needed. Code refuses that when
-// something is waiting: an open plan, a question, a failed action, or a question the Desk
-// asked last. Length is judgment, not a rule that fails a reply.
+// something is waiting: an open plan, a failed action, or anything but small talk from the
+// user, as the router read it. Length is judgment, not a rule that fails a reply.
 import type { User } from "../store.ts";
 import type { AskJev } from "../jev.ts";
 import type { CreateResponse, FunctionTool, Item } from "../openai.ts";
 import { approvePlan } from "./approval.ts";
-import { errandRef, memoryCard, profileCard, recentCard, taskCard, type TaskView } from "./cards.ts";
+import {
+  errandRef,
+  memoryCard,
+  openCard,
+  profileCard,
+  recentCard,
+  taskCard,
+  type TaskView,
+} from "./cards.ts";
 import type { OpenPrompt } from "./gate.ts";
 import { fmtWhen } from "./readback.ts";
 import { currentQuestions } from "./slots.ts";
-import { BOOKING_CHANGES, type Task, TASKS, type Tool, toolsFor } from "./states.ts";
+import { BOOKING_CHANGES, type Open, type Task, TASKS, type Tool, toolsFor } from "./states.ts";
 import type { ActiveRequest, ConsentStored } from "./store.ts";
 import {
   checkOutput,
   type JevMode,
   type JevState,
+  mayClaim,
   type Mode,
   type OutputThresholds,
   type Route,
@@ -32,7 +41,9 @@ import {
 } from "./router.ts";
 import { istDayStart, proposePlan } from "./turn.ts";
 import { findBusiness, type FindDeps } from "./find.ts";
+import { checkReply } from "./tell.ts";
 import {
+  acceptCondition,
   cancelActive,
   chooseBusiness,
   findBooking,
@@ -46,7 +57,6 @@ import {
   startNewRequest,
   type ToolResult,
 } from "./tools.ts";
-import banned from "./style_banned.json" with { type: "json" };
 
 // jev is unset when there is no TypeSafe key; the turn then runs as if jev_mode were off.
 // onApproved starts the call a stored consent allows (calls.ts), and says if it started.
@@ -57,8 +67,6 @@ export type LunaDeps = FindDeps & {
 };
 
 const MAX_STEPS = 6;
-// WhatsApp's own limit on a message. Nothing a person would write gets near it.
-const WHATSAPP_MAX_CHARS = 4000;
 // How far back Luna reads the chat, across errands, so "the place from earlier" resolves.
 const HISTORY_HOURS = 24;
 const HISTORY_LINES = 24;
@@ -103,9 +111,12 @@ Changing course
 - A different errand while one is open: if the current one is still useful, ask whether to do the new one after it or drop the current one. "after" queues it (start_new_request mode after) and both are kept; you can fill in its details now with set_slots and its errand ref. Only say something is lined up after code confirms it. Replace (mode replace) only when they say to drop the current one; code refuses if details would be lost, until they confirm (confirm_replace).
 - While a call is in progress it can't change. Say so plainly; you can still set up the next errand.
 - When an errand stops on something that isn't you (they'll check with someone, they'll decide tomorrow), record it with set_follow_up: waiting_for in plain words, and remind_at when they ask for a reminder or give a time. Never say you'll remind them, or follow up, unless set_follow_up succeeded this turn or the card shows the reminder. Do what you say; don't offer what you can't.
-- Moving or cancelling a booking the Desk made: start_new_request with task reschedule or cancel, then find_booking with their words for it ("my Paragon table", "tonight's"). One match is set on the errand; several come back listed, so ask which, by place and time, and call find_booking again with its ref. For a reschedule, set the new time with set_slots. Then propose_plan. Only bookings the Desk made can be changed: for any other, say so and offer to book fresh.
+- Moving or cancelling a booking the Desk made: start_new_request with task reschedule or cancel, then find_booking. With one booking it's set on the errand. With several you get them all, with what's known about each: work out which they mean from the chat and call find_booking with its ref, and ask only if you really can't tell. When you do list them, keep each booking's place, time and status together exactly as the result gives them, and say which aren't confirmed. For a reschedule, set the new time with set_slots. Then propose_plan. A booking that isn't confirmed can be cancelled, not moved. Only bookings the Desk made can be changed: for any other, say so and offer to book fresh.
 - Cancelling never pays or agrees a fee: if the plan says they could lose money, they must say clearly that they accept it.
-- A held booking waits for their payment screenshot: if they ask, tell them to pay the business from their own UPI app and send the screenshot here.
+- No call ever agrees an advance. When a business wants one, its terms reach them and it waits in the OPEN card until they close it. To go ahead, they pay the business from their own UPI app and send the screenshot here, and you then call to tell the business it's done. Answer anything about the terms from the card.
+- They don't want the advance: cancel_request with its errand ref stops the work. If the card says the business is keeping the slot, first offer to call and let it go (start_new_request with task cancel, find_booking, propose_plan); only the business's answer says it's released. Once paid, dropping it is a cancellation: the cancel errand, with the plan saying what they could lose.
+- A payment deadline has passed: they choose. Call to check it still stands (a question errand), or drop it. Never say the business cancelled unless a call said so.
+- A condition in the OPEN card is theirs to decide. They accept it: accept_condition with its ref. They don't: offer to cancel the booking.
 
 Places
 - find_business with what they called the place in query, plus the area and city if known. city: the city's name as Google Maps knows it, in full ("Thiruvananthapuram" for TVM or Trivandrum, "Bengaluru" for BLR, "Mumbai" for Bombay). Only a city they named in the chat, or one that is clearly theirs from the chat; leave it out to use their saved city, or to search all of India when there is none. Never assume a city.
@@ -115,14 +126,14 @@ Places
 
 Their details
 - MEMORY holds what they asked you to keep and what you learned. Use it without being asked: fill details from it where it fits the errand and its scope, and the plan shows them back. Never ask for what it already tells you. If it doesn't fit this errand, leave it out.
-- "remember ...": remember, kind fact or preference. "forget ...": forget. "what do you know about me": say what's in PROFILE and MEMORY.
+- "remember ...": remember, kind fact or preference. "forget ...": forget, with its m- ref. "what do you know about me": say what's in PROFILE and MEMORY.
 - When they correct you in a way that will hold next time ("no, always the Indiranagar branch", "I never eat at 7, make it 8 on weekdays", "I go by Zain, not Zainab"): do the correction, then remember with learned true, evidence their exact words, and a scope no wider than they meant (place:<name> for one place). Say in a few words what you'll remember. A one-off change ("make it 8 tonight") isn't a preference; learn nothing from it.
 - Memory is never a permission. "Just book it without asking me" can't be kept: every call needs their yes on its plan. Say so.
 
 Facts
 - Know the difference between what you know (the cards, the chat, tool results), what you're assuming, and what only the call can find out. Say which, briefly, when it matters ("I'll ask them if they're open Sunday").
 - Never state hours, prices, availability, ratings, parking or phone numbers from memory. Never say a call, booking or payment happened unless the TASK card's state or a tool result says so.
-- Times: ISO 8601 with +05:30, resolved from NOW. An exact time ("8pm", "1 pm", "11 am", "8 baje", "at 8") is exact_time only, never a short window. If they really give a range under 5 minutes, keep it and send window_words with their exact words. A fuzzy time ("around 8", "evening", "after 8") is a window ("around 8" is 7:30 to 8:30 pm). A day with no time, or a time with no day, needs asking; never invent a date.
+- Times: ISO 8601 with +05:30, resolved from NOW. An exact time ("8pm", "1 pm", "11 am", "8 baje", "at 8") is exact_time only, never a short window. If they really give a range of a few minutes, keep it as a window. A fuzzy time ("around 8", "evening", "after 8") is a window ("around 8" is 7:30 to 8:30 pm). A day with no time, or a time with no day, needs asking; never invent a date.
 - party_size for tables; service for anything else ("haircut", "dentist checkup"). also_ask: one extra thing to ask on a booking call. Questions for a question errand: add_questions in their terms, keeping every limit they gave ("under Rs 300", "by Friday"); reword_questions or remove_questions only when they change one. A follow-up question is added, not swapped in.
 - A question errand shares no name or number, unless it's about something of their own that the business must look up ("where's my order", "is my blazer ready", "did my booking go through"): then set share_name true, and share_phone true if the business would find it by number. The plan says what's shared.
 - If a question call brings back an offer to book, it comes to them as options with its conditions: they pick in words, as after any call. Don't accept or refuse it for them.
@@ -202,10 +213,6 @@ const DEFS: Record<Tool, Omit<FunctionTool, "type" | "strict">> = {
           items: { type: "integer" },
           description: "only when they no longer want it asked",
         },
-        window_words: {
-          type: ["string", "null"],
-          description: "only for a window under 5 minutes: their exact words giving that range",
-        },
         errand: ERRAND,
       },
     },
@@ -221,6 +228,10 @@ const DEFS: Record<Tool, Omit<FunctionTool, "type" | "strict">> = {
         task: { type: "string", enum: TASKS },
         mode: { type: "string", enum: ["replace", "after"] },
         confirm_replace: { type: "boolean" },
+        separate: {
+          type: "boolean",
+          description: "true only for a second errand of the same kind they asked for in this message",
+        },
       },
       required: ["task"],
     },
@@ -302,8 +313,18 @@ const DEFS: Record<Tool, Omit<FunctionTool, "type" | "strict">> = {
   },
   find_booking: {
     name: "find_booking",
-    description: "Find one of this user's Desk bookings, to reschedule or cancel it.",
-    parameters: { type: "object", properties: { hint: { type: "string" } }, required: ["hint"] },
+    description: "List this user's upcoming Desk bookings, or set one on the change errand by its ref.",
+    parameters: {
+      type: "object",
+      properties: {
+        ref: { type: ["string", "null"], description: "the booking's ref, once you know which" },
+      },
+    },
+  },
+  accept_condition: {
+    name: "accept_condition",
+    description: "They accepted a condition in the OPEN card. Code checks their answer before recording it.",
+    parameters: { type: "object", properties: { ref: { type: "string" } }, required: ["ref"] },
   },
   stay_quiet: {
     name: "stay_quiet",
@@ -340,22 +361,10 @@ const DEFS: Record<Tool, Omit<FunctionTool, "type" | "strict">> = {
   },
   forget: {
     name: "forget",
-    description: "Drop something kept in MEMORY, by its m- ref or its words.",
-    parameters: { type: "object", properties: { what: { type: "string" } }, required: ["what"] },
+    description: "Drop something kept in MEMORY, by its m- ref.",
+    parameters: { type: "object", properties: { ref: { type: "string" } }, required: ["ref"] },
   },
 };
-
-// Free code checks on every reply (L3 step 1). The Jev checks are in router.ts; the facts check is still to do.
-export function checkReply(text: string, language = "en"): string | null {
-  const t = text.trim();
-  if (!t) return "empty";
-  if (t.length > WHATSAPP_MAX_CHARS) return "too long for one WhatsApp message";
-  if (/https?:\/\/|www\./i.test(t)) return "no links";
-  if (/\*\*|__|`|^\s*#|^\s*[-*•]\s/m.test(t)) return "no markdown, bullets or bold";
-  const list = (banned as Record<string, string[]>)[language.split("-")[0]] ?? banned.en;
-  const hit = list.find((p) => t.toLowerCase().includes(p));
-  return hit ? `filler phrase "${hit}"; say it plainly` : null;
-}
 
 type Jev = {
   mode: JevMode;
@@ -387,6 +396,7 @@ async function jevSetup(deps: LunaDeps, user: User): Promise<Jev> {
     output: {
       claims: await pct("l3_claims_threshold_pct", 50),
       offtask: await pct("l3_offtask_threshold_pct", 70),
+      promise: await pct("l3_promise_threshold_pct", 60),
     },
   };
 }
@@ -438,23 +448,29 @@ function endsTurn(tool: string, result: ToolResult): string | null {
   return null;
 }
 
-// Saying nothing is allowed only when nothing is waiting on the Desk.
+// Saying nothing is allowed only when nothing is waiting on the Desk. The router's reading
+// of their message decides that, in any language; with no router, it's Luna's judgment.
 async function quietRefused(
   deps: LunaDeps,
   user: User,
-  lines: { from: string; text: string }[],
+  intent: string | null,
   anyFailed: boolean,
 ): Promise<string | null> {
   if (anyFailed) return "an action failed; tell them";
   if ((await deps.store.active(user.id)).prompt) {
     return "a plan is open; read their message against it (approve_plan, or answer)";
   }
-  const lastUser = lines.findLast((l) => l.from === "user")?.text ?? "";
-  if (/\?\s*$/.test(lastUser)) return "they asked something; answer it";
-  const lastDesk = lines.findLast((l) => l.from === "desk")?.text ?? "";
-  const after = lines.findLastIndex((l) => l.from === "desk") === lines.length - 2;
-  if (after && /\?\s*$/.test(lastDesk)) return "your question is waiting; read their message as its answer";
+  if (intent && intent !== "greeting") return "their message needs an answer";
   return null;
+}
+
+// What the user has open besides the current errand.
+async function openNow(deps: LunaDeps, user: User) {
+  const [advances, decisions] = await Promise.all([
+    deps.store.heldBookings(user.id),
+    deps.store.openDecisions(user.id),
+  ]);
+  return { advances, decisions };
 }
 
 async function turn(
@@ -477,15 +493,19 @@ async function turn(
     role: l.from === "user" ? "user" : "assistant",
     content: l.quoted ? `(replying to: "${l.quoted.slice(0, 160)}") ${l.text}` : l.text,
   }));
-  const jevState = async (r: ActiveRequest | null): Promise<JevState> => ({
-    task_card: await taskCardFor(deps, user, r, now),
-    messages: lines.slice(-4).map(({ from, text }) => ({ from, text })),
-    recent: recentCard(await store.recent(user.id), now),
-  });
+  const jevState = async (r: ActiveRequest | null): Promise<JevState> => {
+    const open = await openNow(deps, user);
+    return {
+      task_card: await taskCardFor(deps, user, r, now),
+      messages: lines.slice(-4).map(({ from, text }) => ({ from, text })),
+      recent: `${recentCard(await store.recent(user.id), now)}\n\n${openCard(open.advances, open.decisions)}`,
+    };
+  };
 
   // L1: Jev picks the mode. In shadow mode the choice is only logged.
   let mode: Mode = "task";
   let why: Route["why"] = null;
+  let intent: string | null = null;
   const byKind = await store.limitBool("place_search_by_kind", user.id);
   if (jev.ask && jev.model) {
     const rt = await route(jev.ask, jev.model, await jevState(first), jev.route, jev.timeoutMs, !byKind);
@@ -496,6 +516,7 @@ async function turn(
       latencyMs: rt.latencyMs,
     });
     deps.trace?.("router", { jev_mode: jev.mode, ...rt });
+    intent = rt.intent;
     if (jev.mode === "gate") ({ mode, why } = rt);
   }
   log.mode = mode;
@@ -534,9 +555,13 @@ async function turn(
   const searches = new Map<string, ToolResult>();
   let anyFailed = false;
   let reminderSet = false;
+  // One message is one errand of a kind, unless they asked for two.
+  const started = new Set<unknown>();
   for (let step = 1; step <= MAX_STEPS; step++) {
     const r = await current(deps, user);
-    const tools: Tool[] = mode === "redirect" ? ["reply"] : toolsFor(r?.state ?? null, !!r?.pausedAt);
+    const open = await openNow(deps, user);
+    const has: Open = { advances: open.advances.length > 0, decisions: open.decisions.length > 0 };
+    const tools: Tool[] = mode === "redirect" ? ["reply"] : toolsFor(r?.state ?? null, !!r?.pausedAt, has);
     log.lunaTools = tools;
     input[0] = { role: "developer", content: await context(deps, user, r, now, mode, why) };
 
@@ -586,18 +611,22 @@ async function turn(
       const key = call.name === "find_business"
         ? JSON.stringify([args.query, args.area, args.city, args.by_kind])
         : null;
-      const quiet = call.name === "stay_quiet" ? await quietRefused(deps, user, lines, anyFailed) : null;
+      const quiet = call.name === "stay_quiet" ? await quietRefused(deps, user, intent, anyFailed) : null;
+      const repeat = call.name === "start_new_request" && args.separate !== true && started.has(args.task);
       const result: ToolResult = ended
         ? { ok: false, reason: "not run: the turn already ended" }
         : !tools.includes(call.name as Tool)
         ? { ok: false, reason: `${call.name} is not available in this state` }
         : quiet
         ? { ok: false, reason: quiet }
+        : repeat
+        ? { ok: false, reason: "you already started this errand this turn; use it" }
         : (key ? searches.get(key) : undefined) ??
           await act(deps, user, call.name as Tool, args, waMessageId);
       if (key && result.ok) searches.set(key, result);
       if (!result.ok) actionFailed = anyFailed = true;
       if (call.name === "set_follow_up" && result.ok && args.remind_at) reminderSet = true;
+      if (call.name === "start_new_request" && result.ok) started.add(args.task);
       ended ??= endsTurn(call.name, result);
       deps.trace?.("luna_tool", { tool: call.name, args, result });
       input.push({ type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) });
@@ -610,23 +639,18 @@ async function turn(
     }
     if (reply) {
       const text = reply.text.trim();
-      let problem = actionFailed
-        ? "an action failed; read its result and reply again"
-        : checkReply(text, info.language);
-      // A promised reminder has to exist. English for now, like the plans.
-      if (!problem && !reminderSet && PROMISED_REMINDER.test(text) && !(await reminderExists(deps, user))) {
-        problem = "you promised a reminder and none is set: set_follow_up first, or don't promise it";
-      }
+      let problem = actionFailed ? "an action failed; read its result and reply again" : checkReply(text);
       if (problem && !actionFailed) failed("code");
 
       // L3, Jev half: on every reply that passed the code checks, in every mode.
       if (!problem && jev.ask && jev.model) {
         const r2 = await current(deps, user);
+        const claimable = mayClaim(r2?.state ?? null, await somethingToReport(deps, user));
         const out = await checkOutput(
           jev.ask,
           jev.model,
           await jevState(r2),
-          r2?.state ?? null,
+          claimable,
           text,
           jev.output,
           jev.timeoutMs,
@@ -644,6 +668,11 @@ async function turn(
           log.probabilities = { ...log.probabilities, l3: l3Scores };
           out.failed.forEach(failed);
           if (jev.mode === "gate" && out.problem) problem = out.problem;
+          // A promise the Desk can't keep is refused in any mode: this isn't a tuned gate.
+          if (!problem && out.promised && !reminderSet && !(await reminderExists(deps, user))) {
+            failed("promised_reminder");
+            problem = "you promised a reminder and none is set: set_follow_up first, or don't promise it";
+          }
         }
       }
 
@@ -685,11 +714,17 @@ async function turn(
   if (tpl) await deps.send(user, { kind: "text", body: tpl });
 }
 
-const PROMISED_REMINDER = /\b(i'?ll|i will|will|let me) (remind|nudge|ping|follow up)\b/i;
-
 async function reminderExists(deps: LunaDeps, user: User): Promise<boolean> {
   const { request } = await deps.store.active(user.id);
   return [request, ...await deps.store.queuedList(user.id)].some((r) => r?.remindAt);
+}
+
+// A finished errand, an open advance or an upcoming booking: a reply may talk about these.
+async function somethingToReport(deps: LunaDeps, user: User): Promise<boolean> {
+  const recent = await deps.store.recent(user.id);
+  if (recent.some((r) => r.state === "done" || r.state === "cancelled")) return true;
+  return (await deps.store.heldBookings(user.id)).length > 0 ||
+    (await deps.store.upcomingBookings(user.id)).length > 0;
 }
 
 // "Paragon, table for 4, tomorrow, 7:30–8:30 pm", from stored rows only.
@@ -761,7 +796,11 @@ async function taskCardFor(deps: LunaDeps, user: User, r: ActiveRequest | null, 
   for (const q of await store.queuedList(user.id)) {
     if (q.id !== r?.id) waiting.push(await view(deps, user, q, null));
   }
-  return taskCard(r ? await view(deps, user, r, r.id === request?.id ? prompt : null) : null, now, waiting);
+  const open = await openNow(deps, user);
+  return taskCard(r ? await view(deps, user, r, r.id === request?.id ? prompt : null) : null, now, waiting, {
+    advances: open.advances.length > 0,
+    decisions: open.decisions.length > 0,
+  });
 }
 
 // The developer message: clock, mode and the cards (E4 design 1.1). Built by code.
@@ -796,6 +835,7 @@ async function context(
     }),
     memoryCard(await store.memories(user.id)),
     await taskCardFor(deps, user, r, now),
+    await openNow(deps, user).then((o) => openCard(o.advances, o.decisions)),
     recentCard(await store.recent(user.id), now),
   ].join("\n\n");
 }
@@ -836,14 +876,7 @@ async function runTool(
         ? a.reword_questions.map((x) => ({ number: Number(x?.number), text: String(x?.text ?? "") }))
         : [];
       const add = Array.isArray(a.add_questions) ? a.add_questions.map(String) : [];
-      const windowWords = str(a.window_words);
-      return setSlots(
-        deps,
-        user,
-        fields,
-        { add, reword, remove: ints(a.remove_questions), windowWords },
-        str(a.errand),
-      );
+      return setSlots(deps, user, fields, { add, reword, remove: ints(a.remove_questions) }, str(a.errand));
     }
     case "pause_request":
       return pauseActive(deps, user);
@@ -875,7 +908,7 @@ async function runTool(
       if (!request) return { ok: false, reason: "no current errand to propose" };
       const note = str(a.note);
       if (note) {
-        const bad = checkReply(note, (await deps.store.user(user.id)).language);
+        const bad = checkReply(note);
         if (bad) return { ok: false, reason: `note: ${bad}` };
       }
       const res = await proposePlan(deps, user, request.id, note);
@@ -887,7 +920,9 @@ async function runTool(
       return approvePlan(deps, user, option, waMessageId);
     }
     case "find_booking":
-      return findBooking(deps, user, str(a.hint) ?? "");
+      return findBooking(deps, user, str(a.ref));
+    case "accept_condition":
+      return acceptCondition(deps, user, String(a.ref ?? ""));
     case "stay_quiet":
       deps.trace?.("stay_quiet", { why: a.why });
       return { ok: true };
@@ -906,7 +941,7 @@ async function runTool(
         evidence: str(a.evidence),
       });
     case "forget":
-      return forget(deps, user, String(a.what ?? ""));
+      return forget(deps, user, String(a.ref ?? ""));
     case "reply":
       return { ok: false, reason: "handled separately" };
   }

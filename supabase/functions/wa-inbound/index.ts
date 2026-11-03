@@ -45,7 +45,11 @@ const searchPlaces: SearchPlaces = env("SERPER_API_KEY")
 // After an approval: reserve_call() and Sarvam, through dial().
 const dialer = (a: DialArgs) => dial({ store: calls, start: (c) => startCall(sarvam, c) }, a);
 const onApproved: LunaDeps["onApproved"] = (user, consent) =>
-  callAfterConsent({ store: chat, send, dial: dialer }, user, consent);
+  callAfterConsent(
+    { store: chat, send, dial: dialer, create: responsesClient(env("OPENAI_API_KEY")) },
+    user,
+    consent,
+  );
 
 const luna: LunaDeps | null = env("OPENAI_API_KEY")
   ? {
@@ -75,7 +79,7 @@ const agent: AgentDeps = {
   },
   onCommand: (user, route) => runCommand({ store: chat, send, admin: adminStore }, user, route),
   // The payment screenshot check (eng plan 2.2), then the confirm call.
-  onPayment: (user, route, msg) =>
+  onPayment: (user, _route, msg) =>
     handleScreenshot(
       {
         store: chat,
@@ -86,10 +90,13 @@ const agent: AgentDeps = {
           const id = imageId(raw);
           return id ? await downloadMedia(wa, id) : null;
         },
+        notAPayment: async (u) => {
+          if (luna) await runLuna(luna, u, msg.at, msg.messageId);
+        },
       },
       user,
       msg.raw,
-      route.typed,
+      msg.messageId,
     ),
 };
 

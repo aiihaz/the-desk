@@ -17,7 +17,7 @@ const base: BookingCheck = {
     { role: "user", en_text: "Haan, confirmed, 8:15 for four." },
   ],
   defaultToleranceMin: 15,
-  maxAdvanceRs: 0,
+  advancePaidRs: 0,
 };
 
 // A fake model that answers with the given verdict.
@@ -31,10 +31,12 @@ function model(v: Record<string, unknown>, seen: string[] = []): CreateResponse 
   };
 }
 
-const confirmed = {
+const confirmed = { decision: "confirmed" as const, line: 2, conditions: [], why: "" };
+const held = {
   decision: "confirmed" as const,
   evidence: "Haan, confirmed, 8:15 for four.",
-  issues: [],
+  conditions: [],
+  bookedWhen: null,
   why: "",
 };
 
@@ -77,30 +79,110 @@ Deno.test("timeCheck: call 2 must be the picked option's time", () => {
   );
 });
 
-Deno.test("verified only when the time matches and the business's own words confirm it", async () => {
+Deno.test("verified only when the time matches and a line of the business's confirms it", async () => {
   const seen: string[] = [];
   const v = await verifyBooking(model(confirmed, seen), "m", "low", base);
-  assertEquals(v, { verified: true, problems: [], verdict: { ...confirmed, why: "" } });
+  assertEquals(v, { verified: true, problems: [], verdict: held, conditions: [] });
   assertEquals(seen[0].includes("People: 4"), true);
-  assertEquals(seen[0].includes("business: Haan, confirmed"), true);
+  assertEquals(seen[0].includes("2. business: Haan, confirmed"), true);
 });
 
-Deno.test("a quote that only the agent said is not the business confirming", async () => {
+Deno.test("the agent's line, or no line, is not the business confirming", async () => {
+  for (const line of [1, 9, null]) {
+    const v = await verifyBooking(model({ ...confirmed, line }), "m", "low", base);
+    assertEquals(v.verified, false, String(line));
+    assertEquals(v.verdict?.decision, "unclear");
+  }
+});
+
+Deno.test("what's kept as the business's confirmation is their line, whatever language it's in", async () => {
+  const hindi = [
+    { role: "agent", en_text: "Table for 4 at 8:15?" },
+    { role: "user", en_text: "हाँ, हो गया" },
+  ];
+  const v = await verifyBooking(model(confirmed), "m", "low", { ...base, transcript: hindi });
+  assertEquals(v.verified, true);
+  assertEquals(v.verdict?.evidence, "हाँ, हो गया");
+});
+
+const condition = (over: Record<string, unknown>) => ({
+  line: 2,
+  what: "a Rs 1000 minimum spend",
+  required: true,
+  covered: false,
+  ...over,
+});
+
+Deno.test("something optional is disclosed, not blocking: the booking stands", async () => {
   const v = await verifyBooking(
-    model({ ...confirmed, evidence: "Shall I confirm?" }),
+    model({
+      ...confirmed,
+      conditions: [condition({ required: false, what: "valet, Rs 100 if you want it" })],
+    }),
     "m",
     "low",
     base,
   );
-  assertEquals(v.verified, false);
-  assertEquals(v.problems, ["transcript: confirmation not found in the business's words"]);
+  assertEquals(v.verified, true);
+  assertEquals(v.conditions?.[0].required, false);
+  assertEquals(v.conditions?.[0].words, "Haan, confirmed, 8:15 for four.");
 });
 
-Deno.test("not confirmed, unclear, an extra condition, a wrong time, no transcript: all unverified", async () => {
+Deno.test("something required that the user already approved doesn't block", async () => {
+  const v = await verifyBooking(
+    model({ ...confirmed, conditions: [condition({ covered: true })] }),
+    "m",
+    "low",
+    base,
+  );
+  assertEquals(v.verified, true);
+});
+
+Deno.test("one rule: a required condition the user never approved blocks, and is theirs to decide", async () => {
+  const v = await verifyBooking(model({ ...confirmed, conditions: [condition({})] }), "m", "low", base);
+  assertEquals(v.verified, false);
+  assertEquals(v.decisionOpen, true);
+  assertEquals(v.problems, ["condition: a Rs 1000 minimum spend"]);
+});
+
+Deno.test("a condition on a booking that didn't check out isn't a decision: it's unverified", async () => {
+  const v = await verifyBooking(
+    model({ ...confirmed, conditions: [condition({})] }),
+    "m",
+    "low",
+    { ...base, bookedTime: "2026-10-23T22:00:00+05:30" },
+  );
+  assertEquals([v.verified, v.decisionOpen], [false, undefined]);
+});
+
+Deno.test("a condition with a bad line or unclear judgment isn't dropped: it counts as required", async () => {
+  const v = await verifyBooking(
+    model({ ...confirmed, conditions: [{ line: 99, what: "cash only" }] }),
+    "m",
+    "low",
+    base,
+  );
+  assertEquals(v.conditions, [{ words: "cash only", what: "cash only", required: true, covered: false }]);
+  assertEquals(v.verified, false);
+});
+
+Deno.test("what the user accepted reaches the check, so it can be covered", async () => {
+  const seen: string[] = [];
+  await verifyBooking(model(confirmed, seen), "m", "low", {
+    ...base,
+    kind: "booking",
+    bookedTime: "2026-10-23T20:30:00+05:30",
+    option: { label: "8:30 pm", value: { time: "2026-10-23T20:30:00+05:30", conditions: "90 minutes only" } },
+    advancePaidRs: 500,
+  });
+  assertEquals(seen[0].includes("Accepted: 90 minutes only"), true);
+  assertEquals(seen[0].includes("Advance: Rs 500, already paid"), true);
+});
+
+Deno.test("not confirmed, unclear, a wrong time, no transcript: all unverified", async () => {
   const cases: [Partial<BookingCheck>, Record<string, unknown>][] = [
-    [{}, { decision: "not_confirmed", evidence: "", issues: [], why: "they said 8:45" }],
-    [{}, { decision: "unclear", evidence: "", issues: [], why: "line dropped" }],
-    [{}, { ...confirmed, issues: ["Rs 1000 minimum spend"] }],
+    [{}, { decision: "not_confirmed", line: null, conditions: [], why: "they said 8:45" }],
+    [{}, { decision: "unclear", line: null, conditions: [], why: "line dropped" }],
     [{ bookedTime: "2026-10-23T22:00:00+05:30" }, confirmed],
     [{ transcript: [] }, confirmed],
     [{}, { decision: "booked!!" }],
@@ -125,19 +207,22 @@ Deno.test("a failing model call is not a verification", async () => {
   assertEquals(v.problems, ["transcript check failed: timeout"]);
 });
 
-Deno.test("a year-less or date-only reading is never a time, and never the year 2001", () => {
-  const a = "2026-11-08T20:00:00+05:30";
-  assertEquals(readBookedWhen("November 8", a), { time: null, date: "2026-11-08", captured: "November 8" });
-  assertEquals(readBookedWhen("8th Nov", a).date, "2026-11-08");
-  assertEquals(readBookedWhen("2026-11-08", a), { time: null, date: "2026-11-08", captured: "2026-11-08" });
-  assertEquals(readBookedWhen("November 9", a).date, null);
-  assertEquals(readBookedWhen("tomorrow evening", a), {
-    time: null,
-    date: null,
-    captured: "tomorrow evening",
-  });
-  assertEquals(readBookedWhen("2026-11-08T20:00", a).time, "2026-11-08T20:00+05:30");
+Deno.test("a year-less reading is never a time or a guess; the call's own reading settles it", async () => {
+  assertEquals(readBookedWhen("November 8"), { time: null, date: null, captured: "November 8" });
+  assertEquals(readBookedWhen("2026-11-08"), { time: null, date: "2026-11-08", captured: "2026-11-08" });
+  assertEquals(readBookedWhen("2026-11-08T20:00").time, "2026-11-08T20:00+05:30");
   assertEquals(instant("November 8"), null);
+
+  const seen: string[] = [];
+  const v = await verifyBooking(
+    model({ ...confirmed, booked_when: "2026-10-23T20:15:00+05:30" }, seen),
+    "m",
+    "low",
+    { ...base, bookedTime: null, today: "Fri 23 Oct 2026, 6:00 pm" },
+  );
+  assertEquals(v.verified, true);
+  assertEquals(v.heard, { time: "2026-10-23T20:15:00+05:30", date: null });
+  assertEquals(seen[0].startsWith("TODAY: Fri 23 Oct 2026"), true);
 });
 
 const year = (bookedTime: string) => ({
@@ -151,26 +236,18 @@ const year = (bookedTime: string) => ({
   bookedTime,
 });
 
-Deno.test("a wrong year is corrected only when the call confirmed the approved booking", async () => {
+Deno.test("a wrong year is never corrected: the booking stays unverified, flagged", async () => {
   const c = year("2025-11-08T20:00:00+05:30");
   const v = await verifyBooking(model(confirmed), "m", "low", c);
-  assertEquals(v.verified, true);
-  assertEquals(v.correction?.from, "2025-11-08T20:00:00+05:30");
-  assertEquals(v.correction?.to, "2026-11-08T20:00:00+05:30");
-
-  const not = await verifyBooking(model({ ...confirmed, decision: "not_confirmed" }), "m", "low", c);
-  assertEquals([not.verified, not.correction, not.badYear], [false, undefined, true]);
-
-  const fee = await verifyBooking(model({ ...confirmed, issues: ["a Rs 200 fee"] }), "m", "low", c);
-  assertEquals([fee.verified, fee.correction, fee.badYear], [false, undefined, true]);
+  assertEquals([v.verified, v.badYear], [false, true]);
 
   const none = await verifyBooking(model(confirmed), "m", "low", { ...c, transcript: null });
   assertEquals([none.verified, none.badYear], [false, true]);
 });
 
-Deno.test("a different day is not a year mistake: nothing is corrected", async () => {
+Deno.test("a different day is not a year mistake", async () => {
   const v = await verifyBooking(model(confirmed), "m", "low", year("2025-11-09T20:00:00+05:30"));
-  assertEquals([v.verified, v.correction, v.badYear], [false, undefined, undefined]);
+  assertEquals([v.verified, v.badYear], [false, undefined]);
 });
 
 Deno.test("a date with no time is flagged, never verified", async () => {

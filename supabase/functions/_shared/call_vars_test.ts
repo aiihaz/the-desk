@@ -9,7 +9,6 @@ const base: CallInputs = {
     window_start: "2026-10-23T19:30:00+05:30",
     window_end: "2026-10-23T21:00:00+05:30",
     may_book: false,
-    max_advance_rs: 0,
   },
   businessName: "Paragon",
   customerPhone: "+919812345678",
@@ -22,7 +21,7 @@ const base: CallInputs = {
 
 Deno.test("first call, may_book off: no name or number goes to the business, as the plan says", () => {
   const v = callVariables("first", base, false);
-  assertEquals([v.may_book, v.customer_phone, v.customer_name, v.max_advance_rs], [false, null, null, 0]);
+  assertEquals([v.may_book, v.customer_phone, v.customer_name], [false, null, null]);
   assertEquals(v.exact_time, null);
 });
 
@@ -66,7 +65,7 @@ Deno.test("the resolved errand: what's decided, flexible, acceptable, and what h
     "first",
     {
       ...base,
-      fields: { ...base.fields, may_book: true, max_advance_rs: 500, max_price_rs: 2000 },
+      fields: { ...base.fields, may_book: true, max_price_rs: 2000 },
     },
     false,
     now,
@@ -80,12 +79,13 @@ Deno.test("the resolved errand: what's decided, flexible, acceptable, and what h
   assertEquals(v.flexible, "Any time inside the window.");
   assertEquals(
     v.may_accept,
-    "Book only what is decided above, up to Rs 2000. An advance of up to Rs 500 makes it a hold, paid by the customer. Anything else: don't accept, come back with it.",
+    "Book only what is decided above, up to Rs 2000. No advance: if they want one, don't agree. Take down the amount, whether it's adjusted against the bill, whether it's refunded, how and where to pay, by when, and whether they'll keep the slot meanwhile, then say you'll check with the customer and get back to them. Anything else: don't accept, come back with it.",
   );
   assertEquals(v.already_happened, "Nothing yet: this is the first call.");
 
   const asking = callVariables("first", base, false, now);
-  assertEquals(asking.may_accept, "Nothing yet: ask what's possible and come back.");
+  assertEquals(String(asking.may_accept).startsWith("Nothing yet: ask what's possible and come back."), true);
+  assertEquals(String(asking.may_accept).includes("say you'll check with the customer"), true);
 });
 
 Deno.test("a booking from an offer on a question call: picked option, conditions, profile name", () => {

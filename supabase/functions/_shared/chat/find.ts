@@ -63,7 +63,6 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
       area: cleanField(p.area, 60),
       address: cleanField(p.address, 120),
       city: cleanField(p.city, 40),
-      ...(a.byKind ? {} : { has_every_word_typed: nameFits(query, p.name) }),
     });
   }
   return {
@@ -79,9 +78,9 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
   };
 }
 
-// Every word of what they typed (3+ letters) is in the name: "navu" fits "Navu Bar &
-// Kitchen". A fact for Luna, not a filter: a transliteration or a short form can still be
-// the place they meant.
+// A web result is this business: every word of the name (3+ letters) is in its title. Two
+// stored values compared before a web number is trusted (serper.ts); what the user meant
+// by a name is Luna's to read.
 export function nameFits(typed: string, name: string): boolean {
   const words = (s: string) =>
     s.toLowerCase().normalize("NFKD").replace(/&/g, " and ").split(/[^\p{L}\p{N}]+/u).filter(Boolean);

@@ -2,7 +2,8 @@ import { assertEquals } from "jsr:@std/assert@1.0.8";
 import type { User } from "../store.ts";
 import type { Item, ResponseOut } from "../openai.ts";
 import type { Outbound } from "../whatsapp.ts";
-import { checkReply, type LunaDeps, runLuna } from "./luna.ts";
+import { type LunaDeps, runLuna } from "./luna.ts";
+import { checkReply } from "./tell.ts";
 import { cleanField } from "./tools.ts";
 import type { ActiveRequest } from "./store.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
@@ -95,7 +96,7 @@ Deno.test("a reply that keeps failing the checks climbs the repair ladder, then 
 
 Deno.test("a second attempt that passes is sent", async () => {
   const { sent, deps } = setup([
-    [call("reply", { text: "Certainly! Which day?" }, "a")],
+    [call("reply", { text: "See https://paragon.in. Which day?" }, "a")],
     [call("reply", { text: "Which day, and for how many?" }, "b")],
   ]);
   await runLuna(deps, user, now);
@@ -114,7 +115,6 @@ Deno.test("reply checks", () => {
   assertEquals(checkReply("Kal 8 baje, 4 log. Kannur Road wala Paragon?"), null);
   assertEquals(checkReply("See https://paragon.in"), "no links");
   assertEquals(checkReply("- 9:30\n- 9:45"), "no markdown, bullets or bold");
-  assertEquals(checkReply("Certainly! Booking now"), 'filler phrase "certainly!"; say it plainly');
   assertEquals(checkReply(" "), "empty");
 });
 
@@ -181,7 +181,11 @@ function withJev(
   store: FakeChatStore,
   mode: string,
   routeAns: Record<string, unknown> | Error,
-  outAns: Record<string, unknown> | Error = { claims_action: noul(0), off_task_content: noul(0) },
+  outAns: Record<string, unknown> | Error = {
+    claims_action: noul(0),
+    off_task_content: noul(0),
+    promises_follow_up: noul(0),
+  },
 ) {
   store.texts = { jev_mode: mode, jev_model: "jev-test" };
   const asked: string[][] = [];
@@ -207,7 +211,7 @@ Deno.test("shadow: Jev's redirect is logged, but Luna still runs in task mode", 
   await runLuna(deps, user, now, "wamid.in1");
   assertEquals(tools[0].length > 1, true);
   assertEquals((inputs[0][0].content as string).includes("MODE: task"), true);
-  assertEquals(asked, [["intent", "injection"], ["claims_action", "off_task_content"]]);
+  assertEquals(asked, [["intent", "injection"], ["claims_action", "promises_follow_up", "off_task_content"]]);
   const log = store.routes[0];
   assertEquals([log.jevMode, log.intent, log.mode, log.l3Result, log.waMessageId], [
     "shadow",
@@ -249,8 +253,8 @@ Deno.test("gate: a reply that claims a booking before any call is sent back, the
   deps.jev = async (req) => {
     if ("intent" in req.questions) throw new Error("router down");
     return (n++ === 0
-      ? { claims_action: noul(0.95), off_task_content: noul(0) }
-      : { claims_action: noul(0), off_task_content: noul(0) }) as never;
+      ? { claims_action: noul(0.95), off_task_content: noul(0), promises_follow_up: noul(0) }
+      : { claims_action: noul(0), off_task_content: noul(0), promises_follow_up: noul(0) }) as never;
   };
   await runLuna(deps, user, now);
   assertEquals(JSON.parse(inputs[1].at(-1)!.output).reason.startsWith("it says a call, booking"), true);

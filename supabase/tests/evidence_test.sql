@@ -37,10 +37,6 @@ create temp table t (name text primary key, id uuid);
 create function pg_temp.id(p_name text) returns uuid
 language sql as $$ select id from t where name = p_name $$;
 
--- P5: no advance by default ---------------------------------------------------
-select is(limit_int('max_advance_rs', 'a0000000-0000-0000-0000-000000000001'), 0,
-          'no advance allowance unless set for the user');
-
 -- P1: STOP --------------------------------------------------------------------
 insert into t values ('r1', pg_temp.ready('a0000000-0000-0000-0000-000000000001',
                                           'e0000000-0000-0000-0000-000000000001', pg_temp.at('18:00')));

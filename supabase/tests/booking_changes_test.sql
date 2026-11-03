@@ -1,4 +1,4 @@
--- 0011: advance holds and payments, cancelling and rescheduling Desk bookings.
+-- 0011, 0014: advances and payments, cancelling and rescheduling Desk bookings.
 -- Clock: Friday 2026-10-23 in IST.
 begin;
 create extension if not exists pgtap with schema extensions;
@@ -47,13 +47,13 @@ insert into credit_ledger (delta_rs, reason) values (1000, 'test');
 -- Hold -------------------------------------------------------------------------------
 insert into t values ('c_hold', pg_temp.calling('a0000000-0000-0000-0000-000000000001', 'booking', 'calling_1', 'first', pg_temp.at('18:00')));
 insert into t values ('r_hold', (select request_id from calls where id = pg_temp.id('c_hold')));
-select is(settle_call(pg_temp.id('c_hold'), 'held', '[]',
+select is(settle_call(pg_temp.id('c_hold'), 'advance', '[]',
                       '{"time": "2026-10-23T20:15:00+05:30", "amount_rs": 500, "upi_id": "paragon@okhdfc",
                         "payee_name": "Paragon", "deadline": "2026-10-23T19:30:00+05:30"}',
                       false, pg_temp.at('18:01')) ->> 'state', 'awaiting_payment', 'a hold waits for the payment');
 select is((select status || ' ' || deposit_amount::int || ' ' || upi_id || ' ' || payee_name from bookings
             where request_id = pg_temp.id('r_hold')),
-          'held_pending_deposit 500 paragon@okhdfc Paragon', 'held with the payment details');
+          'advance_due 500 paragon@okhdfc Paragon', 'waiting on the advance, with where to pay');
 insert into t values ('bk_hold', (select id from bookings where request_id = pg_temp.id('r_hold')));
 
 -- Payment ------------------------------------------------------------------------------
@@ -72,7 +72,7 @@ select is((check_dial(pg_temp.id('r_hold'), 'payment_confirm', null, false, pg_t
 
 -- The same UTR for another booking is a reused screenshot.
 insert into t values ('c_hold2', pg_temp.calling('a0000000-0000-0000-0000-000000000002', 'booking', 'calling_1', 'first', pg_temp.at('18:00')));
-select settle_call(pg_temp.id('c_hold2'), 'held', '[]', '{"amount_rs": 500, "upi_id": "x@ok"}', false, pg_temp.at('18:01'));
+select settle_call(pg_temp.id('c_hold2'), 'advance', '[]', '{"amount_rs": 500, "upi_id": "x@ok"}', false, pg_temp.at('18:01'));
 select is(pg_temp.reason(record_payment((select request_id from calls where id = pg_temp.id('c_hold2')), true,
                                         '{"amount_rs": 500, "utr": "432112344321"}', pg_temp.at('18:50'))),
           'utr_used', 'a UTR that passed for another booking is refused');
@@ -123,7 +123,7 @@ insert into calls (id, request_id, user_id, business_id, caller_number_id, kind,
 values ('d0000000-0000-0000-0000-000000000003', pg_temp.id('r_cancel'), 'a0000000-0000-0000-0000-000000000001',
         'b0000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001', 'cancel', '7',
         'completed', pg_temp.at('19:25'));
-select settle_call('d0000000-0000-0000-0000-000000000003', 'back', '[]', '{"fee_rs": 200}', false, pg_temp.at('19:26'));
+select settle_call('d0000000-0000-0000-0000-000000000003', 'back', '[]', '{"fee_rs": 200, "charge_stated": true}', false, pg_temp.at('19:26'));
 select is((select known_fee_rs::int from bookings where id = pg_temp.id('bk_hold')), 200,
           'a stated charge is kept for the next plan');
 select is((select status from bookings where id = pg_temp.id('bk_hold')), 'booked', 'and the booking still stands');
@@ -151,7 +151,7 @@ select is((select status || ' ' || to_char(time at time zone 'Asia/Kolkata', 'HH
 
 -- Unconfirmed ----------------------------------------------------------------------------
 insert into t values ('c_un', pg_temp.calling('a0000000-0000-0000-0000-000000000001', 'booking', 'calling_1', 'first', pg_temp.at('19:50')));
-select settle_call(pg_temp.id('c_un'), 'held', '[]', '{"amount_rs": 300, "upi_id": "y@ok"}', false, pg_temp.at('19:51'));
+select settle_call(pg_temp.id('c_un'), 'advance', '[]', '{"amount_rs": 300, "upi_id": "y@ok"}', false, pg_temp.at('19:51'));
 update requests set state = 'verifying' where id = (select request_id from calls where id = pg_temp.id('c_un'));
 update calls set kind = 'payment_confirm' where id = pg_temp.id('c_un');
 select settle_call(pg_temp.id('c_un'), 'unconfirmed', '[]', '{"said": "we got Rs 30"}', false, pg_temp.at('20:00'));
@@ -161,7 +161,7 @@ select is((select kind || ' ' || (detail ->> 'said') from alerts where call_id =
 
 -- A confirm call that couldn't start goes back to waiting; the hold stands.
 insert into t values ('c_ns', pg_temp.calling('a0000000-0000-0000-0000-000000000002', 'booking', 'calling_1', 'first', pg_temp.at('20:00')));
-select settle_call(pg_temp.id('c_ns'), 'held', '[]', '{"amount_rs": 300, "upi_id": "z@ok"}', false, pg_temp.at('20:01'));
+select settle_call(pg_temp.id('c_ns'), 'advance', '[]', '{"amount_rs": 300, "upi_id": "z@ok"}', false, pg_temp.at('20:01'));
 update requests set state = 'verifying' where id = (select request_id from calls where id = pg_temp.id('c_ns'));
 select call_not_started((select request_id from calls where id = pg_temp.id('c_ns')), pg_temp.at('20:05'));
 select is((select state from requests where id = (select request_id from calls where id = pg_temp.id('c_ns'))),

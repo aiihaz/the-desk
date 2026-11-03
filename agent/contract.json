@@ -1,7 +1,7 @@
 {
-  "_about": "The structured outputs Desk reads after every call. Each must exist as an output variable on the caller agent that dials: Desk builds the report from these alone. Unknown means empty, never zero or a guess. Checked with `deno task caller-check`.",
+  "_about": "The structured outputs Desk reads after every call. Each must exist as an output variable on the caller agent that dials: Desk reads the result from these alone. Unknown means empty, never zero or a guess. Checked with `deno task caller-check`.",
   "required": [
-    { "name": "outcome", "calls": "all", "type": "text", "describe": "One of: booked, held_pending_deposit, payment_not_seen, hold_expired, cancelled, options_found, unavailable, moved, kept, question_answered, needs_customer_decision, uncertain, wrong_number, voicemail, phone_menu, no_conversation, disconnected, refused." },
+    { "name": "outcome", "calls": "all", "type": "text", "describe": "One of: booked, advance_required, payment_not_seen, hold_expired, cancelled, options_found, unavailable, moved, kept, question_answered, needs_customer_decision, uncertain, wrong_number, voicemail, phone_menu, no_conversation, disconnected, refused." },
     { "name": "no_match_reason", "calls": "first", "type": "text", "describe": "No booking on call 1: no_slot, several_options, advance, price, new_condition or unclear." },
     { "name": "booked_time", "calls": "first, booking, reschedule, payment_confirm", "type": "text", "describe": "ISO 8601 with offset, including the year, only if explicitly confirmed. A date with no agreed time: YYYY-MM-DD, never a made-up time." },
     { "name": "booking_reference", "calls": "first, booking, reschedule, payment_confirm", "type": "text", "describe": "The reference as given, or empty." },
@@ -9,7 +9,11 @@
     { "name": "answer", "calls": "question", "type": "text", "describe": "What the business answered, in their words." },
     { "name": "also_answer", "calls": "first, booking", "type": "text", "describe": "The answer to also_ask, in their words, or empty if they didn't answer." },
     { "name": "advance_amount_rs", "calls": "first, booking", "type": "number", "describe": "Advance they asked for, in rupees, or empty." },
-    { "name": "upi_id", "calls": "first, booking", "type": "text", "describe": "UPI ID or number to pay, or empty." },
+    { "name": "advance_redeemable", "calls": "first, booking", "type": "text", "describe": "Whether the advance is adjusted against the bill, in their words, or empty." },
+    { "name": "advance_refund", "calls": "first, booking", "type": "text", "describe": "Whether it's refunded if the customer doesn't come or cancels, in their words, or empty." },
+    { "name": "advance_hold", "calls": "first, booking", "type": "text", "describe": "yes or no: they said they'll keep the slot until the customer decides. Empty if they didn't say." },
+    { "name": "payment_mode", "calls": "first, booking", "type": "text", "describe": "How to pay: upi, bank_transfer, qr, link, cash or other, or empty." },
+    { "name": "payment_address", "calls": "first, booking", "type": "text", "describe": "Where to pay: the UPI ID, number or account as given, or empty." },
     { "name": "payee_name", "calls": "first, booking", "type": "text", "describe": "Who the payment goes to, or empty." },
     { "name": "payment_deadline", "calls": "first, booking", "type": "text", "describe": "ISO 8601 with offset, or empty." },
     { "name": "payment_status", "calls": "payment_confirm", "type": "text", "describe": "received, not_seen, wrong_amount, disputed or unclear." },
