@@ -301,6 +301,7 @@ const terms = {
 
 Deno.test("an advance: every term is kept and told, nothing is agreed, and the errand waits", async () => {
   const { store, deps } = setup();
+  deps.checkClaim = ok;
   await reportCall(deps, "c1", result("completed", terms));
   const b = store.settled[0];
   assertEquals(b.result, "advance");
@@ -361,6 +362,7 @@ Deno.test("the older outcome name still reads as an advance", () => {
 
 Deno.test("an address that isn't a UPI ID isn't held against the screenshot as one", async () => {
   const { store, deps } = setup();
+  deps.checkClaim = ok;
   await reportCall(deps, "c1", result("completed", { ...terms, payment_address: "9812345678" }));
   assertEquals(store.settled[0].booking?.upi_id, null);
   assertEquals(facts(store).values.pay_to, "9812345678");
@@ -748,6 +750,7 @@ Deno.test("confirm call: the time the business asked for is the redial, not the 
 
 Deno.test("other times with an advance: every term stays with the options (S3)", async () => {
   const { store, deps } = setup();
+  deps.checkClaim = ok;
   await reportCall(
     deps,
     "c1",
@@ -779,6 +782,29 @@ Deno.test("other times with an advance: every term stays with the options (S3)",
   assertEquals(f.values.pay_to, "paragon@okhdfc");
   assertEquals(f.values.payee, "Paragon Restaurant");
   assertEquals(f.values.deadline, "Fri 23 Oct 2026, 12:30 pm");
+});
+
+Deno.test("an address the call doesn't show confirmed whole is never a place to pay (R6)", async () => {
+  const { store, deps } = setup();
+  const claims: string[] = [];
+  deps.checkClaim = async (claim) => {
+    claims.push(claim);
+    return { verified: false, problems: ["never read back to them whole"], verdict: null };
+  };
+  await reportCall(deps, "c1", result("completed", terms));
+  assertEquals(claims.length, 1);
+  assertEquals(claims[0].includes('"paragon@okhdfc"'), true);
+  assertEquals(store.settled[0].result, "advance");
+  assertEquals(store.settled[0].booking?.upi_id, null);
+  assertEquals(facts(store).values.pay_to, undefined);
+  assertEquals(facts(store).values.advance, "Rs 500");
+  const unknown = facts(store).happened.not_known as string[];
+  assertEquals(
+    unknown.includes(
+      "where exactly to pay: the address wasn't read back to the business in full and confirmed",
+    ),
+    true,
+  );
 });
 
 Deno.test("an incomplete payment handle is never a place to pay (S8)", async () => {
@@ -821,6 +847,7 @@ Deno.test("reschedule: an original the business cancelled is told as cancelled, 
   assertEquals(claims.length, 1);
   assertEquals(store.settled[0].result, "cancelled");
   assertEquals(status(store), "business_says_original_booking_already_cancelled_nothing_new_booked");
+  assertEquals(facts(store).next_step, "offer_to_book_again");
   assertEquals(facts(store).happened.new_time_booked, false);
   assertEquals(
     String(facts(store).happened.cancelled_by).startsWith("the business, on their own"),
@@ -885,4 +912,30 @@ Deno.test("the call itself goes with the facts: transcript by who spoke, and the
   const none = setup();
   await reportCall(none.deps, "c1", result("no_answer", null));
   assertEquals(facts(none.store).call, undefined);
+});
+
+Deno.test("a very long call keeps its opening and its end, and says the middle is left out (R10)", async () => {
+  const { store, deps } = setup();
+  const r = result("completed", { outcome: "unavailable", options: [] });
+  r.transcript = [
+    { role: "user", en_text: "Refundable only if cancelled before Thursday noon. Pay by UPI tonight." },
+    ...Array.from({ length: 60 }, (_, i) => ({ role: "agent", en_text: `filler ${i} ${"x".repeat(900)}` })),
+    { role: "user", en_text: "So nothing is free at 8, sorry." },
+  ];
+  await reportCall(deps, "c1", r);
+  const t = facts(store).call!.transcript;
+  assertEquals(t[0], "business: Refundable only if cancelled before Thursday noon. Pay by UPI tonight.");
+  assertEquals(t[t.length - 1], "business: So nothing is free at 8, sorry.");
+  assertEquals(t.some((l) => /^\(\d+ lines from the middle of the call left out\)$/.test(l)), true);
+  assertEquals(t.join("").length <= 32_100, true);
+
+  // A call of ordinary length goes whole.
+  const short = setup();
+  const s = result("completed", { outcome: "unavailable", options: [] });
+  s.transcript = Array.from(
+    { length: 12 },
+    (_, i) => ({ role: "user", en_text: `line ${i} ${"y".repeat(900)}` }),
+  );
+  await reportCall(short.deps, "c1", s);
+  assertEquals(facts(short.store).call!.transcript.length, 12);
 });

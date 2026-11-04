@@ -102,6 +102,14 @@ export class FakeChatStore implements ChatStore {
   }
   // id: the line's WhatsApp message id, for linesAfter.
   lines: (ChatLine & { id?: string })[] = [];
+  wrongNumbers = new Set<string>();
+  async wrongNumberFor(_u: string, businessId: string) {
+    return this.wrongNumbers.has(businessId);
+  }
+  asked: Date | null = null;
+  async lastAsk() {
+    return this.asked;
+  }
   async history(_u: string, since: Date) {
     return this.lines.filter((l) => l.at >= since);
   }
@@ -288,7 +296,8 @@ export class FakeChatStore implements ChatStore {
       userId: d.userId,
       requestId: "r1",
       facts: d.facts!,
-      attempts: d.written ?? 0,
+      // As take_unwritten counts it: this write is one more.
+      attempts: (d.written ?? 0) + 1,
       createdAt: this.createdAt,
     }));
   }

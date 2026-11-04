@@ -5,7 +5,7 @@ import type { Outbound } from "../whatsapp.ts";
 import { drainDeliveries, tell } from "./followup.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
 import { say } from "./test_writer.ts";
-import { checkReply, type Facts, FAITHFUL, fill, type TellDeps, writeOwed } from "./tell.ts";
+import { checkReply, type Facts, FAITHFUL, fill, plain, type TellDeps, WRITE, writeOwed } from "./tell.ts";
 
 const now = new Date("2026-10-23T12:00:00+05:30");
 const user = { id: "u1", waId: "919812345678", blocked: false };
@@ -182,4 +182,74 @@ Deno.test("the check reads the call itself, not only what code made of it", asyn
   await tell(deps, user, null, "k1", withCall);
   assertEquals(asked[0].includes("business: Rs 500, adjusted in the bill."), true);
   assertEquals(body(sent[0]), "They want Rs 500 to paragon@okhdfc, adjusted in the bill. Do you want it?");
+});
+
+Deno.test("fill: a placeholder written wrongly never reaches them (R10)", () => {
+  assertEquals(fill("{{advance}} {{pay_to}} {{pay to}}", facts.values), {
+    problem: "a {{...}} is written wrongly: use {{key}} exactly",
+  });
+  assertEquals(fill("{{advance}} to {{pay_to}} }}", facts.values), {
+    problem: "a {{...}} is written wrongly: use {{key}} exactly",
+  });
+});
+
+Deno.test("each check sees why earlier drafts were refused, so it can't flip on what it asked for", async () => {
+  const { sent, asked, deps } = setup(
+    ["{{advance}} {{pay_to}}, pay tonight.", "{{advance}} {{pay_to}}.", GOOD],
+    [
+      { faithful: false, problems: ["'pay tonight' isn't established"] },
+      { faithful: false, problems: ["leaves out paying tonight"] },
+      { faithful: true, problems: [] },
+    ],
+  );
+  await tell(deps, user, null, "k1", facts);
+  assertEquals(asked[0].includes("EARLIER CHECKS"), false);
+  assertEquals(asked[1].includes("draft 1 refused: 'pay tonight' isn't established"), true);
+  assertEquals(asked[2].includes("draft 2 refused: leaves out paying tonight"), true);
+  assertEquals(sent.length, 1);
+});
+
+const withCall: Facts = {
+  ...facts,
+  call: { transcript: ["business: 500 advance, pay tonight"], caller_noted: { outcome: "advance_required" } },
+};
+
+Deno.test("plain: the record without the call, saying the rest couldn't be checked", () => {
+  const p = plain(withCall);
+  assertEquals(p.call, undefined);
+  assertEquals(p.values, withCall.values);
+  assertEquals(p.next_step, withCall.next_step);
+  assertEquals(p.happened.status, "business_wants_advance_nothing_agreed");
+  assertEquals(typeof p.happened.rest_of_the_call_could_not_be_checked, "string");
+});
+
+Deno.test("a call report whose drafts keep failing is written from the record alone, and goes", async () => {
+  const { store, sent, deps } = setup([GOOD]);
+  const seen: string[] = [];
+  const create = deps.create;
+  deps.create = async (req) => {
+    if (req.instructions === WRITE) seen.push(String(req.input[0].content));
+    return create(req);
+  };
+  await store.oweFacts("u1", "r1", "k1", "notice", withCall);
+  // Two writes already failed: this is the third.
+  store.deliveries[0].written = 2;
+  await writeOwed(deps);
+  await drainDeliveries(deps);
+  assertEquals(seen[0].includes("rest_of_the_call_could_not_be_checked"), true);
+  assertEquals(seen[0].includes("500 advance, pay tonight"), false);
+  assertEquals(sent.length, 1);
+
+  // Before that, the call goes with it.
+  const early = setup([GOOD]);
+  const seenEarly: string[] = [];
+  const c2 = early.deps.create;
+  early.deps.create = async (req) => {
+    if (req.instructions === WRITE) seenEarly.push(String(req.input[0].content));
+    return c2(req);
+  };
+  await early.store.oweFacts("u1", "r1", "k1", "notice", withCall);
+  await writeOwed(early.deps);
+  assertEquals(seenEarly[0].includes("500 advance, pay tonight"), true);
+  assertEquals(seenEarly[0].includes("rest_of_the_call_could_not_be_checked"), false);
 });

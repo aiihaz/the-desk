@@ -13,6 +13,7 @@ import {
 } from "./readback.ts";
 import { missing } from "./slots.ts";
 import type { ChatStore, Refused } from "./store.ts";
+import { WRONG_NUMBER } from "./tools.ts";
 
 export type TurnDeps = {
   store: ChatStore;
@@ -145,6 +146,9 @@ export async function proposePlan(
     mayBook,
   });
   if (need.length) return { ok: false, reason: "not ready", missing: need };
+  if (r.businessId && (await store.wrongNumberFor(user.id, r.businessId))) {
+    return { ok: false, reason: WRONG_NUMBER };
+  }
   if (r.task === "question" && r.fields.share_phone && !info.phone) {
     return { ok: false, reason: "no number on file to share" };
   }

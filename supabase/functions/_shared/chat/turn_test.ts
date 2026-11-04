@@ -83,6 +83,19 @@ Deno.test("no plan while something is missing, or while paused", async () => {
   assertEquals(sent, []);
 });
 
+Deno.test("no plan for a number already recorded as reaching someone else (R3)", async () => {
+  const { store, sent, deps } = setup();
+  store.req = { ...tonight };
+  store.wrongNumbers.add("b1");
+  const res = await proposePlan(deps, user, "r1");
+  assertEquals(res.ok, false);
+  assertEquals(
+    (res as { reason: string }).reason.startsWith("this place's number reached someone else"),
+    true,
+  );
+  assertEquals(sent, []);
+});
+
 Deno.test("the profile name is what the plan books under when they gave no other", async () => {
   const { store, deps } = setup();
   const { customer_name: _, ...f } = tonight.fields;

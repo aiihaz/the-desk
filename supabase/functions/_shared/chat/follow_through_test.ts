@@ -485,6 +485,38 @@ Deno.test("stay_quiet is refused while a plan is open", async () => {
   assertEquals(JSON.parse(inputs[1].at(-1)!.output).reason.startsWith("a plan is open"), true);
 });
 
+Deno.test("stay_quiet is refused on the first word after an update that asked something (R3)", async () => {
+  const before = new Date(now.getTime() - 60_000);
+  const { sent, inputs } = await refused((s) => {
+    s.asked = before;
+    s.lines = [
+      {
+        from: "desk",
+        text: "That number reached someone else. Shall I look for another branch?",
+        at: before,
+      },
+      { from: "user", text: "Okay", at: now },
+    ];
+  });
+  assertEquals(sent.length, 1);
+  assertEquals(
+    JSON.parse(inputs[1].at(-1)!.output).reason.startsWith("the Desk's last update asked them something"),
+    true,
+  );
+
+  // Once they've already answered it, a later "ok" can go unanswered.
+  const t = luna([[call("stay_quiet", { why: "just ok" })]]);
+  jevReads(t, "greeting");
+  t.store.asked = before;
+  t.store.lines = [
+    { from: "user", text: "Yes, look", at: new Date(before.getTime() + 1000) },
+    { from: "desk", text: "Found two.", at: new Date(before.getTime() + 2000) },
+    { from: "user", text: "ok", at: now },
+  ];
+  await runLuna(t.deps, user, now);
+  assertEquals(t.sent, []);
+});
+
 Deno.test("a reply WhatsApp wouldn't take stays owed instead of killing the turn", async () => {
   const { store, deps } = luna([[call("reply", { text: "Which day?" })]]);
   deps.send = async () => {
