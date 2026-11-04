@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Desk · Hire a Receptionist</title>
+<meta name="description" content="Tell The Desk who to ring and what you need. It places the call, does the talking, then tells you what was said.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,500;0,700;0,800;1,500&family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="page">
+<article class="sheet">
+
+<nav class="topbar">
+  <span class="brand">The Desk</span>
+  <a class="cta-link" href="#signup">Be first in line</a>
+</nav>
+
+<header class="headline">
+  <h1>Hire a Receptionist</h1>
+  <p class="dek">To make the calls you’d rather not.</p>
+</header>
+
+<section class="copy">
+  <div class="intro">
+    <p class="intro-title">Say who. Say what. That’s it.</p>
+    <p class="intro-body">Tell The Desk who to ring and what you need. It places the call. It does the talking. Then it tells you what was said. You get on with your day.</p>
+  </div>
+  <div class="uses">
+    <div class="use">
+      <p class="use-title">It books the table.</p>
+      <p>The restaurant you name. The time you want.</p>
+    </div>
+    <div class="use">
+      <p class="use-title">It finds the appointment.</p>
+      <p>It asks the clinic which slots are open.</p>
+    </div>
+    <div class="use">
+      <p class="use-title">It gets the price.</p>
+      <p>It rings around and reports back what each place said.</p>
+    </div>
+    <div class="use">
+      <p class="use-title">It takes the message.</p>
+      <p>When you can’t pick up, it answers and writes down what the caller wanted.</p>
+    </div>
+  </div>
+  <p class="kicker">You ask. It calls. You hear back. That’s the whole idea.</p>
+</section>
+
+<figure class="photo">
+  <img src="assets/secretary.jpg" alt="Person at a desk speaking on the telephone">
+  <div class="photo-ink" aria-hidden="true"></div>
+  <div class="photo-dots" aria-hidden="true"></div>
+  <div class="photo-fade" aria-hidden="true"></div>
+</figure>
+
+<section id="signup" class="signup">
+  <p class="signup-title">Be first in line.</p>
+  <p class="signup-note">The Desk is currently invite only. Leave your details and we’ll send your invite soon.</p>
+  <div class="coupon">
+    <form id="invite-form" class="invite-form">
+      <label>Your X or LinkedIn username
+        <input type="text" name="handle" required placeholder="@yourname" autocomplete="username">
+      </label>
+      <label>Your phone number
+        <input type="tel" name="phone" required placeholder="+91 98765 43210" autocomplete="tel">
+      </label>
+      <button type="submit">Put me on the list</button>
+    </form>
+    <p id="invite-thanks" class="thanks" hidden role="status">Thank you. We will be in touch at <span id="invite-phone"></span>.</p>
+    <div class="coupon-sign">
+      <span class="coupon-name">The Desk</span>
+      <span class="coupon-tag">A receptionist for one.</span>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <span>The Desk is a working name.</span>
+  <span>Currently invite only.</span>
+</footer>
+</article>
+</div>
+<script src="main.js"></script>
+</body>
+</html>

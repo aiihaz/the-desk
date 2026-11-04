@@ -13,6 +13,10 @@ A WhatsApp calling and booking agent for India. Plan: `../the-desk-plan.md`, eng
 | E5/E6 Sarvam plumbing (client, `dial`, `sarvam-webhook`) | built and tested locally; outputs read in the eng plan 3.4 or the Genie brief contract; booking verification (3.5) built. The Sarvam agent itself and a live two-call run still to do |
 | E7 jobs, admin, advances, booking changes | built and tested locally: stale options, expiry, reconcile, retention (pg_cron), admin commands, alerts, health; advances (terms back to the user, screenshot check, confirm call); cancel and reschedule of Desk bookings; Serper fallback. Live runs need WhatsApp and Sarvam |
 
+## Landing page
+
+`web/` is the invite-only landing page (plain HTML, CSS and a little JS; no build step). Open `web/index.html`, or serve the folder with any static host. The signup form is a demo for now: it shows a thank-you message and sends nothing.
+
 ## Run the tests locally
 
 Needs Docker and the Supabase CLI.

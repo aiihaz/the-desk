@@ -1,0 +1,288 @@
+/* The Desk landing page. Recreated from the Claude Design "Receptionist Ad" mockup. */
+
+:root {
+  --ink: #1f33a3;
+  --ink-deep: #0f1c66;
+  --paper: #f4efe3;
+  --paper-card: #f7f3ea;
+  --surround: #d9d2c1;
+  --placeholder: #7d86c4;
+  --gutter: clamp(20px, 5vw, 72px);
+  --display: 'EB Garamond', serif;
+  --text: 'Libre Caslon Text', Georgia, serif;
+}
+
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--surround); }
+a { color: var(--ink); }
+a:hover { color: var(--ink-deep); }
+input::placeholder { color: var(--placeholder); font-style: italic; }
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  background: var(--surround);
+}
+
+.sheet {
+  width: 100%;
+  min-height: 100vh;
+  background-color: var(--paper);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .4  0 0 0 0 .35  0 0 0 0 .25  0 0 0 .13 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  color: var(--ink);
+  font-family: var(--text);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Top bar */
+.topbar {
+  padding: 18px var(--gutter);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.brand {
+  min-width: 0;
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: clamp(20px, 2vw, 26px);
+  letter-spacing: -.03em;
+  line-height: 1;
+}
+.cta-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  white-space: nowrap;
+  min-height: 44px;
+  padding: 0 16px;
+  background: var(--ink);
+  color: var(--paper);
+  text-decoration: none;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: -.01em;
+}
+.cta-link:hover { background: var(--ink-deep); color: var(--paper); }
+
+/* Headline */
+.headline {
+  padding: clamp(40px, 7vw, 96px) var(--gutter) 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: clamp(10px, 1.6vw, 20px);
+}
+.headline h1 {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: clamp(68px, 14vw, 184px);
+  line-height: .82;
+  letter-spacing: -.045em;
+  padding-bottom: .14em;
+  text-wrap: balance;
+  max-width: 9ch;
+}
+.dek {
+  margin: 0;
+  font-family: var(--display);
+  font-style: italic;
+  font-weight: 500;
+  font-size: clamp(22px, 3vw, 36px);
+  line-height: 1.15;
+  letter-spacing: -.01em;
+  max-width: 26ch;
+  text-wrap: pretty;
+}
+
+/* Copy */
+.copy {
+  padding: clamp(40px, 6vw, 80px) var(--gutter) clamp(40px, 6vw, 72px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(40px, 5vw, 64px);
+  font-size: 16px;
+  line-height: 1.5;
+}
+.intro {
+  max-width: 40ch;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+}
+.intro p, .use p, .kicker { margin: 0; }
+.intro-title {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(28px, 3.4vw, 40px);
+  line-height: 1;
+  letter-spacing: -.02em;
+}
+.intro-body { font-size: 18px; line-height: 1.55; text-wrap: pretty; }
+.uses {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: clamp(24px, 3vw, 40px);
+}
+.use {
+  border-top: 1.5px solid var(--ink);
+  padding-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.use p { text-wrap: pretty; }
+.use .use-title { font-weight: 700; }
+.kicker {
+  text-align: center;
+  font-family: var(--display);
+  font-style: italic;
+  font-size: clamp(22px, 2.6vw, 30px);
+  line-height: 1.2;
+}
+
+/* Photo, printed in blue ink */
+.photo {
+  margin: 0;
+  position: relative;
+  height: clamp(380px, 62vw, 720px);
+  overflow: hidden;
+  background: var(--paper);
+}
+.photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 20%;
+  display: block;
+  filter: grayscale(1) contrast(1.35) brightness(1.08);
+  mix-blend-mode: multiply;
+}
+.photo-ink, .photo-dots, .photo-fade { position: absolute; pointer-events: none; }
+.photo-ink { inset: 0; background: var(--ink); mix-blend-mode: lighten; }
+.photo-dots {
+  inset: 0;
+  background-image: radial-gradient(rgba(244, 239, 227, .5) .7px, transparent 1.2px);
+  background-size: 3px 3px;
+}
+.photo-fade {
+  inset: auto 0 0 0;
+  height: 22%;
+  background: linear-gradient(to bottom, rgba(244, 239, 227, 0), var(--paper));
+}
+
+/* Signup */
+.signup {
+  scroll-margin-top: 24px;
+  padding: 0 var(--gutter) clamp(32px, 4vw, 48px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  text-align: center;
+  margin-top: -8px;
+  position: relative;
+}
+.signup-title {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(34px, 5vw, 60px);
+  line-height: .95;
+  letter-spacing: -.03em;
+}
+.signup-note {
+  margin: 0;
+  max-width: 44ch;
+  font-size: 15px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+.coupon {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 520px;
+  border: 1.5px dashed var(--ink);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: left;
+  background: var(--paper-card);
+}
+.invite-form { display: flex; flex-direction: column; gap: 14px; }
+.invite-form[hidden], .thanks[hidden] { display: none; }
+.invite-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  letter-spacing: .04em;
+}
+.invite-form input {
+  font-family: var(--text);
+  font-size: 17px;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--ink);
+  border-radius: 0;
+  padding: 10px 0;
+  outline: none;
+  min-height: 44px;
+}
+.invite-form button {
+  min-height: 50px;
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  border-radius: 0;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: -.01em;
+  cursor: pointer;
+}
+.invite-form button:hover { background: var(--ink-deep); }
+.thanks { margin: 0; font-size: 16px; line-height: 1.5; }
+.coupon-sign {
+  border-top: 1px solid var(--ink);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+}
+.coupon-name {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 28px;
+  letter-spacing: -.03em;
+  line-height: 1;
+}
+.coupon-tag { font-family: var(--display); font-style: italic; font-size: 16px; }
+
+/* Footer */
+.footer {
+  margin-top: auto;
+  padding: 14px var(--gutter) 22px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  line-height: 1.5;
+}
