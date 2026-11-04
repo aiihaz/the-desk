@@ -8,8 +8,8 @@ and follow-through jobs are shared.
 Hosted project: `rvglpiyctuzpegbvlane` (`thedesk`). The Linq webhook is deployed at
 `https://rvglpiyctuzpegbvlane.supabase.co/functions/v1/linq-inbound?version=2026-02-03`.
 The branch includes main `c658630` and Codex reliability/memory `dd60d98`.
-Migrations 0019–0022 integrate their schema changes after the 18 deployed Linq
-migrations, preserving the existing project and migration history.
+All 22 migrations are applied. Migrations 0019–0022 integrate their schema changes
+after the original 18 Linq migrations, preserving the existing project and history.
 
 ## Owner-only calling, paused
 
@@ -164,10 +164,20 @@ API reference: https://docs.linqapp.com/channel/imessage/llms.txt
 
 ## Hosted verification record
 
-- Before this merge, runtime source `bd02f4b` passed 344 function tests and hosted
-  verification. This release merges main `c658630` and Codex `dd60d98`; its combined
-  function suite passes 378 tests, with formatting, lint, type checks, bench safety,
-  and internal endpoint authorization checked separately.
+- Runtime source deployed: `fc443f5`, merging main `c658630` and Codex `dd60d98`.
+- [Combined CI](https://github.com/aiihaz/the-desk/actions/runs/41788303987) passed:
+  378 function tests, 476 pgTAP assertions, independent-session database concurrency,
+  3 local bench safety tests, endpoint authorization, formatting, lint, and type checks.
+- Hosted rollback-only validation passed all 14 Linq recovery/reminder/erasure
+  assertions and the main call-meaning checks before migration rollout.
+- Hosted schema is `0022`; `follow-through` and reconciliation both completed.
+  Legacy `dial` and `wa-send` endpoints now return authenticated 410 responses.
+- The scheduled-worker Vault credential was aligned with the platform-injected
+  Supabase secret key; legacy service-role JWTs do not match that key.
+- Updating the optional GitHub daily monitor's repository secrets was denied by
+  the GitHub integration (403: resource not accessible). Those repository secrets
+  remain unchanged; an administrator must configure them with the current hosted
+  project URL and matching Supabase secret key to qualify that backup monitor.
 - Live Linq reply from the hosted model: delivered and read.
 - Signed webhook probe: 200; unsigned webhook probe: 401.
 - Reconciliation heartbeat is running; health reports `ok=true`, `kill_switch=true`,
@@ -222,3 +232,9 @@ WhatsApp service-window expiry and closing-window nudges apply only to WhatsApp.
 Linq keeps ordinary follow-ups and can recover inbox work after 24 hours. Erasure
 removes Linq raw envelopes and contact-card state, then attempts its confirmation
 through the original channel without recreating the profile.
+
+When rotating the platform API key, update the `desk_service_key` Vault binding
+and the GitHub daily monitor's `SUPABASE_SERVICE_ROLE_KEY` together. Internal
+endpoints authorize the exact platform-injected service key; a legacy JWT with
+the same role is not interchangeable. The scheduled worker has been updated;
+repository-secret writes require additional GitHub permissions.

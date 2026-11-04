@@ -89,7 +89,7 @@ These changes are source and local database changes; they do not deploy or retir
 
 1. Replace old hosted `dial` and `wa-send` functions with this release's authenticated 410 retirement handlers. Removing source alone would leave old hosted implementations active.
 2. Use the existing kill switch and drain running old workers during the migration/deployment interval. On `imessage-linq`, preserve deployed 0016–0018 and apply 0019–0022. Deploy the channel adapters and shared workers together, including `follow-through` and the retirement handlers. Calling stays paused until the owner explicitly resumes; authorization, scheduled-job health, and caller qualification must be checked first.
-3. The existing `desk_project_url` and `desk_service_key` Vault bindings must match the deployed project and current machine credential. No worker runs successfully until those are configured.
+3. The existing `desk_project_url` and `desk_service_key` Vault bindings must match the deployed project and current platform-injected service key. A legacy service-role JWT and a newer Supabase secret key are different credentials; align the GitHub daily monitor with the same key too. No worker runs successfully until those are configured.
 4. Qualify a complete round trip on consenting test numbers before lifting the kill switch for real businesses. Include correction, interruption, provider uncertainty, and result recovery.
 5. Review historical stranded work. Recovery can replay retained events and results; it cannot reconstruct events that have already been purged or prove what an unobserved old external action did.
 
