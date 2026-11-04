@@ -15,7 +15,11 @@ A WhatsApp calling and booking agent for India. Plan: `../the-desk-plan.md`, eng
 
 ## Landing page
 
-`web/` is the invite-only landing page (plain HTML, CSS and a little JS; no build step). Open `web/index.html`, or serve the folder with any static host. The signup form is a demo for now: it shows a thank-you message and sends nothing.
+`web/` is the invite-only landing page (plain HTML, CSS and a little JS; no build step). Open `web/index.html`, or serve the folder with any static host.
+
+The signup form POSTs to the `waitlist` edge function, which stores one row per phone number in `waitlist` (`0023_waitlist.sql`). The number box sits after a fixed +91 and keeps only the 10-digit mobile number, whatever is typed, pasted or autofilled; the function takes Indian mobiles only. A number already listed keeps its place and its first handle; sending it again changes nothing, since anyone who knows a number could. One IP may add `max_waitlist_signups_per_ip_per_hour` new numbers an hour (default 5), and the list takes `max_waitlist_signups_per_hour` from everyone (default 200), which holds even if a visitor fakes their IP header. `set limit` either on WhatsApp; `null` turns it off. The IP is stored only as a salted hash. A hidden `hp` field (named so password managers and autofill leave it alone) catches bots: they're thanked and nothing is stored.
+
+To go live: `supabase db push`, `supabase functions deploy waitlist` (`verify_jwt` is off in `config.toml`, as the page holds no key), then set `<meta name="desk-waitlist-url">` in `web/index.html` to `https://<project-ref>.supabase.co/functions/v1/waitlist`. Left empty, the form is a demo that sends nothing when opened as a file or on localhost, and shows an error anywhere else. Read the list in the SQL editor: `select phone_e164, handle, created_at from waitlist order by created_at;`. Set `invited_at` once someone has their invite.
 
 ## Run the tests locally
 
@@ -134,6 +138,7 @@ From a wa_id in `DESK_ADMIN_WA_IDS`: `status`, `review`, `resolve <id>`, `stop a
 - `supabase/migrations/0015_model_reports.sql`: what's owed is stored as facts with the settlement, written after, then sent; an options prompt opens with the exact words the user gets
 - `supabase/migrations/0016_call_meaning.sql`, `_shared/chat/report.ts`, `chat/tell.ts`: the report's writer and its check both read the call itself (transcript and the caller's notes) beside what code settled, so a report is checked against what was said, not only against code's reading of it. A confirm call's redial is at the time the business asked for (`retry_at`); a number that reached someone else isn't dialled again for that user (`wrong_numbers`)
 - `supabase/migrations/0017_never_silent.sql`, `chat/tell.ts`, `chat/report.ts`: a call report that can't be written yet doesn't leave the user in silence. After `report_stall_notice_attempts` failed writes they're told the result is still being written up; after `report_plain_after_attempts` it's written from the record alone, saying the rest of the call couldn't be checked. A long call keeps its opening and its end for the writer and its check, and each check sees why earlier drafts were refused. A payment address reaches the user only if the call shows the business confirmed it whole. A number recorded as wrong can't be picked or planned again (`wrong_number_for`).
+- `supabase/migrations/0023_waitlist.sql`, `functions/waitlist`: the landing page's invite list (see Landing page).
 - `supabase/migrations/0012_follow_through.sql`, `_shared/chat/followup.ts`: errands record what they wait for; `settle_and_report()` stores a result with everything it owes the user, sent through tracked `deliveries`, retried, and alerted if it can't arrive; `user_memories` (said, or learned from a correction; never a permission, and nothing in the approval or dial path reads it); bookings keep the captured value beside the approved one; `check_dial` names the consent a call rests on and requires the pinned caller setup
 - `_shared/serper.ts`: phone numbers for places Google lists without one, taken only from a result whose name fits, and said in the read-back as found on the web
 

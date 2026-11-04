@@ -435,3 +435,8 @@ verify_jwt = true
 
 [functions.health]
 verify_jwt = true
+
+# The landing page (web/) is static and holds no Supabase key; the handler validates the
+# form and join_waitlist() rate limits per IP.
+[functions.waitlist]
+verify_jwt = false

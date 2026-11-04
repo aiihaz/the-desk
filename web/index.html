@@ -9,6 +9,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,500;0,700;0,800;1,500&family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
+<!-- The waitlist edge function: https://<project-ref>.supabase.co/functions/v1/waitlist. Empty = demo, nothing is sent. -->
+<meta name="desk-waitlist-url" content="">
 </head>
 <body>
 <div class="page">
@@ -65,12 +67,19 @@
       <label>Your X or LinkedIn username
         <input type="text" name="handle" required placeholder="@yourname" autocomplete="username">
       </label>
-      <label>Your phone number
-        <input type="tel" name="phone" required placeholder="+91 98765 43210" autocomplete="tel">
+      <label>Your mobile number
+        <span class="phone-field">
+          <span class="phone-cc">+91</span>
+          <input type="tel" name="phone" required inputmode="numeric" placeholder="98765 43210" autocomplete="tel-national">
+        </span>
       </label>
+      <label class="trap" aria-hidden="true">Leave this empty
+        <input type="text" name="hp" tabindex="-1" autocomplete="off">
+      </label>
+      <p id="invite-error" class="form-error" hidden role="alert"></p>
       <button type="submit">Put me on the list</button>
     </form>
-    <p id="invite-thanks" class="thanks" hidden role="status">Thank you. We will be in touch at <span id="invite-phone"></span>.</p>
+    <p id="invite-thanks" class="thanks" hidden role="status">You’re on the list. We’ll be in touch at <span id="invite-phone"></span>.</p>
     <div class="coupon-sign">
       <span class="coupon-name">The Desk</span>
       <span class="coupon-tag">A receptionist for one.</span>

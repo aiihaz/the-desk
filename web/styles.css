@@ -243,6 +243,14 @@ input::placeholder { color: var(--placeholder); font-style: italic; }
   outline: none;
   min-height: 44px;
 }
+.phone-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--ink);
+}
+.phone-cc { font-family: var(--text); font-size: 17px; letter-spacing: 0; }
+.invite-form .phone-field input { flex: 1; min-width: 0; border-bottom: none; letter-spacing: .02em; }
 .invite-form button {
   min-height: 50px;
   background: var(--ink);
@@ -256,6 +264,10 @@ input::placeholder { color: var(--placeholder); font-style: italic; }
   cursor: pointer;
 }
 .invite-form button:hover { background: var(--ink-deep); }
+.invite-form button:disabled { opacity: .6; cursor: wait; }
+.invite-form .trap { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+.form-error { margin: 0; font-size: 14px; line-height: 1.4; font-style: italic; }
+.form-error[hidden] { display: none; }
 .thanks { margin: 0; font-size: 16px; line-height: 1.5; }
 .coupon-sign {
   border-top: 1px solid var(--ink);
