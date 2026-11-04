@@ -80,7 +80,21 @@ Deno.test("a clear answer in the user's own words is a consent, with its basis r
 Deno.test("a 👍 reaction on the plan can approve it; the check sees what it points at", async () => {
   const { deps, shown } = setup(yes(), [{ ...user1("[reacted 👍]"), quoted: PLAN }]);
   assertEquals((await approvePlan(deps, user, null, "m")).ok, true);
-  assertEquals(String(shown[0][0].content).includes("user (replying to: \"I'll call Paragon"), true);
+  assertEquals(
+    String(shown[0][0].content).includes("user (replying to the message above, exactly as written there)"),
+    true,
+  );
+});
+
+Deno.test("a reply quoting something else is shown in full, not cut to a fragment (S4, S7)", async () => {
+  const long = `${
+    "Paragon said 9:30 is free, with a Rs 500 advance adjusted in the bill, ".repeat(3)
+  }held 30 min.`;
+  const { deps, shown } = setup({ decision: "unclear", message: null, why: "?" }, [
+    { ...user1("ok"), quoted: long },
+  ]);
+  await approvePlan(deps, user, null, "m");
+  assertEquals(String(shown[0][0].content).includes(long), true);
 });
 
 Deno.test("the check must point at a real message from the user", async () => {

@@ -167,3 +167,29 @@ Deno.test("a narrow window is never rewritten: refused, unless their words confi
   // An approved narrow window stays as it is when something else on the errand changes.
   assertEquals(checkSlots("booking", narrow, { party_size: 3 }, now).ok, true);
 });
+
+Deno.test("the same question added twice is asked once (S4)", () => {
+  const cur = { questions: ["Do you have valet parking?"] };
+  assertEquals(checkSlots("question", cur, {}, now, { add: ["do you have  valet parking? "] }), {
+    ok: true,
+    patch: { questions: ["Do you have valet parking?"] },
+  });
+  assertEquals(checkSlots("question", {}, {}, now, { add: ["Valet?", "Valet?"] }), {
+    ok: true,
+    patch: { questions: ["Valet?"] },
+  });
+});
+
+Deno.test("the party size has one home: not repeated in service (S9 'table for 3 for 3')", () => {
+  const r = checkSlots("booking", {}, { service: "table for 3", party_size: 3 }, now);
+  assertEquals(r.ok, false);
+  assertEquals(checkSlots("booking", { party_size: 3 }, { service: "haircut" }, now).ok, true);
+  assertEquals(
+    checkSlots("booking", {}, { service: "table for 2 adults 1 child", party_size: 3 }, now).ok,
+    true,
+  );
+  assertEquals(checkSlots("booking", {}, { share_phone: false }, now), {
+    ok: true,
+    patch: { share_phone: false },
+  });
+});

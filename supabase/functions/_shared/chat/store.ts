@@ -119,7 +119,8 @@ export type CallSettlement = {
   options?: { label: string; value: Record<string, unknown>; advance_required: boolean }[];
   // done: verified means all three checks of eng plan 3.5 agreed (verify.ts); otherwise
   // the booking is stored as probably_booked and flagged, with the problems, for review.
-  // advance: the business's terms. back: a cancellation charge they stated.
+  // advance: the business's terms. back: a cancellation charge they stated, or a wrong
+  // number. retry: when to redial.
   booking?: {
     time?: string | null;
     reference?: string | null;
@@ -139,6 +140,10 @@ export type CallSettlement = {
     date?: string | null;
     captured?: string | null;
     approved?: string | null;
+    // retry: when the confirm call is redialled, the time the message names (0016).
+    retry_at?: string;
+    // back: the number reached someone else; it isn't dialled again for this user (0016).
+    wrong_number?: boolean;
   } | null;
   optOut?: boolean;
 };

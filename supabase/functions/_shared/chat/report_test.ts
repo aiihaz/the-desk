@@ -3,7 +3,7 @@ import type { CallKind, CallResult } from "../sarvam.ts";
 import type { Outbound } from "../whatsapp.ts";
 import { readOutcome, reportCall, type ReportDeps } from "./report.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
-import { fakeWriter } from "./test_writer.ts";
+import { fakeWriter, say } from "./test_writer.ts";
 import type { BookingCheck, Condition, Verification } from "./verify.ts";
 
 const now = new Date("2026-10-23T12:00:00+05:30");
@@ -508,8 +508,9 @@ Deno.test("confirm call: 'not seen' is the business's claim, with one redial, th
   first.store.limits.payment_confirm_retry_minutes = 30;
   await reportCall(first.deps, "c1", result("completed", { payment_status: "not_seen" }));
   assertEquals(first.store.settled[0].result, "retry");
+  assertEquals(first.store.settled[0].booking?.retry_at, "2026-10-23T07:00:00.000Z");
   assertEquals(status(first.store), "business_says_payment_not_seen_desk_will_call_them_again");
-  assertEquals(facts(first.store).happened.desk_calling_them_again_in_minutes, 30);
+  assertEquals(facts(first.store).values.calling_them_again, "today (Fri 23 Oct) at 12:30 pm");
 
   const second = setup("payment_confirm");
   second.store.call!.isRetry = true;
@@ -712,4 +713,176 @@ Deno.test("a caller with only call_summary: not 'nothing is done', and flagged",
     detail: { kind: "first", outputs: ["call_summary"] },
   }]);
   assertEquals(store.brokenCalls, ["c1"]);
+});
+
+Deno.test("confirm call: the time the business asked for is the redial, not the default (S8)", async () => {
+  const { store, deps } = setup("payment_confirm");
+  store.limits.payment_confirm_retry_minutes = 30;
+  const asked: string[] = [];
+  deps.create = async (req) => {
+    if (req.tools?.[0]?.name !== "when") return fakeWriter(req);
+    asked.push(req.input[0].content as string);
+    return say("when", { at: "2026-10-23T12:40:00+05:30" });
+  };
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", { payment_status: "not_seen", callback_time: "40 minutes" }),
+  );
+  assertEquals(asked.length, 1);
+  assertEquals(store.settled[0].booking?.retry_at, "2026-10-23T07:10:00.000Z");
+  assertEquals(facts(store).values.calling_them_again, "today (Fri 23 Oct) at 12:40 pm");
+  assertEquals(facts(store).happened.they_asked_to_be_called_back_their_words, "40 minutes");
+
+  // Further off than the screenshot's approval stretches: no redial, their number instead.
+  const late = setup("payment_confirm");
+  await reportCall(
+    late.deps,
+    "c1",
+    result("completed", { payment_status: "not_seen", callback_time: "2026-10-24T12:00:00+05:30" }),
+  );
+  assertEquals(late.store.settled[0].result, "unconfirmed");
+  assertEquals(facts(late.store).happened.they_want_a_call_later_than_the_desk_can_wait, true);
+  assertEquals(facts(late.store).next_step, "check_with_business_themselves");
+});
+
+Deno.test("other times with an advance: every term stays with the options (S3)", async () => {
+  const { store, deps } = setup();
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", {
+      outcome: "needs_customer_decision",
+      options: JSON.stringify([{
+        time: "2026-10-23T21:00:00+05:30",
+        details: "9 pm",
+        advance_required: true,
+      }]),
+      advance_amount_rs: "500",
+      advance_redeemable: "adjusted in the final bill",
+      advance_refund: "not refunded if you don't come",
+      advance_hold: "yes",
+      payment_mode: "upi",
+      payment_address: "paragon@okhdfc",
+      payee_name: "Paragon Restaurant",
+      payment_deadline: "2026-10-23T12:30:00+05:30",
+    }),
+  );
+  assertEquals(store.settled[0].result, "options");
+  const f = facts(store);
+  assertEquals(f.next_step, "pick_an_option");
+  const advance = f.happened.advance_they_want as Record<string, unknown>;
+  assertEquals(advance.adjusted_against_bill_their_words, "adjusted in the final bill");
+  assertEquals(advance.refund_their_words, "not refunded if you don't come");
+  assertEquals(advance.keeping_the_slot_meanwhile, "yes");
+  assertEquals(f.values.advance, "Rs 500");
+  assertEquals(f.values.pay_to, "paragon@okhdfc");
+  assertEquals(f.values.payee, "Paragon Restaurant");
+  assertEquals(f.values.deadline, "Fri 23 Oct 2026, 12:30 pm");
+});
+
+Deno.test("an incomplete payment handle is never a place to pay (S8)", async () => {
+  const { store, deps } = setup();
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", {
+      outcome: "advance_required",
+      advance_amount_rs: 500,
+      payment_mode: "upi",
+      payment_address: "okhdfc",
+      payee_name: "paragon kozhikode",
+    }),
+  );
+  assertEquals(store.settled[0].booking?.upi_id, null);
+  assertEquals(facts(store).values.pay_to, undefined);
+  const unknown = facts(store).happened.not_known as string[];
+  assertEquals(unknown.includes("where exactly to pay: what was noted on the call is incomplete"), true);
+});
+
+Deno.test("reschedule: an original the business cancelled is told as cancelled, not maybe (S6)", async () => {
+  const { store, deps } = setup("reschedule");
+  store.call!.task = "reschedule";
+  store.call!.bookingTime = "2026-11-06T21:00:00+05:30";
+  const claims: string[] = [];
+  deps.checkClaim = async (claim) => {
+    claims.push(claim);
+    return { verified: true, problems: [], verdict: null };
+  };
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", {
+      outcome: "unavailable",
+      original_booking_status: "cancelled",
+      summary: "They had already cancelled Friday by mistake and have nothing on Saturday.",
+    }),
+  );
+  assertEquals(claims.length, 1);
+  assertEquals(store.settled[0].result, "cancelled");
+  assertEquals(status(store), "business_says_original_booking_already_cancelled_nothing_new_booked");
+  assertEquals(facts(store).happened.new_time_booked, false);
+  assertEquals(
+    String(facts(store).happened.cancelled_by).startsWith("the business, on their own"),
+    true,
+  );
+  assertEquals(store.alerts.some((a) => a.kind === "business_cancelled_booking"), true);
+
+  const unsure = setup("reschedule");
+  unsure.store.call!.task = "reschedule";
+  await reportCall(unsure.deps, "c1", result("completed", { original_booking_status: "cancelled" }));
+  assertEquals(unsure.store.settled[0].result, "unconfirmed");
+  assertEquals(
+    status(unsure.store),
+    "caller_says_business_cancelled_original_not_verified_nothing_new_booked",
+  );
+});
+
+Deno.test("a wrong number is not an answer from the business, and isn't offered again (S9)", async () => {
+  for (const kind of ["first", "question", "payment_confirm"] as const) {
+    const { store, deps } = setup(kind);
+    await reportCall(deps, "c1", result("completed", { outcome: "wrong_number", summary: "Not Paragon." }));
+    assertEquals(store.settled[0].result, "back");
+    assertEquals(store.settled[0].booking?.wrong_number, true);
+    assertEquals(status(store), "the_number_reached_someone_else_this_business_was_not_reached_nothing_done");
+    assertEquals(facts(store).next_step, "find_the_right_number_or_place");
+    assertEquals(facts(store).values.number_called, "+919800000901");
+  }
+});
+
+Deno.test("voicemail or a phone menu: nothing was said, so nothing is unclear", async () => {
+  const { store, deps } = setup("payment_confirm");
+  await reportCall(deps, "c1", result("completed", { outcome: "voicemail" }));
+  assertEquals(store.settled[0].result, "back");
+  assertEquals(status(store), "reached_voicemail_nothing_said_nothing_done");
+  assertEquals(facts(store).happened.payment_still_unconfirmed, true);
+});
+
+Deno.test("the call itself goes with the facts: transcript by who spoke, and the caller's notes", async () => {
+  const { store, deps } = setup();
+  const r = result("completed", {
+    outcome: "unavailable",
+    uncertainties: "They said 8 was free, then that it was taken.",
+    options: [],
+    advance_amount_rs: null,
+  });
+  r.transcript = [
+    { role: "agent", en_text: "Hi, is this Paragon?" },
+    { role: "user", en_text: "Yes. 8 is free... sorry, no, 8 is taken." },
+  ];
+  await reportCall(deps, "c1", r);
+  const f = facts(store);
+  assertEquals(f.call?.transcript, [
+    "caller: Hi, is this Paragon?",
+    "business: Yes. 8 is free... sorry, no, 8 is taken.",
+  ]);
+  assertEquals(f.call?.caller_noted.outcome, "unavailable");
+  assertEquals(f.call?.caller_noted.options, "[]");
+  assertEquals("advance_amount_rs" in (f.call?.caller_noted ?? {}), false);
+  assertEquals(f.happened.caller_noted_as_unresolved, "They said 8 was free, then that it was taken.");
+
+  // A call that never connected has nothing to show.
+  const none = setup();
+  await reportCall(none.deps, "c1", result("no_answer", null));
+  assertEquals(facts(none.store).call, undefined);
 });

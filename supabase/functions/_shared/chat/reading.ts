@@ -32,10 +32,22 @@ const TOOL = {
   },
 };
 
-function numbered(lines: ChatLine[]): string {
-  return lines.map((l, i) =>
-    `${i + 1}. ${l.from}${l.quoted ? ` (replying to: "${l.quoted.slice(0, 80)}")` : ""}: ${l.text}`
-  ).join("\n");
+// A message quoted in a reply or reaction. One that is the subject itself (a 👍 on the plan,
+// which approval.ts has already matched to it) says so: the model then reads the reaction
+// against all of it, not a fragment it has to guess the rest of.
+const QUOTED_CHARS = 600;
+
+function numbered(lines: ChatLine[], target?: string): string {
+  return lines.map((l, i) => {
+    const q = !l.quoted
+      ? ""
+      : l.quoted === target
+      ? " (replying to the message above, exactly as written there)"
+      : ` (replying to: "${
+        l.quoted.length > QUOTED_CHARS ? `${l.quoted.slice(0, QUOTED_CHARS - 1)}…` : l.quoted
+      }")`;
+    return `${i + 1}. ${l.from}${q}: ${l.text}`;
+  }).join("\n");
 }
 
 export async function readChat(
@@ -45,8 +57,10 @@ export async function readChat(
   instructions: string,
   subject: string,
   lines: ChatLine[],
+  // The exact text the subject shows (a plan), so a reply to it is named as one.
+  target?: string,
 ): Promise<Reading> {
-  const input: Item[] = [{ role: "user", content: `${subject}\n\nMESSAGES:\n${numbered(lines)}` }];
+  const input: Item[] = [{ role: "user", content: `${subject}\n\nMESSAGES:\n${numbered(lines, target)}` }];
   const res = await create({
     model,
     instructions,

@@ -174,3 +174,19 @@ Deno.test("a table recorded as a service still reads as a table", () => {
   });
   assertEquals(p.text.includes("book a table for"), true);
 });
+
+Deno.test("they don't want their number given: the plan says so, and shows no number (S5)", () => {
+  const p = bookingReadback({
+    place: paragon,
+    f: { ...tonight, may_book: true, share_phone: false },
+    customerPhone: "+919812345678",
+    now,
+  });
+  assertEquals(
+    p.text,
+    "I'll call Paragon, Kannur Rd, Kozhikode and book a table for 4, tonight (Fri 23 Oct), 7:30–9:00 pm, " +
+      "in your name (Ihaz). I won't give them your number; if they need it to book, I'll come back to you " +
+      "first. If that isn't free, or they want an advance, I won't agree to anything; " +
+      "I'll come back to you with what they say.\n\nShall I go ahead?",
+  );
+});
