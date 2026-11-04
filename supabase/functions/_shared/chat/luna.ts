@@ -9,6 +9,7 @@
 // Luna may say nothing (stay_quiet) when nothing is needed. Code refuses that when
 // something is waiting: an open plan, a failed action, or anything but small talk from the
 // user, as the router read it. Length is judgment, not a rule that fails a reply.
+import { isTurnInvalidated } from "./turn_control.ts";
 import type { User } from "../store.ts";
 import type { AskJev } from "../jev.ts";
 import type { CreateResponse, FunctionTool, Item } from "../openai.ts";
@@ -733,6 +734,7 @@ async function turn(
           const id = await deps.send(user, msg);
           deps.trace?.("reply_sent", { text, wa_message_id: id });
         } catch (e) {
+          if (isTurnInvalidated(e)) throw e;
           // The reply was fine and delivery failed: it stays owed, and the recovery pass sends it.
           deps.trace?.("reply_owed", { text, error: String((e as Error)?.message ?? e) });
           await store.oweMessage(user.id, r?.id ?? null, waMessageId ?? crypto.randomUUID(), msg);
@@ -913,6 +915,7 @@ async function act(
     await deps.store.assertTurn?.();
     return await runTool(deps, user, tool, a, waMessageId);
   } catch (e) {
+    if (isTurnInvalidated(e)) throw e;
     deps.trace?.("tool_error", { tool, error: String((e as Error)?.message ?? e) });
     return { ok: false, reason: "that failed on our side; say so plainly and don't try it again this turn" };
   }

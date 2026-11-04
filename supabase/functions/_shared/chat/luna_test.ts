@@ -430,3 +430,41 @@ Deno.test("share_name and share_phone can be set: the prompt asks for them, so t
   await runLuna(deps, user, now);
   assertEquals(["share_name", "share_phone"].every((k) => k in props), true);
 });
+
+Deno.test("superseded reply is never queued as an owed delivery", async () => {
+  const { deps, store } = setup([[call("reply", { text: "For two people?" })]]);
+  deps.send = async () => {
+    throw new Error("turn superseded");
+  };
+  let owed = false;
+  store.oweMessage = async () => {
+    owed = true;
+  };
+  let failure: unknown;
+  try {
+    await runLuna(deps, user, now);
+  } catch (e) {
+    failure = e;
+  }
+  assertEquals((failure as Error)?.message, "turn superseded");
+  assertEquals(owed, false);
+});
+
+Deno.test("supersession during a tool exits instead of asking the model to repair it", async () => {
+  const { deps, inputs, sent } = setup([[
+    call("remember", { text: "prefers a window seat", kind: "preference", scope: "all" }),
+  ]]);
+  let checks = 0;
+  deps.store.assertTurn = async () => {
+    if (++checks >= 2) throw new Error("turn superseded");
+  };
+  let failure: unknown;
+  try {
+    await runLuna(deps, user, now);
+  } catch (e) {
+    failure = e;
+  }
+  assertEquals((failure as Error)?.message, "turn superseded");
+  assertEquals(inputs.length, 1);
+  assertEquals(sent.length, 0);
+});

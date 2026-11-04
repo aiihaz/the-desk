@@ -36,12 +36,16 @@ async function events(): Promise<Event[]> {
   return await (await fetch(BASE + "/api/events")).json();
 }
 
-const outs = (ev: Event[]) => ev.filter((e) => e.type === "whatsapp_out").map((e) => e.data as Out);
-type Out = { id: string; msg: { kind: string; body?: string; buttons?: { id: string }[] } };
-// A plan: code-built text ending in a plain question (readback.ts). No buttons.
-const isReadback = (o: Out) =>
-  o.msg.kind === "text" &&
-  /\n\n(Shall I (go ahead|call them)|Do you still want me to cancel)\?$/.test(o.msg.body ?? "");
+// Plan identity comes from the persisted prompt/send event, never its wording.
+const outs = (ev: Event[]): Out[] => {
+  const plans = new Set(ev.filter((e) => e.type === "decision:plan_sent").map((e) => e.data.wa_message_id));
+  return ev.filter((e) => e.type === "whatsapp_out").map((e) => ({
+    ...(e.data as Out),
+    isPlan: plans.has(e.data.id),
+  }));
+};
+type Out = { id: string; isPlan?: boolean; msg: { kind: string; body?: string; buttons?: { id: string }[] } };
+const isReadback = (o: Out) => o.isPlan === true;
 // What a settled call told the user: the facts the message was written from.
 const settledFacts = (ev: Event[]) =>
   ev.filter((e) => e.type === "decision:settle_call").map((e) =>
@@ -54,9 +58,10 @@ const consented = (ev: Event[]) =>
 // Index (1-based) of the user message after which the first read-back arrived, or null.
 function userMsgsToReadback(ev: Event[]): number | null {
   let n = 0;
+  const plans = new Set(outs(ev).filter(isReadback).map((o) => o.id));
   for (const e of ev) {
     if (e.type === "whatsapp_in") n++;
-    if (e.type === "whatsapp_out" && isReadback(e.data as Out)) return n;
+    if (e.type === "whatsapp_out" && plans.has(String(e.data.id))) return n;
   }
   return null;
 }

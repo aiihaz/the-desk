@@ -106,7 +106,7 @@ export async function sendTemplate(deps: PromptDeps, user: User, key: string): P
   await deps.send(user, { kind: "text", body: text });
 }
 
-export type PromptDeps = Pick<TurnDeps, "store" | "send" | "now">;
+export type PromptDeps = Pick<TurnDeps, "store" | "send" | "now" | "trace">;
 
 // Opens a prompt (a plan or an option list) on the request's current version and sends it.
 export async function sendPrompt(
@@ -120,6 +120,7 @@ export async function sendPrompt(
   if (!opened.ok) return opened;
   const id = await deps.send(user, p.message);
   await deps.store.promptSent(promptId, id);
+  deps.trace?.("plan_sent", { prompt_id: promptId, request_id: requestId, wa_message_id: id });
   return { ok: true, promptId };
 }
 
