@@ -1,6 +1,6 @@
 // The Desk finishes what it took on: delivery that survives a failed send, reminders and
 // nudges, memory that is never a permission, and saying nothing only when nothing waits.
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import { OutsideServiceWindow } from "../deliver.ts";
 import type { CallResult } from "../sarvam.ts";
 import type { User } from "../store.ts";
@@ -116,32 +116,27 @@ Deno.test("a redelivered result settles nothing and sends nothing", async () => 
   assertEquals(sent, []);
 });
 
-Deno.test("past the 24-hour window with no template, it fails for good and says so", async () => {
-  const { store, deps } = report("question");
+Deno.test("past the 24-hour window the update stays pending", async () => {
+  const { store, deps } = report();
   deps.send = async () => {
     throw new OutsideServiceWindow();
   };
-  await reportCall(deps, "c1", result({ answer: "Open till 9." }));
-  assertEquals(store.deliveries[0].status, "failed");
-  assertEquals(store.deliveries[0].final, true);
+  await reportCall(deps, "c1", result({ booking_status: "not_booked" }));
+  assertEquals(store.deliveries[0].status, "pending");
+  assertEquals(store.deliveries[0].final, undefined);
 });
 
-Deno.test("past the 24-hour window with a template, the message goes as its parameter", async () => {
-  const { store, sent, deps } = report("question");
+Deno.test("a configured legacy template is never used outside the window", async () => {
+  const { store, deps } = report();
   store.texts.follow_up_template = "desk_update";
+  const kinds: string[] = [];
   deps.send = async (_u, m) => {
-    if (m.kind !== "template") throw new OutsideServiceWindow();
-    sent.push(m);
-    return "wamid.t1";
+    kinds.push(m.kind);
+    throw new OutsideServiceWindow();
   };
-  await reportCall(deps, "c1", result({ answer: "Open till 9." }));
-  assertEquals(sent, [{
-    kind: "template",
-    name: "desk_update",
-    language: "en",
-    params: ["question_answered."],
-  }]);
-  assertEquals(store.deliveries[0].status, "sent");
+  await reportCall(deps, "c1", result({ booking_status: "not_booked" }));
+  assertEquals(kinds, ["text"]);
+  assertEquals(store.deliveries[0].status, "pending");
 });
 
 Deno.test("an offer on a question call comes back as options with its conditions, accepted by no one", async () => {

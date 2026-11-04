@@ -1,12 +1,12 @@
-// Local test page for the chat agent while the WhatsApp number is blocked.
+// Local chat and workflow bench. WhatsApp is simulated; phone calls are opt-in.
 // Runs the real chat code (gate, state machine, read-backs) against the local
-// Supabase database. WhatsApp and Sarvam are faked: nothing leaves this machine,
-// and no call is ever placed. Every decision and database call is streamed to the page.
+// Supabase database. WhatsApp stays local. Sarvam is simulated by default,
+// or configured explicitly for a single consenting test phone. Decisions stream to the page.
 //
 //   supabase start && deno task dev    →    http://localhost:8787
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { deliver } from "../supabase/functions/_shared/deliver.ts";
-import { DbStore, type User } from "../supabase/functions/_shared/store.ts";
+import { DbStore, serviceClient, type User } from "../supabase/functions/_shared/store.ts";
 import type { Inbound, Outbound } from "../supabase/functions/_shared/whatsapp.ts";
 import {
   errandRef,
@@ -30,7 +30,7 @@ import {
 import { proposePlan } from "../supabase/functions/_shared/chat/turn.ts";
 import { type AgentDeps, handleInbound } from "../supabase/functions/_shared/chat/agent.ts";
 import { runCommand } from "../supabase/functions/_shared/chat/commands.ts";
-import { callKind } from "../supabase/functions/_shared/chat/calls.ts";
+import { callAfterConsent, callKind } from "../supabase/functions/_shared/chat/calls.ts";
 import { handleScreenshot } from "../supabase/functions/_shared/chat/payment.ts";
 import { DbAdminStore } from "../supabase/functions/_shared/chat/admin.ts";
 import { DbCallStore } from "../supabase/functions/_shared/call_store.ts";
@@ -43,6 +43,17 @@ import { serperClient, withWebPhones } from "../supabase/functions/_shared/serpe
 import type { Task } from "../supabase/functions/_shared/chat/states.ts";
 import type { ConsentStored } from "../supabase/functions/_shared/chat/store.ts";
 
+import { dial } from "../supabase/functions/_shared/dial.ts";
+import {
+  attemptResult,
+  CallRejected,
+  getTranscript,
+  listAttempts,
+  sarvamConfigFromEnv,
+  startCall,
+} from "../supabase/functions/_shared/sarvam.ts";
+import { assertTestTarget, benchReadiness, sameOrigin } from "./safety.ts";
+
 await loadLocalEnv();
 const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
   auth: { persistSession: false },
@@ -51,39 +62,47 @@ const waStore = new DbStore(db);
 
 const DEV_WA_ID = "919999900001";
 const DEV_CALLER = "+918000000999";
-const DEV_BUSINESSES = [
-  {
-    place_id: "dev/paragon",
-    name: "Paragon",
-    address: "Kannur Rd, Kozhikode",
-    city: "Kozhikode",
-    phone: "+919800000901",
-  },
-  {
-    place_id: "dev/zudio",
-    name: "Zudio",
-    address: "Mavoor Rd, Kozhikode",
-    city: "Kozhikode",
-    phone: "+919800000902",
-  },
-  {
-    place_id: "dev/toniguy",
-    name: "Toni&Guy",
-    address: "Indiranagar, Bengaluru",
-    city: "Bengaluru",
-    phone: "+919800000903",
-  },
-];
+const DEV_BUSINESSES = Deno.env.get("DEV_REAL_CALLS") === "1" && Deno.env.get("DEV_TEST_PHONE")
+  ? [{
+    place_id: "dev/test-phone",
+    name: "Consenting test line",
+    address: "Your configured phone",
+    city: "Local test",
+    phone: Deno.env.get("DEV_TEST_PHONE")!,
+  }]
+  : [
+    {
+      place_id: "dev/paragon",
+      name: "Paragon",
+      address: "Kannur Rd, Kozhikode",
+      city: "Kozhikode",
+      phone: "+919800000901",
+    },
+    {
+      place_id: "dev/zudio",
+      name: "Zudio",
+      address: "Mavoor Rd, Kozhikode",
+      city: "Kozhikode",
+      phone: "+919800000902",
+    },
+    {
+      place_id: "dev/toniguy",
+      name: "Toni&Guy",
+      address: "Indiranagar, Bengaluru",
+      city: "Bengaluru",
+      phone: "+919800000903",
+    },
+  ];
 
 // Event stream -----------------------------------------------------------------
 
-type Event = { at: string; type: string; data: unknown };
+type Event = { id: string; at: string; type: string; data: unknown };
 const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
 const history: Event[] = [];
 const enc = new TextEncoder();
 
 function emit(type: string, data: unknown) {
-  const e = { at: new Date().toISOString(), type, data };
+  const e = { id: crypto.randomUUID(), at: new Date().toISOString(), type, data };
   history.push(e);
   if (history.length > 500) history.shift();
   const chunk = enc.encode(`data: ${JSON.stringify(e)}\n\n`);
@@ -126,6 +145,8 @@ function traced(store: ChatStore): ChatStore {
     get(target, prop, receiver) {
       const v = Reflect.get(target, prop, receiver);
       if (typeof v !== "function") return v;
+      // forTurn is synchronous: returning a Promise here loses the lease-bound store.
+      if (prop === "forTurn") return (...args: unknown[]) => traced(v.apply(target, args));
       return async (...args: unknown[]) => {
         const t0 = performance.now();
         try {
@@ -169,7 +190,36 @@ function send(user: User, msg: Outbound) {
   return deliver(waStore, fakeSend, user, msg);
 }
 
-const openaiKey = Deno.env.get("OPENAI_API_KEY");
+const openaiKey = Deno.env.get("DESK_OPENAI_API_KEY") || Deno.env.get("OPENAI_API_KEY");
+const readiness = () => benchReadiness((key) => Deno.env.get(key));
+const liveCalls = Deno.env.get("DEV_REAL_CALLS") === "1";
+const sarvam = sarvamConfigFromEnv();
+
+function liveDial(scoped: ChatStore) {
+  return async (args: Parameters<typeof dial>[1]) => {
+    if (!readiness().phoneReady) {
+      return { ok: false as const, error: "refused" as const, reason: "phone_setup_incomplete" };
+    }
+    const request = await scoped.request(args.requestId);
+    const { data: business } = await db.from("businesses").select("phone_e164").eq(
+      "id",
+      request.businessId ?? "",
+    ).single();
+    if (business?.phone_e164 !== Deno.env.get("DEV_TEST_PHONE")) {
+      return { ok: false as const, error: "refused" as const, reason: "test_target_only" };
+    }
+    return dial({
+      store: new DbCallStore(serviceClient(scoped.turnToken)),
+      start: async (call) => {
+        await scoped.assertTurn?.();
+        assertTestTarget(call.businessPhone, Deno.env.get("DEV_TEST_PHONE"));
+        if (!readiness().phoneReady) throw new CallRejected("phone test configuration is incomplete");
+        emit("call", { mode: "live", note: "Placing the approved phone test.", kind: call.kind });
+        return startCall(sarvam, call);
+      },
+    }, args);
+  };
+}
 const toolDeps = {
   store,
   send,
@@ -219,6 +269,7 @@ async function onApproved(_user: User, consent: ConsentStored): Promise<{ starte
     variables = { error: errText(e) };
   }
   emit("call", {
+    mode: "simulation",
     note: "Consent stored. Production now calls dial (reserve_call → Sarvam) with these variables. " +
       "No call is placed here; use Simulate to fake the result.",
     consent,
@@ -248,11 +299,38 @@ const turnDeps: AgentDeps = {
   send,
   isAdmin: (waId) => waId === DEV_WA_ID && Deno.env.get("DEV_ADMIN") === "1",
   trace: (event, data) => emit(`decision:${event}`, data),
-  luna: async (user, _text, msg) => {
+  luna: async (user, _text, msg, turnStore) => {
+    const scoped = turnStore ?? store;
+    const scopedSend: typeof send = async (u, m) => {
+      await scoped.assertTurn?.();
+      return send(u, m);
+    };
     if (!lunaDeps) {
-      return emit("luna", { note: "OPENAI_API_KEY is not set in supabase/functions/.env; Luna is off." });
+      await scopedSend(user, {
+        kind: "text",
+        body:
+          "The local chat is connected, but the agent needs an OpenAI key. You can prepare a test plan from the workflow panel while it is being configured.",
+      });
+      return;
     }
-    await runLuna(lunaDeps, user, msg.at, msg.messageId);
+    await runLuna(
+      {
+        ...lunaDeps,
+        store: scoped,
+        send: scopedSend,
+        onApproved: liveCalls
+          ? (u, c) =>
+            callAfterConsent(
+              { store: scoped, send: scopedSend, create: lunaDeps.create, dial: liveDial(scoped) },
+              u,
+              c,
+            )
+          : onApproved,
+      },
+      user,
+      msg.at,
+      msg.messageId,
+    );
   },
   onCommand: (user, route) =>
     runCommand(
@@ -262,11 +340,16 @@ const turnDeps: AgentDeps = {
     ),
   // The real screenshot check. The bench has no WhatsApp media, so an image reads from
   // raw.dataUrl when the page sends one; the confirm call is shown, not placed.
-  onPayment: (user, _route, msg) =>
-    handleScreenshot(
+  onPayment: (user, _route, msg, turnStore) => {
+    const scoped = turnStore ?? store;
+    const scopedSend: typeof send = async (u, m) => {
+      await scoped.assertTurn?.();
+      return send(u, m);
+    };
+    return handleScreenshot(
       {
-        store,
-        send,
+        store: scoped,
+        send: scopedSend,
         create: responsesClient(openaiKey ?? ""),
         trace: (event, data) => emit(`decision:${event}`, data),
         image: async (raw) => {
@@ -280,9 +363,10 @@ const turnDeps: AgentDeps = {
           };
         },
         notAPayment: async (u) => {
-          if (lunaDeps) await runLuna(lunaDeps, u, msg.at, msg.messageId);
+          if (lunaDeps) await turnDeps.luna(u, "", msg, scoped);
         },
         dial: async (a) => {
+          if (liveCalls) return liveDial(turnStore ?? store)(a);
           const variables = callVariables(a.kind, await callStore.requestInputs(a.requestId, null), false);
           emit("call", {
             note: "Payment passed: production now places the confirm call.",
@@ -295,7 +379,8 @@ const turnDeps: AgentDeps = {
       user,
       msg.raw,
       msg.messageId,
-    ),
+    );
+  },
 };
 
 // The cards Luna would see on this turn (E4 design 1.1).
@@ -390,6 +475,7 @@ async function snapshot(user: User) {
   ]);
   return {
     requests,
+    readiness: readiness(),
     consent_prompts: prompts.data,
     consents: consents.data,
     options: options.data,
@@ -407,6 +493,9 @@ async function snapshot(user: User) {
 async function onMessage(
   body: { text?: string; replyId?: string; title?: string; type?: string; quotedId?: string },
 ) {
+  if (body.text && (typeof body.text !== "string" || body.text.length > 4000)) {
+    throw new Error("Messages must be at most 4000 characters.");
+  }
   const user = await devUser();
   const id = `dev.in.${crypto.randomUUID()}`;
   const type = body.replyId ? "interactive" : body.type ?? "text";
@@ -472,6 +561,9 @@ async function onTool(body: { tool: string; args?: Record<string, unknown> }) {
       result = { ok: false, reason: "unknown tool" };
   }
   emit("tool_result", { tool: body.tool, result });
+  if (result && typeof result === "object" && "ok" in result && !result.ok) {
+    throw new Error("reason" in result ? String(result.reason) : "The action was refused.");
+  }
 }
 
 // What the router and output check run with, and the last few decisions they logged.
@@ -504,6 +596,9 @@ async function onJevMode(body: { mode?: string }) {
 async function onSimulate(body: { action: string; args?: Record<string, unknown> }) {
   const user = await devUser();
   const a = body.args ?? {};
+  if (liveCalls) {
+    throw new Error("Simulation is disabled in real phone mode. Restart with DEV_REAL_CALLS=0 to simulate.");
+  }
   emit("simulate", body);
   const { request } = await store.active(user.id);
   const now = new Date();
@@ -640,6 +735,11 @@ async function rpc(fn: string, args: Record<string, unknown>) {
 
 async function reset() {
   const user = await devUser();
+  const { data: open } = await db.from("calls").select("id").eq("user_id", user.id).is("settled_at", null)
+    .neq("agent_version", "dev").limit(1);
+  if (open?.length) {
+    throw new Error("A real phone test still needs its result. Refresh the result before resetting.");
+  }
   failSends = 0;
   await db.from("requests").delete().eq("user_id", user.id);
   await db.from("messages").delete().eq("user_id", user.id);
@@ -663,6 +763,7 @@ async function seed() {
     city: null,
   }, {
     onConflict: "wa_id",
+    ignoreDuplicates: true,
   });
   const allDay = {
     periods: [0, 1, 2, 3, 4, 5, 6].map((d) => ({
@@ -687,11 +788,106 @@ async function seed() {
 // Server ------------------------------------------------------------------------
 
 await seed();
+{
+  const user = await devUser();
+  const { data, error } = await db.from("messages").select("direction, wa_message_id, body, at")
+    .eq("user_id", user.id).order("at", { ascending: false }).limit(200);
+  if (error) throw error;
+  for (const message of (data ?? []).reverse()) {
+    history.push({
+      id: message.wa_message_id,
+      at: message.at,
+      type: message.direction === "out" ? "whatsapp_out" : "whatsapp_in",
+      data: message.direction === "out" ? { id: message.wa_message_id, msg: message.body } : {
+        ...message.body,
+        text: message.body.text ?? message.body.title,
+        messageId: message.wa_message_id,
+      },
+    });
+  }
+}
 const page = new URL("./index.html", import.meta.url);
 
-Deno.serve({ port: Number(Deno.env.get("DEV_PORT") ?? 8787) }, async (req) => {
+async function refreshPhoneResult() {
+  if (!liveCalls || !readiness().phoneReady) throw new Error("Real phone mode is not configured.");
+  const user = await devUser();
+  const { data: calls, error } = await db.from("calls").select(
+    "id, provider_call_id, provider_result, created_at",
+  )
+    .eq("user_id", user.id).is("settled_at", null).neq("agent_version", "dev").order("created_at").limit(10);
+  if (error) throw error;
+  if (!calls?.length) {
+    await runFollowThrough(toolDeps);
+    return;
+  }
+  const pending = calls.filter((c) => !c.provider_result);
+  const attempts = pending.length
+    ? await listAttempts(sarvam, new Date(calls[0].created_at), new Date())
+    : [];
+  for (const c of calls) {
+    let result = c.provider_result as CallResult | null;
+    if (!result) {
+      const a = attempts.find((a) => a.attempt_id === c.provider_call_id);
+      if (!a) continue;
+      result = attemptResult(a, c.id, null);
+      if (!result) continue;
+      if (a.interaction_id) result.transcript = await getTranscript(sarvam, a.interaction_id);
+      await callStore.finishCall(result);
+    }
+    emit("phone_result", { callId: c.id, status: result.status, transcript: result.transcript });
+    await reportCall(
+      {
+        ...toolDeps,
+        verify: openaiKey ? verifier(store, responsesClient(openaiKey)) : undefined,
+        checkClaim: openaiKey ? claimChecker(store, responsesClient(openaiKey)) : undefined,
+      },
+      c.id,
+      result,
+    );
+  }
+  await runFollowThrough(toolDeps);
+}
+
+async function preparePlan(body: { task?: string; businessId?: string }) {
+  const user = await devUser();
+  if (!await waStore.lastInboundAt(user.id)) {
+    throw new Error("Send a message first to open the 24-hour conversation window.");
+  }
+  const task = body.task === "question" ? "question" : "booking";
+  const started = await startNewRequest(toolDeps, user, task);
+  if (!started.ok) throw new Error(started.reason);
+  const { data: business } = await db.from("businesses").select("id").eq("id", body.businessId ?? "").like(
+    "place_id",
+    "dev/%",
+  ).maybeSingle();
+  if (!business) throw new Error("Choose a test business first.");
+  const selected = await setBusiness(toolDeps, user, business.id);
+  if (!selected.ok) throw new Error(selected.reason);
+  const tomorrow = new Date(Date.now() + 86400000);
+  const fields = task === "booking"
+    ? { exact_time: tomorrow.toISOString(), party_size: 2, customer_name: "Test customer" }
+    : {};
+  const updated = await setSlots(
+    toolDeps,
+    user,
+    fields,
+    task === "question" ? { add: ["What time do you close today?"] } : {},
+  );
+  if (!updated.ok) throw new Error(updated.reason);
+  const { request } = await store.active(user.id);
+  const proposed = await proposePlan(toolDeps, user, request!.id);
+  if (!proposed.ok) throw new Error(proposed.reason);
+}
+
+Deno.serve({ hostname: "127.0.0.1", port: Number(Deno.env.get("DEV_PORT") ?? 8787) }, async (req) => {
   const url = new URL(req.url);
   try {
+    if (!sameOrigin(req)) return new Response("Local same-origin requests only", { status: 403 });
+    if (url.pathname === "/app.css" || url.pathname === "/app.js") {
+      return new Response(await Deno.readTextFile(new URL(`.${url.pathname}`, import.meta.url)), {
+        headers: { "content-type": url.pathname.endsWith("css") ? "text/css" : "text/javascript" },
+      });
+    }
     if (url.pathname === "/") {
       return new Response(await Deno.readTextFile(page), {
         headers: { "content-type": "text/html; charset=utf-8" },
@@ -718,12 +914,17 @@ Deno.serve({ port: Number(Deno.env.get("DEV_PORT") ?? 8787) }, async (req) => {
     if (url.pathname === "/api/events") return Response.json(history);
     if (url.pathname === "/api/cards") return Response.json(await cards(await devUser()));
     if (url.pathname === "/api/businesses") {
-      const { data } = await db.from("businesses").select("id, name, address").like("place_id", "dev/%");
+      const { data } = await db.from("businesses").select("id, name, address").like(
+        "place_id",
+        liveCalls ? "dev/test-phone" : "dev/%",
+      );
       return Response.json(data);
     }
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
-      if (url.pathname === "/api/message") await onMessage(body);
+      if (url.pathname === "/api/prepare") await preparePlan(body);
+      else if (url.pathname === "/api/phone/refresh") await refreshPhoneResult();
+      else if (url.pathname === "/api/message") await onMessage(body);
       else if (url.pathname === "/api/tool") await onTool(body);
       else if (url.pathname === "/api/simulate") await onSimulate(body);
       else if (url.pathname === "/api/jev") await onJevMode(body);
@@ -735,6 +936,9 @@ Deno.serve({ port: Number(Deno.env.get("DEV_PORT") ?? 8787) }, async (req) => {
     return new Response("not found", { status: 404 });
   } catch (e) {
     emit("error", { path: url.pathname, error: errText(e) });
+    try {
+      emit("state", await snapshot(await devUser()));
+    } catch { /* Preserve original failure. */ }
     return Response.json({ ok: false, error: errText(e) }, { status: 500 });
   }
 });
@@ -761,7 +965,10 @@ async function loadLocalEnv() {
     // No .env: Luna stays off.
   }
   if (Deno.env.get("SUPABASE_URL") && Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) return;
-  const out = await new Deno.Command("supabase", { args: ["status", "-o", "env"], stderr: "null" }).output();
+  const out = await new Deno.Command("supabase", {
+    args: ["status", "--agent", "no", "-o", "env"],
+    stderr: "null",
+  }).output();
   const env = Object.fromEntries(
     new TextDecoder().decode(out.stdout).split("\n")
       .map((l) => l.match(/^([A-Z_]+)="?(.*?)"?$/))

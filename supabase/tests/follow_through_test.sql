@@ -180,7 +180,7 @@ insert into t values ('n1', (start_request('a0000000-0000-0000-0000-000000000001
 update requests set state = 'confirming', business_id = 'b0000000-0000-0000-0000-000000000001' where id = pg_temp.id('n1');
 select open_prompt('e0000000-0000-0000-0000-000000000002', pg_temp.id('n1'), 'ask', '{}', 'yes', 'Plan', '{"kind": "text", "body": "Plan"}', pg_temp.at('12:05'));
 select is((select count(*)::int from jsonb_array_elements(due_follow_ups(pg_temp.at('14:00'))) x where x ->> 'reason' = 'nudge'), 0, 'not before nudge_after_minutes');
-select is((select count(*)::int from jsonb_array_elements(due_follow_ups(pg_temp.at('15:10'))) x where x ->> 'reason' = 'nudge'), 1, 'then once');
+select is((select count(*)::int from jsonb_array_elements(due_follow_ups(pg_temp.at('15:10'))) x where x ->> 'reason' = 'nudge'), 0, 'no extra mid-window keep-alive');
 select queue_follow_up(pg_temp.id('n1'), 'nudge', 1, '{"event": "follow_up"}', pg_temp.at('15:10'));
 select is((select count(*)::int from jsonb_array_elements(due_follow_ups(pg_temp.at('20:00'))) x where x ->> 'reason' = 'nudge'), 0, 'only once');
 
@@ -209,6 +209,8 @@ select throws_ok($$insert into user_memories (user_id, kind, text, source) value
   ('a0000000-0000-0000-0000-000000000001', 'fact', 'Vegetarian', 'said')$$, '23505', null, 'a memory is kept once');
 select request_data_deletion('a0000000-0000-0000-0000-000000000001', pg_temp.at('12:20', '2026-10-25'));
 select is((select count(*)::int from user_memories where user_id = 'a0000000-0000-0000-0000-000000000001'), 0, 'delete my data takes the memories');
+-- Reset this fixture before independent caller-pinning checks. START itself cannot cancel erasure.
+update users set delete_requested_at=null where id='a0000000-0000-0000-0000-000000000001';
 select resume_user('a0000000-0000-0000-0000-000000000001');
 
 -- Dialling --------------------------------------------------------------------------

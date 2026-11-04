@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1.0.8";
-import { parseLinqWebhook, send, textContent, verifyLinqSignature } from "./linq.ts";
+import { parseLinqWebhook, parseStoredLinqMessage, send, textContent, verifyLinqSignature } from "./linq.ts";
 import { deliver, OutsideServiceWindow } from "./deliver.ts";
 import type { Store } from "./store.ts";
 
@@ -28,6 +28,12 @@ Deno.test("Linq inbound: normalized phone, quoted reply and text history", () =>
     "plan-id",
   ]);
   assertEquals((msg.raw as { text: { body: string } }).text.body, "Book for two");
+});
+
+Deno.test("Linq inbox recovery preserves the message, timestamp and quoted consent", () => {
+  const message = parseLinqWebhook(event())!;
+  assertEquals(parseStoredLinqMessage(message.raw), message);
+  assertEquals(parseStoredLinqMessage({ text: { body: "a Meta message" } }), null);
 });
 
 Deno.test("Linq ignores groups, email handles, outbound and status events", () => {

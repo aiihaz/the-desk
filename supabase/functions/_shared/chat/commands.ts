@@ -35,6 +35,7 @@ export async function runCommand(
     case "start": {
       const res = await store.resumeUser(user.id);
       deps.trace?.("start", res);
+      if (!res.ok) return sendTemplate(deps, user, "delete_pending");
       return sendTemplate(deps, user, "started");
     }
     case "admin": {

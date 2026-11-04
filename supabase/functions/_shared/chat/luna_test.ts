@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import type { User } from "../store.ts";
 import type { Item, ResponseOut } from "../openai.ts";
 import type { Outbound } from "../whatsapp.ts";
@@ -53,7 +53,9 @@ Deno.test("Luna sees the clock and the cards, and only this state's tools", asyn
   await runLuna(deps, user, now);
   const ctx = inputs[0][0].content as string;
   assertEquals(
-    ctx.startsWith("NOW: Fri, 23 Oct 2026, 12:00 pm IST (2026-10-23T12:00+05:30)\n\nMODE: task"),
+    ctx.startsWith(
+      "NOW: Fri, 23 Oct 2026, 12:00 pm IST (2026-10-23T12:00+05:30)\n\nCHANNEL: whatsapp\n\nMODE: task",
+    ),
     true,
   );
   assertEquals(ctx.includes("PROFILE\nname: Ihaz") && ctx.includes("TASK\nnone active"), true);
@@ -66,6 +68,7 @@ Deno.test("Luna sees the clock and the cards, and only this state's tools", asyn
     "my_places",
     "find_booking",
     "stay_quiet",
+    "recall_errands",
     "remember",
     "forget",
   ]);

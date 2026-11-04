@@ -1,7 +1,8 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
-import { handle } from "./handler.ts";
-import { FakeCallStore } from "../_shared/test_call_store.ts";
-import type { StartCall } from "../_shared/sarvam.ts";
+import { CallRejected } from "./sarvam.ts";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
+import { handle } from "./dial_request.ts";
+import { FakeCallStore } from "./test_call_store.ts";
+import type { StartCall } from "./sarvam.ts";
 
 function setup(start?: (c: StartCall) => Promise<string>) {
   const store = new FakeCallStore();
@@ -92,7 +93,7 @@ Deno.test("refused by check_dial → 409 with the reason, Sarvam never called", 
 
 Deno.test("Sarvam error → call row marked failed, 502", async () => {
   const { deps, store } = setup(async () => {
-    throw new Error("sarvam outbound failed 422");
+    throw new CallRejected("sarvam outbound failed 422");
   });
   const res = await handle(post(ok), deps);
   assertEquals(res.status, 502);

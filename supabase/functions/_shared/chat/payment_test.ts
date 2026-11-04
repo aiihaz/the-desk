@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import type { DialArgs } from "../dial.ts";
 import type { Outbound } from "../whatsapp.ts";
 import { bindHold, checkScreenshot, handleScreenshot, type PaymentDeps, type Screenshot } from "./payment.ts";

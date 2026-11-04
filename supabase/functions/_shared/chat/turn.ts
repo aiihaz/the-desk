@@ -19,11 +19,16 @@ export type TurnDeps = {
   send: (user: User, msg: Outbound) => Promise<string>;
   isAdmin: (waId: string) => boolean;
   // Free text and media markers (Jev router, Luna, output check).
-  luna: (user: User, text: string, msg: Inbound) => Promise<void>;
+  luna: (user: User, text: string, msg: Inbound, turnStore?: ChatStore) => Promise<void>;
   // STOP, delete my data, admin commands.
   onCommand: (user: User, route: Extract<Route, { kind: "command" }>) => Promise<void>;
   // Payment screenshot (E7).
-  onPayment: (user: User, route: Extract<Route, { kind: "screenshot" }>, msg: Inbound) => Promise<void>;
+  onPayment: (
+    user: User,
+    route: Extract<Route, { kind: "screenshot" }>,
+    msg: Inbound,
+    turnStore?: ChatStore,
+  ) => Promise<void>;
   now?: () => Date;
   // Decision log (the dev test page shows it; production leaves it unset).
   trace?: (event: string, data: unknown) => void;

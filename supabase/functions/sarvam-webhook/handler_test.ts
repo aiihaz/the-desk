@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import { handle } from "./handler.ts";
 import { FakeCallStore } from "../_shared/test_call_store.ts";
 

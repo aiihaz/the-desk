@@ -23,18 +23,54 @@ export async function handleInbound(user: User, msg: Inbound, deps: AgentDeps): 
   // STOP must act now, even mid-turn. START only counts while stopped; otherwise it is text.
   const cmd = command(msg, deps.isAdmin(user.waId));
   if (cmd && (cmd.command !== "start" || (await store.user(user.id)).stoppedAt)) {
+    await handleTurn(user, msg, deps);
     await store.markHandled(msg.messageId);
-    return handleTurn(user, msg, deps);
+    return;
   }
 
   await sleep((await store.limitInt("turn_debounce_ms", user.id)) ?? 1500);
   for (let waited = 0;; waited += RETRY_MS) {
     const claim = await store.claimTurn(user.id, msg.messageId, LEASE_S);
     if (claim.status === "claimed") {
+      const bound = claim.token ? store.forTurn?.(user.id, claim.token) : undefined;
+      let lost = false;
+      let renewing: Promise<void> | null = null;
+      const heartbeat = bound
+        ? setInterval(() => {
+          if (!renewing) {
+            renewing = bound.renewTurn!().catch(() => {
+              lost = true;
+            }).finally(() => {
+              renewing = null;
+            });
+          }
+        }, 20_000)
+        : undefined;
+      const guarded = bound
+        ? {
+          ...deps,
+          store: bound,
+          send: async (...args: Parameters<AgentDeps["send"]>) => {
+            if (lost) throw new Error("turn lease lost");
+            await bound.assertTurn?.();
+            return deps.send(...args);
+          },
+          luna: (u: User, t: string, m: Inbound) => deps.luna(u, t, m, bound),
+          onPayment: (u: User, r: Parameters<AgentDeps["onPayment"]>[1], m: Inbound) =>
+            deps.onPayment(u, r, m, bound),
+        }
+        : deps;
       try {
-        return await handleTurn(user, msg, deps, claim.batch);
+        await handleTurn(user, msg, guarded, claim.batch);
+        if (bound) await bound.completeTurn?.();
+        return;
+      } catch (e) {
+        if (bound) await bound.abandonTurn?.().catch(() => {});
+        throw e;
       } finally {
-        await store.releaseTurn(user.id, msg.messageId);
+        if (heartbeat !== undefined) clearInterval(heartbeat);
+        if (renewing) await renewing;
+        if (!bound) await store.releaseTurn(user.id, msg.messageId);
       }
     }
     // newer: a later message's turn takes this one too. handled: a turn already took it.

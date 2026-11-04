@@ -90,6 +90,7 @@ export async function approvePlan(
     };
   }
 
+  const inputSeq = waMessageId ? await store.inboundWatermark?.(user.id, waMessageId) : undefined;
   const { model, effort } = await readingSettings(store, user.id);
   let v: Reading;
   try {
@@ -109,7 +110,11 @@ export async function approvePlan(
     };
   }
 
+  if (await store.hasUnhandledInbound(user.id)) {
+    return { ok: false, reason: "they wrote again; read their correction in the next turn", end_turn: true };
+  }
   const consent = await store.recordConsent(prompt.id, optionId, prompt.confirmWord, waMessageId ?? "", {
+    ...(inputSeq !== undefined ? { input_seq: inputSeq } : {}),
     evidence: v.line!.text,
     why: v.why,
     model,

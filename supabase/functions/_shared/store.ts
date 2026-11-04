@@ -32,6 +32,8 @@ export function storedUser(row: {
 export interface Store {
   // false if this exact webhook body was already stored (Meta redelivery).
   saveEvent(externalId: string, payload: unknown): Promise<boolean>;
+  completeEvent?(externalId: string): Promise<void>;
+  inboundPending?(messageId: string): Promise<boolean>;
   upsertUser(waId: string, name: string | null): Promise<User>;
   // false if the message id was already stored.
   saveInbound(userId: string, msg: Inbound): Promise<boolean>;
@@ -43,11 +45,23 @@ export interface Store {
   finishLinqContactShare?(chatId: string, claim: string, shared: boolean): Promise<void>;
 }
 
-export function serviceClient(): SupabaseClient {
+export function serviceClient(turnToken?: string): SupabaseClient {
   return createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-    { auth: { persistSession: false } },
+    {
+      auth: { persistSession: false },
+      global: {
+        headers: turnToken ? { "x-desk-turn": turnToken } : {},
+        fetch: (input, init) =>
+          fetch(input, {
+            ...init,
+            signal: init?.signal
+              ? AbortSignal.any([init.signal, AbortSignal.timeout(10_000)])
+              : AbortSignal.timeout(10_000),
+          }),
+      },
+    },
   );
 }
 
@@ -63,6 +77,18 @@ export class DbStore implements Store {
       .select("id");
     if (error) throw error;
     return data.length > 0;
+  }
+
+  async completeEvent(externalId: string): Promise<void> {
+    const { error } = await this.db.from("webhook_events").update({ ingested_at: new Date().toISOString() })
+      .eq("source", this.source).eq("external_id", externalId);
+    if (error) throw error;
+  }
+  async pendingEvents() {
+    const { data, error } = await this.db.from("webhook_events").select("external_id,payload")
+      .eq("source", this.source).is("ingested_at", null).order("received_at").limit(20);
+    if (error) throw error;
+    return data;
   }
 
   async upsertUser(waId: string, name: string | null): Promise<User> {
@@ -107,17 +133,33 @@ export class DbStore implements Store {
   }
 
   async saveInbound(userId: string, msg: Inbound): Promise<boolean> {
-    const { data, error } = await this.db.from("messages")
-      .upsert({
-        user_id: userId,
-        wa_message_id: msg.messageId,
-        direction: "in",
-        body: msg.raw,
-        at: msg.at.toISOString(),
-      }, { onConflict: "wa_message_id", ignoreDuplicates: true })
-      .select("id");
+    const { data, error } = await this.db.rpc("ingest_inbound", {
+      p_user_id: userId,
+      p_message_id: msg.messageId,
+      p_body: msg.raw,
+      p_at: msg.at.toISOString(),
+    });
     if (error) throw error;
-    return data.length > 0;
+    return data === true;
+  }
+
+  async inboundPending(messageId: string): Promise<boolean> {
+    const { data, error } = await this.db.from("messages").select("id")
+      .eq("wa_message_id", messageId).is("handled_at", null).maybeSingle();
+    if (error) throw error;
+    return !!data;
+  }
+
+  async pendingInbound() {
+    const { data, error } = await this.db.rpc("pending_inbound");
+    if (error) throw error;
+    return data as {
+      user_id: string;
+      wa_id: string;
+      blocked: boolean;
+      channel: MessagingChannel;
+      body: unknown;
+    }[];
   }
 
   async lastInboundAt(userId: string): Promise<Date | null> {

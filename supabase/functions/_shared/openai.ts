@@ -25,6 +25,7 @@ export type CreateResponse = (req: {
   tools: FunctionTool[];
   reasoningEffort: string;
   maxOutputTokens: number;
+  deadlineAt?: number;
 }) => Promise<ResponseOut>;
 
 // A hung request must not leave the user in silence: after timeoutMs the call fails and
@@ -33,7 +34,9 @@ export function responsesClient(apiKey: string, timeoutMs = 30_000): CreateRespo
   return async (req) => {
     const res = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(
+        Math.max(1, Math.min(timeoutMs, req.deadlineAt ? req.deadlineAt - Date.now() : timeoutMs)),
+      ),
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: req.model,

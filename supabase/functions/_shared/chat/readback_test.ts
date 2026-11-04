@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import { buildPayload } from "../whatsapp.ts";
 import {
   bookingReadback,

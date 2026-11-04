@@ -19,7 +19,8 @@ export async function deliver(
   now = new Date(),
   serviceWindow = true,
 ): Promise<string> {
-  if (serviceWindow && msg.kind !== "template" && needsTemplate(await store.lastInboundAt(user.id), now)) {
+  if (msg.kind === "template") throw new Error("paid template messages are disabled");
+  if (serviceWindow && needsTemplate(await store.lastInboundAt(user.id), now)) {
     throw new OutsideServiceWindow();
   }
   const id = await sender(user.waId, msg);

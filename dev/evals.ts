@@ -16,7 +16,7 @@ type Event = { at: string; type: string; data: Record<string, unknown> };
 type Msg = {
   text?: string;
   quoteLastPrompt?: boolean;
-  react?: "plan" | "last";
+  react?: "plan" | "last" | "other";
   sim?: string;
   args?: Record<string, unknown>;
 };
@@ -110,13 +110,18 @@ const JOURNEYS: Case[] = [
       { text: "go ahead" },
       { sim: "call_booked" },
       { text: "table for 2 at zudio in kozhikode tomorrow 8pm" },
-      { react: "last" },
+      { react: "other" },
     ],
     check: (r) => {
       const plans = outs(r.events).filter(isReadback).length;
+      const after = r.events.slice(r.events.findLastIndex((e) => e.type === "whatsapp_in"));
       return [
         ...need(plans >= 1, "no plan was sent"),
-        ...need(consents(r.events) <= 2, "too many consents"),
+        ...need(consents(r.events) === 1, "a reaction on another message must not approve the open plan"),
+        ...need(
+          !after.some((e) => e.type === "whatsapp_out"),
+          "a reaction on another message should receive no reply",
+        ),
       ];
     },
   },
@@ -583,7 +588,12 @@ async function play(c: Case): Promise<Run> {
     }
     if (m.react) {
       const all = outs(await events());
-      const target = m.react === "plan" ? all.filter(isReadback).at(-1) : all.at(-1);
+      const target = m.react === "plan"
+        ? all.filter(isReadback).at(-1)
+        : m.react === "other"
+        ? all.filter((o) => !isReadback(o)).at(-1)
+        : all.at(-1);
+      if (!target) throw new Error("reaction target is missing");
       await post("/api/message", { type: "reaction", text: "👍", quotedId: target?.id });
       userMsgs++;
       continue;
@@ -604,9 +614,11 @@ const jev = Deno.env.get("JEV");
 if (jev) await post("/api/jev", { mode: jev });
 const only = Deno.env.get("ONLY")?.toLowerCase();
 
+const selected = CASES.filter((x) => !only || x.name.toLowerCase().includes(only));
+if (!selected.length) throw new Error("no evaluation cases selected");
 let failed = 0;
 const rows: string[][] = [];
-for (const c of CASES.filter((x) => !only || x.name.toLowerCase().includes(only))) {
+for (const c of selected) {
   const r = await play(c);
   const problems = c.check(r);
   const steps = r.events.filter((e) => e.type === "decision:luna_step");

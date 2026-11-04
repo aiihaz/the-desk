@@ -64,6 +64,12 @@ export class FakeCallStore implements CallStore {
     c.status = "failed";
     c.outcome = reason;
   }
+  async beginSubmission(_callId: string) {}
+  async markUnknown(callId: string, reason: string, attemptId?: string) {
+    const c = this.calls.get(callId)!;
+    c.outcome = reason;
+    if (attemptId) c.providerCallId = attemptId;
+  }
   async saveEvent(attemptId: string) {
     if (this.events.has(attemptId)) return false;
     this.events.add(attemptId);

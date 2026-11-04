@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import type { CreateResponse } from "../openai.ts";
 import { type BookingCheck, instant, readBookedWhen, timeCheck, verifyBooking } from "./verify.ts";
 

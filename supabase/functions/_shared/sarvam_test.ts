@@ -112,11 +112,15 @@ Deno.test("paused calling makes no HTTP request, including for retries and follo
   }
 });
 
-Deno.test("startCall: a 422 throws with Sarvam's detail", async () => {
+Deno.test("startCall: a 422 is a definite rejection", async () => {
   const real = globalThis.fetch;
   globalThis.fetch = async () => Response.json({ detail: [{ msg: "bad app_id" }] }, { status: 422 });
   try {
-    await assertRejects(() => startCall(cfg, call), Error, "bad app_id");
+    await assertRejects(
+      () => startCall(cfg, call),
+      Error,
+      "422",
+    );
   } finally {
     globalThis.fetch = real;
   }

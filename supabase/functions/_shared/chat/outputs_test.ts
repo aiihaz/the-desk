@@ -1,5 +1,5 @@
 import contract from "../../../../agent/contract.json" with { type: "json" };
-import { assertEquals } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import { readOutputs } from "./outputs.ts";
 
 Deno.test("the eng plan 3.4 contract reads as itself", () => {

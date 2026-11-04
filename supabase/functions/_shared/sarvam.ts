@@ -98,19 +98,30 @@ export function buildOutbound(cfg: SarvamConfig, call: StartCall): Json {
 }
 
 // Returns Sarvam's attempt_id (stored as calls.provider_call_id).
+export class CallRejected extends Error {}
+
 export async function startCall(cfg: SarvamConfig, call: StartCall): Promise<string> {
-  if (cfg.callsPaused) throw new Error("calling is paused; wait for the user to explicitly resume");
+  if (cfg.callsPaused) throw new CallRejected("calling is paused; wait for the user to explicitly resume");
+  let payload: unknown;
+  try {
+    payload = buildOutbound(cfg, call);
+  } catch (e) {
+    throw new CallRejected(String(e));
+  }
   const res = await fetch(
     `${cfg.baseUrl}/outbounds/v1/orgs/${cfg.orgId}/workspaces/${cfg.workspaceId}/outbounds`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(20_000),
       headers: { "X-API-Key": cfg.apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify(buildOutbound(cfg, call)),
+      body: JSON.stringify(payload),
     },
   );
   const body = await res.json().catch(() => ({}));
   if (!res.ok || !body?.attempt_id) {
-    throw new Error(`sarvam outbound failed ${res.status}: ${JSON.stringify(body?.detail ?? body)}`);
+    const message = `sarvam outbound response ${res.status}`;
+    if (res.status >= 400 && res.status < 500 && res.status !== 408) throw new CallRejected(message);
+    throw new Error(message);
   }
   return body.attempt_id;
 }
@@ -200,7 +211,10 @@ export async function listAttempts(cfg: SarvamConfig, from: Date, to: Date): Pro
       limit: "1000",
       offset: String(offset),
     });
-    const res = await fetch(`${base}?${q}`, { headers: { "X-API-Key": cfg.apiKey } });
+    const res = await fetch(`${base}?${q}`, {
+      headers: { "X-API-Key": cfg.apiKey },
+      signal: AbortSignal.timeout(15_000),
+    });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(`sarvam attempts failed ${res.status}: ${JSON.stringify(body?.detail ?? body)}`);
@@ -221,7 +235,7 @@ export async function getTranscript(
     `${cfg.baseUrl}/analytics/v1/${cfg.orgId}/${cfg.workspaceId}/${cfg.appId}/transcripts/${
       encodeURIComponent(interactionId)
     }`,
-    { headers: { "X-API-Key": cfg.apiKey } },
+    { headers: { "X-API-Key": cfg.apiKey }, signal: AbortSignal.timeout(15_000) },
   );
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {

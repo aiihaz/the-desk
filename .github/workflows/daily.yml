@@ -17,7 +17,7 @@ jobs:
           URL: ${{ secrets.SUPABASE_PROJECT_URL }}
           KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          if [ -z "$URL" ] || [ -z "$KEY" ]; then echo "secrets not set; skipping"; exit 0; fi
+          if [ -z "$URL" ] || [ -z "$KEY" ]; then echo "::error::health credentials are not configured"; exit 1; fi
           body=$(curl -sS --fail-with-body -X POST "$URL/functions/v1/health" -H "Authorization: Bearer $KEY")
           echo "$body"
           echo "$body" | jq -e '.ok == true' > /dev/null || { echo "::error::alerts not delivered to WhatsApp"; exit 1; }

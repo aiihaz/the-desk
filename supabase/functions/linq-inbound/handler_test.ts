@@ -8,10 +8,16 @@ function setup() {
   const seen = new Set<string>();
   const pending: Promise<unknown>[] = [];
   const handed: string[] = [];
+  const completed: string[] = [];
+  let unhandled = false;
   let fail = false;
   const user = { id: "u", waId: "919876543210", blocked: false };
   const store = {
     saveEvent: async () => true,
+    completeEvent: async (id: string) => {
+      completed.push(id);
+    },
+    inboundPending: async () => unhandled,
     upsertUser: async () => user,
     saveInbound: async (_u: string, msg: Inbound) => {
       if (fail) throw new Error("database unavailable");
@@ -24,6 +30,8 @@ function setup() {
     user,
     handed,
     pending,
+    completed,
+    unhandled: (value: boolean) => unhandled = value,
     fail: (value: boolean) => fail = value,
     deps: {
       store,
@@ -58,14 +66,28 @@ Deno.test("Linq webhook retries persistence failure and never hands off blocked 
   const s = setup();
   s.fail(true);
   assertEquals((await handle(await request(), s.deps)).status, 503);
+  assertEquals(s.completed, []);
   s.fail(false);
   assertEquals((await handle(await request(), s.deps)).status, 200);
   await Promise.all(s.pending);
   assertEquals(s.handed.length, 1);
+  assertEquals(s.completed.length, 1);
   const blocked = setup();
   blocked.user.blocked = true;
   assertEquals((await handle(await request(), blocked.deps)).status, 200);
   assertEquals(blocked.handed.length, 0);
+});
+
+Deno.test("Linq redelivery resumes an unfinished turn and completes event ingestion", async () => {
+  const s = setup();
+  await handle(await request(), s.deps);
+  s.unhandled(true);
+  await handle(await request(), s.deps);
+  s.unhandled(false);
+  await handle(await request(), s.deps);
+  await Promise.all(s.pending);
+  assertEquals(s.handed, ["inbound-id", "inbound-id"]);
+  assertEquals(s.completed.length, 3);
 });
 
 Deno.test("Linq webhook rejects unsigned requests and unsupported methods", async () => {

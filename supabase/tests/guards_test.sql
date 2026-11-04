@@ -222,6 +222,11 @@ select is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'first
 select is(pg_temp.reason(check_dial((select id from t where name = 'r_other'), 'first', null, true, pg_temp.at('19:40'))),
           'nothing_to_retry', 'a retry needs an earlier call');
 
+-- Repeating a non-retry action requires a new approval, even with spare call budget.
+select is(pg_temp.reason(check_dial((select id from t where name='r1'),'first',null,false,pg_temp.at('19:40'))),
+ 'consent_spent','one approval cannot dispatch a second first call');
+insert into consents(request_id,kind,text_shown,fields_hash,at)
+ select id,'ask','fresh approval',fields_hash(fields),clock_timestamp() from requests where id=(select id from t where name='r1');
 select is(pg_temp.reason(reserve_call((select id from t where name = 'r1'), 'first', null, false, pg_temp.at('19:40'))),
           'ok', 'second availability call (re-ask) allowed');
 -- r1 now has 4 calls: first, booking, first (retry), first.
@@ -230,6 +235,9 @@ select is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'booki
 select set_limit('max_calls_per_request', '10', 'test');
 select is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'first', null, false, pg_temp.at('19:45'))),
           'limit_availability_calls', 'max_availability_calls_per_request enforced (retries not counted)');
+insert into consents(request_id,kind,option_id,text_shown,fields_hash,at)
+ select id,'book',(select id from t where name='o_fresh'),'fresh approval',fields_hash(fields),clock_timestamp()
+ from requests where id=(select id from t where name='r1');
 select is(pg_temp.reason(reserve_call((select id from t where name = 'r1'), 'booking', (select id from t where name = 'o_fresh'), false, pg_temp.at('19:45'))),
           'ok', 'second booking call (after an alternative) allowed');
 select is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'booking', (select id from t where name = 'o_fresh'), false, pg_temp.at('19:50'))),

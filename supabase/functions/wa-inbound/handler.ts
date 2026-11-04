@@ -27,22 +27,30 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
     return new Response("bad json", { status: 400 });
   }
 
-  // A redelivered body is acknowledged and dropped. A 5xx below makes Meta retry,
-  // which is what we want if the database is down.
-  if (!(await deps.store.saveEvent(await sha256Hex(raw), payload))) {
-    return new Response("ok");
-  }
+  // Event deduplication is for storage, never proof of completed ingestion.
+  // Message IDs dedupe writes; a partial failure must resume on redelivery.
+  await deps.store.saveEvent(await sha256Hex(raw), payload);
 
+  await ingestPayload(payload, deps);
+  await deps.store.completeEvent?.(await sha256Hex(raw));
+  return new Response("ok");
+}
+
+// Only callers that have verified the signature, or internal recovery of an already
+// verified stored event, enter here. Message IDs and inbox state make replay safe.
+export async function ingestPayload(
+  payload: unknown,
+  deps: Pick<Deps, "store" | "background" | "handOff">,
+): Promise<void> {
   for (const msg of parseWebhook(payload).messages) {
     const user = await deps.store.upsertUser(msg.waId, msg.name);
     const isNew = await deps.store.saveInbound(user.id, msg);
-    if (isNew && !user.blocked) {
+    if ((isNew || await deps.store.inboundPending?.(msg.messageId)) && !user.blocked) {
       deps.background(
         deps.handOff(user, msg).catch((e) => console.error("handoff failed", msg.messageId, e)),
       );
     }
   }
-  return new Response("ok");
 }
 
 // Meta's one-time webhook check: GET ?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...

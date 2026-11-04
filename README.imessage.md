@@ -7,7 +7,9 @@ and follow-through jobs are shared.
 
 Hosted project: `rvglpiyctuzpegbvlane` (`thedesk`). The Linq webhook is deployed at
 `https://rvglpiyctuzpegbvlane.supabase.co/functions/v1/linq-inbound?version=2026-02-03`.
-All 18 migrations are applied; reconciliation and health checks are configured.
+The branch includes main `c658630` and Codex reliability/memory `dd60d98`.
+Migrations 0019–0022 integrate their schema changes after the 18 deployed Linq
+migrations, preserving the existing project and migration history.
 
 ## Owner-only calling, paused
 
@@ -73,14 +75,15 @@ project reference:
 git switch imessage-linq
 export DESK_PROJECT_REF="your-existing-project-ref"
 supabase db push --remote="$DESK_PROJECT_REF" --yes
-supabase functions deploy linq-inbound sarvam-webhook reconcile health \
+supabase functions deploy linq-inbound sarvam-webhook reconcile health follow-through dial wa-send \
   --remote="$DESK_PROJECT_REF" --use-api
 ```
 
-Keep the existing WhatsApp webhook subscription and secrets. Its function does
-not need to be redeployed: the database migration preserves its insert/conflict
-contract. Deploying the shared report/reconcile/health functions is necessary so
-asynchronous replies and admin alerts can use either channel.
+Keep any existing WhatsApp webhook subscription and secrets. If WhatsApp is
+active in this project, deploy `wa-inbound` with this release as well: both channel
+adapters now use the shared fenced runtime. Deploy the shared workers with the
+migrations, including the minute `follow-through` tick. `dial` and `wa-send` deploy
+authenticated retirement responses (410), replacing legacy direct-action endpoints.
 
 Install Node 22+ and Linq CLI 2.6+ (verified here with 2.7.0), then authenticate:
 
@@ -145,6 +148,8 @@ subscription, Ctrl+C cleans up).
 ```bash
 deno task check
 deno task test
+deno task test:auth
+deno task test:bench
 supabase db start
 supabase test db
 ```
@@ -159,8 +164,10 @@ API reference: https://docs.linqapp.com/channel/imessage/llms.txt
 
 ## Hosted verification record
 
-- Runtime source deployed: `bd02f4b` (the later branch commits document the rollout).
-- Function tests: 344 passed; formatting, lint, type checks and database CI passed.
+- Before this merge, runtime source `bd02f4b` passed 344 function tests and hosted
+  verification. This release merges main `c658630` and Codex `dd60d98`; its combined
+  function suite passes 378 tests, with formatting, lint, type checks, bench safety,
+  and internal endpoint authorization checked separately.
 - Live Linq reply from the hosted model: delivered and read.
 - Signed webhook probe: 200; unsigned webhook probe: 401.
 - Reconciliation heartbeat is running; health reports `ok=true`, `kill_switch=true`,
@@ -201,3 +208,17 @@ Native contact-card deployment verified: active card **The Desk**, accepted shar
 in the owner's existing iMessage chat, and a recorded 24-hour cooldown. All 16
 contact-card pgTAP checks also passed in a rolled-back test on the hosted database.
 The purchased caller ID `+918064269395` is registered; calling remains paused.
+
+## Shared upgraded agent
+
+Both messaging adapters run `createAgentRuntime(channel)`: renewable fenced turns,
+input-watermark consent checks, durable submission/settlement recovery, tracked
+message ownership, evidence-backed memory corrections, and past-errand recall.
+Reconciliation replays signed stored Linq envelopes and reconstructs normalized
+Linq inbox messages through the Linq parser. Native contact-card sharing, threaded
+replies, screenshot handling, and per-channel identities remain in place.
+
+WhatsApp service-window expiry and closing-window nudges apply only to WhatsApp.
+Linq keeps ordinary follow-ups and can recover inbox work after 24 hours. Erasure
+removes Linq raw envelopes and contact-card state, then attempts its confirmation
+through the original channel without recreating the profile.

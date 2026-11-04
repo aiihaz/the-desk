@@ -144,6 +144,19 @@ export function parseLinqWebhook(payload: unknown): Inbound | null {
   };
 }
 
+// Stored bodies use the normalized shape; recovery must reconstruct a Linq
+// message, rather than pass it through Meta's parser.
+export function parseStoredLinqMessage(raw: unknown): Inbound | null {
+  const data = (raw as { linq?: unknown })?.linq;
+  return data
+    ? parseLinqWebhook({
+      event_type: "message.received",
+      webhook_version: "2026-02-03",
+      data,
+    })
+    : null;
+}
+
 export async function downloadLinqImage(raw: unknown): Promise<{ mime: string; bytes: Uint8Array } | null> {
   const parts = (raw as { linq?: { parts?: Part[] } })?.linq?.parts;
   const image = parts?.find((p) => p.type === "media" && p.mime_type?.startsWith("image/") && p.url);

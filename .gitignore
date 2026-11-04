@@ -4,3 +4,5 @@
 supabase/.branches
 supabase/.temp
 .DS_Store
+# Skills are installed locally; skills-lock.json records their source.
+.agents/skills/

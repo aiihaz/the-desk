@@ -28,14 +28,26 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   // Message IDs are the processing dedupe key; saveInbound must succeed before acknowledgment.
   try {
     await deps.store.saveEvent(req.headers.get("webhook-id")!, payload);
-    const user = await deps.store.upsertUser(msg.waId, msg.name);
-    if (await deps.store.saveInbound(user.id, msg) && !user.blocked) {
-      deps.background(
-        deps.handOff(user, msg).catch((e) => console.error("linq handoff failed", msg!.messageId, e)),
-      );
-    }
+    await ingestLinqPayload(payload, deps);
+    await deps.store.completeEvent?.(req.headers.get("webhook-id")!);
   } catch {
     return new Response("storage unavailable", { status: 503 });
   }
   return new Response("ok");
+}
+
+// Also used by recovery, only for events already verified and persisted by handle().
+export async function ingestLinqPayload(
+  payload: unknown,
+  deps: Pick<Deps, "store" | "background" | "handOff">,
+): Promise<void> {
+  const msg = parseLinqWebhook(payload);
+  if (!msg) return;
+  const user = await deps.store.upsertUser(msg.waId, msg.name);
+  const isNew = await deps.store.saveInbound(user.id, msg);
+  if ((isNew || await deps.store.inboundPending?.(msg.messageId)) && !user.blocked) {
+    deps.background(
+      deps.handOff(user, msg).catch((e) => console.error("linq handoff failed", msg.messageId, e)),
+    );
+  }
 }

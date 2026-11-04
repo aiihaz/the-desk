@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "jsr:@std/assert@1.0.8";
+import { deepStrictEqual as assertEquals, rejects as assertRejects } from "node:assert/strict";
 import { parsePlaces, placesClient, shortAddress, toE164 } from "./places.ts";
 
 const fixture = (name: string) =>
@@ -52,5 +52,8 @@ Deno.test("placesClient: India, field mask, errors", async () => {
     1000,
     async () => new Response('{"error":{"message":"denied"}}', { status: 403 }),
   );
-  await assertRejects(() => bad({ text: "x" }), Error, "places 403");
+  await assertRejects(
+    () => bad({ text: "x" }),
+    (e: unknown) => e instanceof Error && e.message.includes("places 403"),
+  );
 });

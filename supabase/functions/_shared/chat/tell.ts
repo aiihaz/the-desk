@@ -216,6 +216,7 @@ async function write(
 
 async function writeOne(deps: TellDeps, d: Unwritten): Promise<boolean> {
   const { store } = deps;
+  if (store.assertWriter && !await store.assertWriter(d.id)) return false;
   const now = deps.now?.() ?? new Date();
   const model = (await store.limitText("report_model", d.userId)) ??
     (await store.limitText("luna_model", d.userId)) ?? "gpt-6-luna";

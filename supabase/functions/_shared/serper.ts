@@ -57,7 +57,7 @@ export function withWebPhones(search: SearchPlaces, web: SearchWeb): SearchPlace
         const found = await web([p.name, p.address ?? p.city].filter(Boolean).join(", "));
         // Every word of the name, and the fewest others: "Hotel Paragon" over "Paragon Hotel Tours".
         const words = (t: string) => t.split(/\s+/).filter(Boolean).length;
-        const fit = found.filter((w) => indianE164(w.phone) && nameFits(p.name, w.title))
+        const fit = found.filter((w) => indianE164(w.phone) && nameFits(p.name, w.title) && sameBranch(p, w))
           .sort((a, b) => words(a.title) - words(b.title))[0];
         out.push(fit ? { ...p, phone: indianE164(fit.phone), phoneFromWeb: true } : p);
       } catch (e) {
@@ -67,4 +67,18 @@ export function withWebPhones(search: SearchPlaces, web: SearchWeb): SearchPlace
     }
     return out;
   };
+}
+
+// A matching chain name alone cannot establish which branch owns a phone number.
+export function sameBranch(place: Pick<PlaceHit, "address" | "area" | "city">, web: WebPlace): boolean {
+  if (!web.address) return false;
+  const norm = (s: string) => s.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const address = norm(web.address);
+  if (place.city && !address.includes(norm(place.city))) return false;
+  const branch = norm(place.area ?? "");
+  if (branch && address.includes(branch)) return true;
+  const expected = norm(place.address ?? "");
+  return expected.length > 4 &&
+    (address.includes(expected) ||
+      expected.includes(address) && address.length > 8 && address !== norm(place.city ?? ""));
 }

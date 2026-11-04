@@ -419,12 +419,6 @@ enabled = true
 [functions.wa-inbound]
 verify_jwt = false
 
-[functions.wa-send]
-verify_jwt = true
-
-[functions.dial]
-verify_jwt = true
-
 # Sarvam sends no JWT or signature; the handler checks the ?token= in the URL instead.
 [functions.sarvam-webhook]
 verify_jwt = false
@@ -439,3 +433,12 @@ verify_jwt = true
 # Linq verifies Standard Webhooks HMAC and timestamp itself.
 [functions.linq-inbound]
 verify_jwt = false
+[functions.follow-through]
+verify_jwt = true
+
+# Authenticated tombstones for the previously deployed internal endpoints.
+[functions.dial]
+verify_jwt = true
+
+[functions.wa-send]
+verify_jwt = true
