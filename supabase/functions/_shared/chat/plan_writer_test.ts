@@ -7,6 +7,8 @@ const input: PlanInput = {
   reference: "Call Paragon Kannur Road and book for four tomorrow at 8pm. Ask approval.",
   chat: [{ from: "user", text: "book Paragon Kannur Road for four tomorrow 8pm" }],
   language: "en",
+  now: "2026-11-05T21:20+05:30",
+  timezone: "Asia/Kolkata",
 };
 const answer = (name: string, value: unknown): ResponseOut => ({
   output: [{ type: "function_call", name, arguments: JSON.stringify(value) }],

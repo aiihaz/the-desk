@@ -246,6 +246,8 @@ export async function proposePlan(
         reference: p.text,
         chat: chat.map(({ from, text }) => ({ from, text })),
         language: info.language,
+        now: new Date(now.getTime() + 330 * 60_000).toISOString().slice(0, 16) + "+05:30",
+        timezone: "Asia/Kolkata",
       });
     } catch (e) {
       if (isTurnInvalidated(e)) throw e;
