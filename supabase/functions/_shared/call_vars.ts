@@ -133,8 +133,8 @@ const NO_PHONE = "Don't give their phone number: they asked not to share it. If 
   "book, don't book: find out why, and say you'll check and get back to them.";
 
 const ADVANCE = "No advance: if they want one, don't agree. Take down the amount, whether it's adjusted " +
-  "against the bill, whether it's refunded, how and where to pay, by when, and whether they'll keep the " +
-  "slot meanwhile, then say you'll check and get back to them.";
+  "against the bill, whether it's refunded, how and where to pay, by when, whether they'll keep the " +
+  "slot meanwhile and until when, then say you'll check and get back to them.";
 
 // The errand as settled before the call. Every line comes from what the user approved.
 function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars {

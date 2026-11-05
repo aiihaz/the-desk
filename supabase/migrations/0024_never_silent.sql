@@ -1,4 +1,4 @@
--- 0024_never_silent.sql (0017 on main, renumbered after the Linq migrations): a report that can't be written yet doesn't leave the user in silence,
+-- 0024_never_silent.sql: a report that can't be written yet doesn't leave the user in silence,
 -- and a number that reached someone else isn't put back in front of them.
 --   - A call report whose writes keep failing (its drafts don't pass the check against the
 --     call, or a model can't be reached) owes the user a short notice once: the call is

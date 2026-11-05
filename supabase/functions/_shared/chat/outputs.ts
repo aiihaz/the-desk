@@ -25,6 +25,8 @@ export type Outputs = {
   advance_refund?: string;
   // yes | no: are they keeping the slot until the customer decides.
   advance_hold?: string;
+  // Until when they'll keep it: an instant, or their words when the caller couldn't place it.
+  hold_until?: string;
   // upi | bank_transfer | qr | link | cash | other, and where to pay.
   payment_mode?: string;
   payment_address?: string;
@@ -88,6 +90,7 @@ export function readOutputs(kind: string, raw: unknown): Outputs | null {
       "advance_redeemable",
       "advance_refund",
       "advance_hold",
+      "hold_until",
       "payment_mode",
       "payment_address",
       "payee_name",

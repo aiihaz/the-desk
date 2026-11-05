@@ -78,7 +78,7 @@ Deno.test("the resolved errand: what's decided, flexible, acceptable, and what h
   assertEquals(v.flexible, "Any time inside the window.");
   assertEquals(
     v.may_accept,
-    "Book only what is decided above, up to Rs 2000. No advance: if they want one, don't agree. Take down the amount, whether it's adjusted against the bill, whether it's refunded, how and where to pay, by when, and whether they'll keep the slot meanwhile, then say you'll check and get back to them. Anything else: don't accept, come back with it.",
+    "Book only what is decided above, up to Rs 2000. No advance: if they want one, don't agree. Take down the amount, whether it's adjusted against the bill, whether it's refunded, how and where to pay, by when, whether they'll keep the slot meanwhile and until when, then say you'll check and get back to them. Anything else: don't accept, come back with it.",
   );
   assertEquals(v.already_happened, "Nothing yet: this is the first call.");
 

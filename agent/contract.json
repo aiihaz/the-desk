@@ -29,6 +29,7 @@
     { "name": "summary", "calls": "all", "type": "text", "describe": "2 to 3 factual sentences, not a success story." }
   ],
   "optional": [
+    { "name": "hold_until", "calls": "first, booking", "type": "text", "describe": "Until when they'll keep the slot for the customer: ISO 8601 with offset, resolved from the call's date and time (\"for 2 hours\" is 2 hours after now), or their words if it can't be placed; empty if they didn't say." },
     { "name": "uncertainties", "calls": "all", "type": "text", "describe": "Anything left unresolved or contradicted on the call (a slot said to be free, then taken; a detail they couldn't confirm), in plain words, or empty." }
   ]
 }
