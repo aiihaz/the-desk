@@ -37,6 +37,7 @@ Deno.test("task card: the errand ref, what is known, what a plan still needs, an
       "known: party_size=4; place_query=paragon",
       "still needed for a plan: when (exact_time, or window_start and window_end), which business",
       "business: not picked",
+      "business lookup: resolve the named place internally; ask only for genuine ambiguity, mismatch, or competing branches",
       "tools: reply, set_slots, find_business, choose_business, my_places, find_booking, propose_plan, pause_request, " +
       "cancel_request, start_new_request, stay_quiet, set_follow_up, recall_errands, show_transcript, remember, forget",
     ].join("\n"),
@@ -110,4 +111,22 @@ Deno.test("an update still being written shows, so a reply doesn't guess or go q
   const c = openCard([], [], ["Paragon, Kannur Rd"]);
   assertEquals(c.includes("update being written: the call to Paragon, Kannur Rd is finished"), true);
   assertEquals(openCard([], [], []), "OPEN\nnothing");
+});
+
+Deno.test("saved service context remains visible on later turns", () => {
+  const card = taskCard({
+    ref: "r-1",
+    task: "booking",
+    state: "collecting",
+    fields: {
+      service: "laundry pickup",
+      service_address: "Flat 4, Cedar House",
+      service_details: "Two blazers; needed by Friday",
+    },
+    place: null,
+    hasBooking: false,
+    options: [],
+  }, now);
+  assertEquals(card.includes("service_address=Flat 4, Cedar House"), true);
+  assertEquals(card.includes("service_details=Two blazers; needed by Friday"), true);
 });

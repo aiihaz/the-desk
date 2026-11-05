@@ -12,6 +12,10 @@ export type Fields = {
   tolerance_min?: number;
   party_size?: number;
   service?: string;
+  // User-supplied location and operational details needed for this particular service.
+  // Optional unless the grounded requested action needs them; never inferred defaults.
+  service_address?: string;
+  service_details?: string;
   customer_name?: string;
   max_price_rs?: number;
   // Set by code from limits when the plan is built, so the consent hash covers it.
@@ -43,14 +47,30 @@ const ALLOWED: Record<Task, (keyof Fields)[]> = {
     "tolerance_min",
     "party_size",
     "service",
+    "service_address",
+    "service_details",
     "customer_name",
     "max_price_rs",
     "also_ask",
     "place_query",
     "share_phone",
   ],
-  question: ["place_query", "share_name", "share_phone", "customer_name"],
-  reschedule: ["window_start", "window_end", "exact_time", "tolerance_min"],
+  question: [
+    "place_query",
+    "share_name",
+    "share_phone",
+    "customer_name",
+    "service_address",
+    "service_details",
+  ],
+  reschedule: [
+    "window_start",
+    "window_end",
+    "exact_time",
+    "tolerance_min",
+    "service_address",
+    "service_details",
+  ],
   cancel: [],
 };
 
@@ -231,6 +251,10 @@ function checkValue(key: keyof Fields, v: unknown, now: Date): string | null {
       return typeof v === "boolean" ? null : "true or false";
     case "service":
       return text(v, 100);
+    case "service_address":
+      return text(v, 500);
+    case "service_details":
+      return text(v, 1000);
     case "customer_name":
       return text(v, 60);
     case "question":

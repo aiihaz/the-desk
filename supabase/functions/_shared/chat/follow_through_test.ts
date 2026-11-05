@@ -364,8 +364,16 @@ const said = (text: string): RememberArgs => ({
 
 Deno.test("remember keeps a fact; forget drops it; a repeat isn't kept twice", async () => {
   const { store, deps } = report();
-  assertEquals((await remember(deps, user, said("vegetarian"))).ok, true);
-  assertEquals(await remember(deps, user, said("Vegetarian")), { ok: true, already_known: true });
+  const created = await remember(deps, user, said("vegetarian"));
+  assertEquals(created.ok, true);
+  assertEquals(created.outcome, "created");
+  assertEquals(created.text, "vegetarian");
+  assertEquals(typeof created.say, "string");
+  const repeated = await remember(deps, user, said("Vegetarian"));
+  assertEquals(repeated.ok, true);
+  assertEquals(repeated.already_known, true);
+  assertEquals(repeated.outcome, "unchanged");
+  assertEquals(repeated.text, "vegetarian");
   assertEquals(store.kept.map((m) => [m.text, m.source, m.scope]), [["vegetarian", "said", "all"]]);
   assertEquals((await forget(deps, user, "the vegetarian thing")).ok, false);
   assertEquals(await forget(deps, user, `m-${store.kept[0].id.slice(0, 8)}`), {

@@ -30,9 +30,13 @@ export type CreateResponse = (req: {
 
 // A hung request must not leave the user in silence: after timeoutMs the call fails and
 // the chat agent sends its fallback message.
-export function responsesClient(apiKey: string, timeoutMs = 30_000): CreateResponse {
+export function responsesClient(
+  apiKey: string,
+  timeoutMs = 30_000,
+  fetcher: typeof fetch = fetch,
+): CreateResponse {
   return async (req) => {
-    const res = await fetch("https://api.openai.com/v1/responses", {
+    const res = await fetcher("https://api.openai.com/v1/responses", {
       method: "POST",
       signal: AbortSignal.timeout(
         Math.max(1, Math.min(timeoutMs, req.deadlineAt ? req.deadlineAt - Date.now() : timeoutMs)),
@@ -53,6 +57,12 @@ export function responsesClient(apiKey: string, timeoutMs = 30_000): CreateRespo
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`openai ${res.status}: ${JSON.stringify(body?.error ?? body)}`);
+    if (body.status && body.status !== "completed") {
+      throw new Error(
+        `openai response ${body.status}: ${body.incomplete_details?.reason ?? "not completed"}`,
+      );
+    }
+    if (!Array.isArray(body.output)) throw new Error("openai response missing output");
     return body as ResponseOut;
   };
 }

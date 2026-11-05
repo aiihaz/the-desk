@@ -33,6 +33,7 @@ export interface Store {
   // false if this exact webhook body was already stored (Meta redelivery).
   saveEvent(externalId: string, payload: unknown): Promise<boolean>;
   completeEvent?(externalId: string): Promise<void>;
+  acceptLinqReaction?(phoneDigits: string, targetId: string): Promise<boolean>;
   inboundPending?(messageId: string): Promise<boolean>;
   upsertUser(waId: string, name: string | null): Promise<User>;
   // false if the message id was already stored.
@@ -77,6 +78,18 @@ export class DbStore implements Store {
       .select("id");
     if (error) throw error;
     return data.length > 0;
+  }
+
+  async acceptLinqReaction(phoneDigits: string, targetId: string): Promise<boolean> {
+    // Reaction envelopes do not carry group metadata. Only an outbound message in
+    // this exact direct Linq conversation can establish the target's ownership.
+    const { data, error } = await this.db.from("messages")
+      .select("id,users!inner(wa_id,channel)")
+      .eq("direction", "out").eq("wa_message_id", targetId)
+      .eq("users.channel", "linq").eq("users.wa_id", identityKey(phoneDigits, "linq"))
+      .maybeSingle();
+    if (error) throw error;
+    return data !== null;
   }
 
   async completeEvent(externalId: string): Promise<void> {

@@ -256,6 +256,26 @@ export async function setSlots(
   }
   deps.trace?.("check_slots", check);
   if (!check.ok) return { ok: false, reason: "invalid", errors: check.errors };
+  if (deps.checkIntent) {
+    const [messages, memories, profile] = await Promise.all([
+      deps.store.history(user.id, new Date(now.getTime() - 24 * 3_600_000), 40),
+      deps.store.memories(user.id),
+      deps.store.user(user.id),
+    ]);
+    const grounded = await deps.checkIntent({
+      phase: "edit",
+      task: r.task,
+      current: r.fields,
+      patch: check.patch,
+      messages,
+      memories,
+      now,
+      profile: { name: profile.name, phone: profile.phone },
+    });
+    deps.trace?.("intent_grounding", grounded);
+    await deps.store.assertTurn?.();
+    if (!grounded.ok) return { ...grounded };
+  }
   const res = await deps.store.updateSlots(r.id, check.patch);
   deps.trace?.("update_slots", res);
   if (!res.ok) return res;
@@ -417,8 +437,15 @@ export async function remember(deps: ToolDeps, user: User, a: RememberArgs): Pro
   if (a.learned && !evidence) return { ok: false, reason: "learned needs evidence: what they said" };
   const have = await store.memories(user.id);
   const cap = (await store.limitInt("max_memories_per_user", user.id)) ?? 30;
-  if (!a.replaces && have.some((m) => m.text.toLowerCase() === text.toLowerCase())) {
-    return { ok: true, already_known: true };
+  const existing = have.find((m) => m.text.toLowerCase() === text.toLowerCase());
+  if (!a.replaces && existing) {
+    return {
+      ok: true,
+      already_known: true,
+      outcome: "unchanged",
+      text: existing.text,
+      say: "briefly acknowledge that this is already saved",
+    };
   }
   const replacing = a.replaces ? have.filter((m) => m.id.startsWith(a.replaces!.replace(/^m-/, ""))) : [];
   if (a.replaces && replacing.length !== 1) {
@@ -437,11 +464,21 @@ export async function remember(deps: ToolDeps, user: User, a: RememberArgs): Pro
     replaces: a.replaces,
   });
   deps.trace?.("remember", { kept, learned: a.learned, evidence });
-  if (!kept) return { ok: true, already_known: true };
+  if (!kept) {
+    return {
+      ok: true,
+      already_known: true,
+      outcome: "unchanged",
+      text,
+      say: "briefly acknowledge that this is already saved",
+    };
+  }
   return {
     ok: true,
     memory: `m-${kept.id.slice(0, 8)}`,
-    ...(a.learned ? { say: "tell them in a few words what you'll remember, so they can correct it" } : {}),
+    outcome: a.replaces ? "updated" : "created",
+    text: kept.text,
+    say: "tell them in a few words what you saved or corrected, so they can correct it",
   };
 }
 

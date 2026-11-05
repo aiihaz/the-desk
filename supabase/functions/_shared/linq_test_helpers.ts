@@ -31,3 +31,20 @@ export async function signedHeaders(body: string, timestamp = Math.floor(Date.no
     "webhook-signature": "v1," + btoa(String.fromCharCode(...mac)),
   });
 }
+
+// Official SDK ReactionAddedWebhookEvent / ReactionRemovedWebhookEvent shape.
+export const reactionEvent = (removed = false) => ({
+  webhook_version: "2026-02-03",
+  api_version: "v3",
+  created_at: "2026-11-03T12:00:00Z",
+  event_id: removed ? "reaction-removal-id" : "reaction-add-id",
+  event_type: removed ? "reaction.removed" : "reaction.added",
+  data: {
+    is_from_me: false,
+    reaction_type: "like",
+    chat_id: "direct-chat-id",
+    from_handle: { handle: "+919876543210" },
+    message_id: "plan-id",
+    reacted_at: "2026-11-03T12:00:00Z",
+  },
+});

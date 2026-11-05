@@ -1,3 +1,4 @@
+import { isTurnInvalidated } from "./turn_control.ts";
 // Approval in context (E4 design 2.8, without the word list). The user answers a plan in
 // their own words. Luna reads the conversation and calls approve_plan when it thinks
 // they said go ahead; that is a proposal, not a consent. Code then requires, in order:
@@ -97,6 +98,7 @@ export async function approvePlan(
     const subject = `PLAN:\n${prompt.text}${choice ? `\n\nCHOICE: ${choice}` : ""}`;
     v = await readChat(deps.create, model, effort, CHECK, subject, since, prompt.text);
   } catch (e) {
+    if (isTurnInvalidated(e)) throw e;
     deps.trace?.("approval_check_error", { error: String((e as Error)?.message ?? e) });
     return { ok: false, reason: "couldn't check their answer just now; ask them to confirm in a few words" };
   }

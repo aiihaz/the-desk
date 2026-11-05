@@ -2,7 +2,9 @@
 import { e164ToWaId, waIdToE164 } from "./e164.ts";
 import type { Inbound, Outbound } from "./whatsapp.ts";
 
-export type LinqConfig = { token: string; shareContactCard?: boolean };
+export type LinqConfig = { token: string; shareContactCard?: boolean; timeoutMs?: number };
+const TRANSPORT_TIMEOUT_MS = 15_000;
+export const MAX_LINQ_IMAGE_BYTES = 10 * 1024 * 1024;
 export const linqConfigFromEnv = (): LinqConfig => ({
   token: Deno.env.get("LINQ_API_TOKEN") ?? "",
   shareContactCard: Deno.env.get("LINQ_SHARE_CONTACT_CARD") === "1",
@@ -42,6 +44,7 @@ export async function send(
   // Let Linq select the existing healthy line and its iMessage/RCS/SMS service.
   const res = await fetcher("https://api.linqapp.com/api/partner/v3/messages", {
     method: "POST",
+    signal: AbortSignal.timeout(cfg.timeoutMs ?? TRANSPORT_TIMEOUT_MS),
     headers: { Authorization: `Bearer ${cfg.token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ to: [waIdToE164(to)], message: { parts: [{ type: "text", value }] } }),
   });
@@ -100,9 +103,18 @@ export async function verifyLinqSignature(
 type Part = { type: string; value?: string; mime_type?: string; url?: string };
 type Event = {
   webhook_version?: string;
+  event_id?: string;
+  created_at?: string;
   event_type?: string;
   data?: {
     id?: string;
+    is_from_me?: boolean;
+    reaction_type?: string;
+    custom_emoji?: string | null;
+    from_handle?: { handle?: string };
+    message_id?: string;
+    reacted_at?: string;
+    chat_id?: string;
     direction?: string;
     chat?: { is_group?: boolean };
     sender_handle?: { handle?: string; is_me?: boolean };
@@ -114,8 +126,10 @@ type Event = {
 
 export function parseLinqWebhook(payload: unknown): Inbound | null {
   const event = payload as Event;
-  if (event?.event_type !== "message.received") return null;
+  const reaction = event?.event_type === "reaction.added" || event?.event_type === "reaction.removed";
+  if (event?.event_type !== "message.received" && !reaction) return null;
   if (event.webhook_version !== "2026-02-03") throw new Error("expected webhook version 2026-02-03");
+  if (reaction) return parseReaction(event);
   const m = event.data;
   if (!m || m.direction !== "inbound" || m.sender_handle?.is_me || m.chat?.is_group !== false) return null;
   // Desk requires a phone number for its calling workflow. Email handles are unsupported.
@@ -144,9 +158,55 @@ export function parseLinqWebhook(payload: unknown): Inbound | null {
   };
 }
 
+// Verified against @linqapp/sdk 0.31.0 ReactionEventBase and ReactionAddedWebhookEvent.
+// Reaction events have no group flag. Ingestion MUST verify the target belongs to
+// this sender's stored direct conversation before accepting the normalized input.
+function parseReaction(event: Event): Inbound | null {
+  const r = event.data;
+  if (!r || r.is_from_me !== false) return null;
+  const phone = r.from_handle?.handle;
+  if (!phone || !/^\+[1-9]\d{6,14}$/.test(phone)) return null;
+  const at = new Date(r.reacted_at ?? event.created_at ?? "");
+  if (!event.event_id || !r.message_id || !Number.isFinite(at.getTime())) {
+    throw new Error("invalid Linq reaction");
+  }
+  const tapbacks: Record<string, string> = {
+    love: "❤️",
+    like: "👍",
+    dislike: "👎",
+    laugh: "😂",
+    emphasize: "‼️",
+    question: "❓",
+  };
+  const emoji = event.event_type === "reaction.removed"
+    ? ""
+    : r.reaction_type === "custom"
+    ? r.custom_emoji
+    : tapbacks[r.reaction_type ?? ""];
+  if (typeof emoji !== "string") return null; // Stickers cannot convey textual approval.
+  return {
+    waId: e164ToWaId(phone),
+    name: null,
+    messageId: `linq-reaction:${event.event_id}`,
+    at,
+    type: "reaction",
+    text: emoji,
+    replyId: null,
+    quotedId: r.message_id,
+    raw: {
+      type: "reaction",
+      reaction: { emoji, message_id: r.message_id },
+      context: { id: r.message_id },
+      linq_event: event,
+    },
+  };
+}
+
 // Stored bodies use the normalized shape; recovery must reconstruct a Linq
 // message, rather than pass it through Meta's parser.
 export function parseStoredLinqMessage(raw: unknown): Inbound | null {
+  const storedEvent = (raw as { linq_event?: unknown })?.linq_event;
+  if (storedEvent) return parseLinqWebhook(storedEvent);
   const data = (raw as { linq?: unknown })?.linq;
   return data
     ? parseLinqWebhook({
@@ -157,14 +217,49 @@ export function parseStoredLinqMessage(raw: unknown): Inbound | null {
     : null;
 }
 
-export async function downloadLinqImage(raw: unknown): Promise<{ mime: string; bytes: Uint8Array } | null> {
+export async function downloadLinqImage(
+  raw: unknown,
+  fetcher: typeof fetch = fetch,
+  limits: { timeoutMs?: number; maxBytes?: number } = {},
+): Promise<{ mime: string; bytes: Uint8Array } | null> {
   const parts = (raw as { linq?: { parts?: Part[] } })?.linq?.parts;
   const image = parts?.find((p) => p.type === "media" && p.mime_type?.startsWith("image/") && p.url);
   if (!image?.url) return null;
   const url = new URL(image.url);
   if (url.protocol !== "https:") throw new Error("invalid Linq attachment URL");
   // Presigned URL: do not forward the Linq API token to the storage host.
-  const res = await fetch(url, { redirect: "error" });
+  const signal = AbortSignal.timeout(limits.timeoutMs ?? TRANSPORT_TIMEOUT_MS);
+  const res = await fetcher(url, { redirect: "error", signal });
   if (!res.ok) throw new Error(`Linq attachment download failed ${res.status}`);
-  return { mime: image.mime_type!, bytes: new Uint8Array(await res.arrayBuffer()) };
+  const maxBytes = limits.maxBytes ?? MAX_LINQ_IMAGE_BYTES;
+  if (Number(res.headers.get("content-length")) > maxBytes) {
+    await res.body?.cancel();
+    throw new Error("Linq attachment exceeds size limit");
+  }
+  if (!res.body) throw new Error("empty Linq attachment");
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) throw new Error("Linq attachment exceeds size limit");
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return { mime: image.mime_type!, bytes };
 }

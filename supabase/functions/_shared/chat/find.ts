@@ -46,7 +46,8 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
       reason: "search failed; say you couldn't search right now and ask them to try again",
     };
   }
-  const callable = found.filter((p) => p.phone && !p.closed).slice(0, MAX_MATCHES);
+  const callable = found.filter((p) => p.phone && !p.closed && (!p.countryCode || p.countryCode === "IN"))
+    .slice(0, MAX_MATCHES);
   deps.trace?.("find_business", {
     searched: text,
     city_from: named ? "chat" : info.city ? "saved" : "none, all India",
@@ -67,6 +68,7 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
       area: cleanField(p.area, 60),
       address: cleanField(p.address, 120),
       city: cleanField(p.city, 40),
+      ...(p.countryCode ? { country: p.countryCode } : {}),
     });
   }
   return {

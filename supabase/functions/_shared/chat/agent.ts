@@ -3,6 +3,7 @@
 // Commands run at once. Anything else waits turn_debounce_ms, then runs as one turn per
 // user at a time (claim_turn): a burst of messages is one turn, answered once, and Luna
 // sees every message in it.
+import { isTurnInvalidated } from "./turn_control.ts";
 import type { User } from "../store.ts";
 import type { Inbound } from "../whatsapp.ts";
 import { command } from "./gate.ts";
@@ -66,6 +67,9 @@ export async function handleInbound(user: User, msg: Inbound, deps: AgentDeps): 
         return;
       } catch (e) {
         if (bound) await bound.abandonTurn?.().catch(() => {});
+        // The latest inbound worker (or durable recovery) owns the next decision.
+        // Never convert a normal correction/STOP into an apology or stale outbox item.
+        if (isTurnInvalidated(e)) return;
         throw e;
       } finally {
         if (heartbeat !== undefined) clearInterval(heartbeat);
