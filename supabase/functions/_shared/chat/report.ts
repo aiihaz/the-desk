@@ -432,7 +432,13 @@ async function confirmAddress(
 // 6") instead of a time: a model places them, as it does a callback time.
 async function placeHold(deps: ReportDeps, call: CallForReport, t: AdvanceTerms, now: Date) {
   if (!t.holdWords || t.holdUntil) return t;
-  const at = await readTime(deps, call.userId, "until when they'll keep a slot for the customer", t.holdWords, now);
+  const at = await readTime(
+    deps,
+    call.userId,
+    "until when they'll keep a slot for the customer",
+    t.holdWords,
+    now,
+  );
   return at ? { ...t, holdUntil: at } : t;
 }
 
@@ -495,7 +501,9 @@ async function decideBooking(
       const h = outcome.hold ? holdFacts(await placeHold(deps, call, outcome.hold, now), now) : null;
       const told = offered(outcome.options, {
         why_not_what_they_asked: outcome.reason,
-        ...(h ? { slot_kept_for_them: { ...h.detail, ...(h.unknown ? { not_known: [h.unknown] } : {}) } } : {}),
+        ...(h
+          ? { slot_kept_for_them: { ...h.detail, ...(h.unknown ? { not_known: [h.unknown] } : {}) } }
+          : {}),
         ...(a
           ? {
             advance_they_want: {
@@ -898,44 +906,24 @@ function noConversation(status: string, call: CallForReport): Decision {
   };
 }
 
-// The call itself, for the writer and its check: all of it, unless it's very long. Then it
-// keeps its opening and its end, where terms and outcomes are said, and says how much of the
-// middle is left out. A tail alone hid terms said early on (R10), so the check refused
-// drafts that told them and drafts that didn't.
-const TRANSCRIPT_CHARS = 32_000;
-const OPENING_CHARS = 12_000;
-
-export function callEvidence(r: CallResult): CallEvidence | undefined {
+// The call itself, for the writer and its check: all of it, every line whole and every
+// note whole, as verification reads it. Any cut hides something: a tail alone hid terms
+// said early on (R10), and a capped note cut the options mid-way. Cleaning only drops
+// control and format characters. A call too long for the model fails the write loudly
+// (the delivery stays owed and alerts) rather than reaching them with a part missing.
+export function callEvidence(r: CallResult, numberCalled: string): CallEvidence | undefined {
   if (r.status !== "completed") return undefined;
-  const lines = (r.transcript ?? []).flatMap((l) => {
-    const t = cleanField(l.en_text, 2000);
+  const transcript = (r.transcript ?? []).flatMap((l) => {
+    const t = cleanField(l.en_text, Infinity);
     return t ? [`${AGENT_ROLES.has(l.role) ? "caller" : "business"}: ${t}`] : [];
   });
-  let transcript = lines;
-  if (lines.join("").length > TRANSCRIPT_CHARS) {
-    const head: string[] = [];
-    let size = 0;
-    for (const l of lines) {
-      if (size + l.length > OPENING_CHARS) break;
-      head.push(l);
-      size += l.length;
-    }
-    const tail: string[] = [];
-    for (let i = lines.length - 1; i >= head.length; i--) {
-      if (size + lines[i].length > TRANSCRIPT_CHARS) break;
-      tail.unshift(lines[i]);
-      size += lines[i].length;
-    }
-    const left = lines.length - head.length - tail.length;
-    transcript = [...head, `(${left} lines from the middle of the call left out)`, ...tail];
-  }
   const caller_noted: Record<string, string> = {};
   for (const [k, v] of Object.entries(r.outputs ?? {})) {
     if (v === null || v === undefined || v === "") continue;
-    const t = cleanField(typeof v === "string" ? v : JSON.stringify(v), 600);
+    const t = cleanField(typeof v === "string" ? v : JSON.stringify(v), Infinity);
     if (t) caller_noted[k] = t;
   }
-  return { transcript, caller_noted };
+  return { transcript, caller_noted, number_called: numberCalled };
 }
 
 // The user said cancel while the call ran. Nothing booked or agreed: the errand ends, and
@@ -1085,7 +1073,7 @@ async function reportCallImpl(deps: ReportDeps, callId: string, r: CallResult): 
     Object.entries(d.told.values ?? {}).filter((e): e is [string, string] => !!e[1]),
   );
   const unclear = r.status === "completed" ? cleanField(outputs?.uncertainties, 300) : null;
-  const evidence = callEvidence(r);
+  const evidence = callEvidence(r, call.phone);
   const facts: Facts = {
     event: "call_result",
     place: placeName(place),

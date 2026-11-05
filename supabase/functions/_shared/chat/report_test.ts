@@ -784,6 +784,80 @@ Deno.test("other times with an advance: every term stays with the options (S3)",
   assertEquals(f.values.deadline, "Fri 23 Oct 2026, 12:30 pm");
 });
 
+Deno.test("how long they'll keep the slot is a value, so no message goes out without it", async () => {
+  const { store, deps } = setup();
+  deps.checkClaim = ok;
+  const { advance_hold: _, ...noHoldWord } = terms;
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", { ...noHoldWord, hold_until: "2026-10-23T14:00:00+05:30" }),
+  );
+  const f = facts(store);
+  assertEquals(f.happened.keeping_the_slot_meanwhile, "yes");
+  assertEquals(f.values.held_until, "today (Fri 23 Oct) at 2:00 pm");
+  assertEquals((f.happened.not_known as string[] | undefined) ?? [], []);
+  assertEquals(
+    (store.settled[0].booking?.terms as Record<string, unknown>).holdUntil,
+    "2026-10-23T14:00:00+05:30",
+  );
+});
+
+Deno.test("their words for a hold ('2 ghante') are placed as a time; a hold with no end is not known", async () => {
+  const { store, deps } = setup();
+  deps.checkClaim = ok;
+  const asked: string[] = [];
+  deps.create = async (req) => {
+    if (req.tools?.[0]?.name !== "when") return fakeWriter(req);
+    asked.push(req.input[0].content as string);
+    return say("when", { at: "2026-10-23T14:00:00+05:30" });
+  };
+  await reportCall(deps, "c1", result("completed", { ...terms, hold_until: "2 ghante tak" }));
+  assertEquals(asked.length, 1);
+  assertEquals(asked[0].includes("WORDS: 2 ghante tak"), true);
+  assertEquals(facts(store).values.held_until, "today (Fri 23 Oct) at 2:00 pm");
+
+  // Words that can't be placed stay as their words, and the exact end is not known.
+  const vague = setup();
+  vague.deps.checkClaim = ok;
+  vague.deps.create = async (req) =>
+    req.tools?.[0]?.name === "when" ? say("when", { at: null }) : fakeWriter(req);
+  await reportCall(vague.deps, "c1", result("completed", { ...terms, hold_until: "for a while" }));
+  assertEquals(facts(vague.store).values.held_until, undefined);
+  assertEquals(facts(vague.store).happened.how_long_their_words, "for a while");
+  assertEquals(
+    (facts(vague.store).happened.not_known as string[]).includes("until when exactly they'll keep the slot"),
+    true,
+  );
+
+  // They'll hold it, and said nothing about how long.
+  const silent = setup();
+  silent.deps.checkClaim = ok;
+  await reportCall(silent.deps, "c1", result("completed", terms));
+  assertEquals(
+    (facts(silent.store).happened.not_known as string[]).includes("until when exactly they'll keep the slot"),
+    true,
+  );
+});
+
+Deno.test("other times with a slot kept and no advance: the hold is told, not called an advance", async () => {
+  const { store, deps } = setup();
+  await reportCall(
+    deps,
+    "c1",
+    result("completed", {
+      outcome: "options_found",
+      options: [{ time: "2026-10-23T21:00:00+05:30", details: "9 pm" }],
+      advance_hold: "yes",
+      hold_until: "2026-10-23T14:00:00+05:30",
+    }),
+  );
+  const f = facts(store);
+  assertEquals(f.happened.advance_they_want, undefined);
+  assertEquals((f.happened.slot_kept_for_them as Record<string, unknown>).keeping_the_slot_meanwhile, "yes");
+  assertEquals(f.values.held_until, "today (Fri 23 Oct) at 2:00 pm");
+});
+
 Deno.test("an address the call doesn't show confirmed whole is never a place to pay (R6)", async () => {
   const { store, deps } = setup();
   const claims: string[] = [];
@@ -914,28 +988,28 @@ Deno.test("the call itself goes with the facts: transcript by who spoke, and the
   assertEquals(facts(none.store).call, undefined);
 });
 
-Deno.test("a very long call keeps its opening and its end, and says the middle is left out (R10)", async () => {
+Deno.test("the whole call goes to the writer and its check: no line, note or stretch cut (R10)", async () => {
   const { store, deps } = setup();
-  const r = result("completed", { outcome: "unavailable", options: [] });
+  const options = [1, 2, 3].map((n) => ({
+    time: `2026-10-23T2${n}:00:00+05:30`,
+    details: `${n} option`,
+    price_rs: 1000 * n,
+    conditions: `condition ${n} `.repeat(30).trim(),
+  }));
+  const r = result("completed", { outcome: "options_found", options: JSON.stringify(options) });
+  const monologue = `Refundable only if cancelled before Thursday noon. ${
+    "z".repeat(3000)
+  } We hold it for two hours.`;
   r.transcript = [
     { role: "user", en_text: "Refundable only if cancelled before Thursday noon. Pay by UPI tonight." },
     ...Array.from({ length: 60 }, (_, i) => ({ role: "agent", en_text: `filler ${i} ${"x".repeat(900)}` })),
+    { role: "user", en_text: monologue },
     { role: "user", en_text: "So nothing is free at 8, sorry." },
   ];
   await reportCall(deps, "c1", r);
-  const t = facts(store).call!.transcript;
-  assertEquals(t[0], "business: Refundable only if cancelled before Thursday noon. Pay by UPI tonight.");
-  assertEquals(t[t.length - 1], "business: So nothing is free at 8, sorry.");
-  assertEquals(t.some((l) => /^\(\d+ lines from the middle of the call left out\)$/.test(l)), true);
-  assertEquals(t.join("").length <= 32_100, true);
-
-  // A call of ordinary length goes whole.
-  const short = setup();
-  const s = result("completed", { outcome: "unavailable", options: [] });
-  s.transcript = Array.from(
-    { length: 12 },
-    (_, i) => ({ role: "user", en_text: `line ${i} ${"y".repeat(900)}` }),
-  );
-  await reportCall(short.deps, "c1", s);
-  assertEquals(facts(short.store).call!.transcript.length, 12);
+  const call = facts(store).call!;
+  assertEquals(call.transcript.length, 63);
+  assertEquals(call.transcript[61], `business: ${monologue}`);
+  assertEquals(JSON.parse(call.caller_noted.options), options);
+  assertEquals(call.number_called, "+919800000901");
 });

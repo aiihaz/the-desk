@@ -4,7 +4,8 @@
 // from the source, not from code's summary of it. A model writes the message, in the
 // user's language. Code writes none of it, and guards it in two ways:
 //   - values: amounts, payment addresses, times and phone numbers go in as {{key}} and code
-//     fills them, so they arrive exactly as stored, and a message missing one is refused;
+//     fills them, so they arrive exactly as stored; a message missing one, or with an
+//     address or number typed in, is refused;
 //   - a second model reads the finished message against the facts and the call, and
 //     nothing goes out until it says the message is faithful to both (it says nothing
 //     they don't establish, and leaves out nothing the user needs).
@@ -64,11 +65,12 @@ export type Facts = {
 };
 
 export type CallEvidence = {
-  // "caller: ..." and "business: ...", in order. A very long call keeps its opening and its
-  // end, with a line saying how much of the middle is left out.
+  // "caller: ..." and "business: ...", in order, the whole call.
   transcript: string[];
   // The caller's own outputs, as it returned them: its reading, not the business's words.
   caller_noted: Record<string, string>;
+  // The business's number, so a report told without the call can say who to ask.
+  number_called?: string;
 };
 
 const MAX_DRAFTS = 3;
@@ -116,7 +118,6 @@ Ask what a person would come away believing. faithful is false only if:
 - something they'd need is missing: anything in "happened", every item in not_known, and anything in the call they need to act on next_step (an option's price, conditions or hold, how and by when to pay, who cancelled, when to call back);
 - it promises something, or says the Desk will do something "happened" doesn't say it will;
 - it asks them to do something FACTS doesn't offer. How it words the ask doesn't matter: next_step is the kind of thing to ask, not a phrase;
-- a payment address, account or phone number in it isn't one of FACTS.values;
 - it confuses who does what. The Desk writes this message, so "I" or "we" in it is the desk in FACTS; the caller is the Desk's phone agent; the business is the business;
 - it isn't in the language of the user's messages in CHAT.
 
@@ -140,8 +141,26 @@ const FAITHFUL_TOOL = {
 
 const VALUE = /\{\{\s*([a-z0-9_]+)\s*\}\}/gi;
 
-// Fills in the values. A key that doesn't exist, or one that's missing, is a problem.
+// Shapes, not words: somewhere to send money (name@bank) or a number to dial or pay into
+// (nine digits or more, however grouped; a date has eight).
+const ADDRESS = /[^\s@{}]+@[^\s@{}]+/u;
+const LONG_NUMBER = /\+?\d[\d\s-]*\d/g;
+
+// An address or number the writer typed itself, not one filled in from values.
+function typed(draft: string): boolean {
+  const own = draft.replace(VALUE, " ");
+  return ADDRESS.test(own) || (own.match(LONG_NUMBER) ?? []).some((n) => n.replace(/\D/g, "").length >= 9);
+}
+
+// Fills in the values. A key that doesn't exist, or one that's missing, is a problem, and so
+// is an address or number typed in instead of its {{key}}: code holds the exact ones.
 export function fill(draft: string, values: Record<string, string>): { text: string } | { problem: string } {
+  if (typed(draft)) {
+    return {
+      problem:
+        "a payment address, account or phone number is typed in: use its {{key}}, or say it isn't clear",
+    };
+  }
   const used = new Set<string>();
   let unknown: string | null = null;
   const text = draft.replace(VALUE, (_, key: string) => {
@@ -233,9 +252,13 @@ async function write(
 // A call report whose drafts kept failing their check against the call: told from what the
 // Desk records alone, which code settled and no reading of the call can contradict, and
 // saying that the rest of what the business said couldn't be put into a message they can
-// rely on. Better than the result never reaching them.
+// rely on. Better than the result never reaching them. Everything code holds stays: the
+// conditions, terms, hold and every value, and the business's number to ask them on.
 export function plain(facts: Facts): Facts {
-  const { call: _call, ...rest } = facts;
+  const { call, ...rest } = facts;
+  const phone: Record<string, string> = call?.number_called && !facts.values.phone
+    ? { phone: call.number_called }
+    : {};
   return {
     ...rest,
     happened: {
@@ -243,6 +266,7 @@ export function plain(facts: Facts): Facts {
       rest_of_the_call_could_not_be_checked:
         "anything else the business said on the call couldn't be put into a message the desk could check, so it isn't in this one; they can ask the business",
     },
+    values: { ...facts.values, ...phone },
   };
 }
 

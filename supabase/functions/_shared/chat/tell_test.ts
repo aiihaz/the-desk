@@ -193,6 +193,19 @@ Deno.test("fill: a placeholder written wrongly never reaches them (R10)", () => 
   });
 });
 
+Deno.test("fill: an address or number the writer typed itself never reaches them", () => {
+  const typed =
+    "a payment address, account or phone number is typed in: use its {{key}}, or say it isn't clear";
+  assertEquals(fill("{{advance}} to paragon@okhdfc {{pay_to}}", facts.values), { problem: typed });
+  assertEquals(fill("{{advance}} {{pay_to}}, or call +91 98000 00901", facts.values), { problem: typed });
+  assertEquals(fill("{{advance}} {{pay_to}} to account 50100234567", facts.values), { problem: typed });
+  // Dates, times, amounts and options aren't addresses.
+  assertEquals(
+    fill("{{advance}} {{pay_to}} by 23-10-2026, 7:30 pm. 1. 8:30 pm 2. 9:15 pm, Rs 1,50,000", facts.values),
+    { text: "Rs 500 paragon@okhdfc by 23-10-2026, 7:30 pm. 1. 8:30 pm 2. 9:15 pm, Rs 1,50,000" },
+  );
+});
+
 Deno.test("each check sees why earlier drafts were refused, so it can't flip on what it asked for", async () => {
   const { sent, asked, deps } = setup(
     ["{{advance}} {{pay_to}}, pay tonight.", "{{advance}} {{pay_to}}.", GOOD],
@@ -221,6 +234,16 @@ Deno.test("plain: the record without the call, saying the rest couldn't be check
   assertEquals(p.next_step, withCall.next_step);
   assertEquals(p.happened.status, "business_wants_advance_nothing_agreed");
   assertEquals(typeof p.happened.rest_of_the_call_could_not_be_checked, "string");
+
+  // The business's number goes with it, so "ask the business" is something they can do.
+  const numbered = plain({ ...withCall, call: { ...withCall.call!, number_called: "+919800000901" } });
+  assertEquals(numbered.values, { ...withCall.values, phone: "+919800000901" });
+  const already = plain({
+    ...withCall,
+    values: { ...withCall.values, phone: "+919800000901" },
+    call: { ...withCall.call!, number_called: "+919800000901" },
+  });
+  assertEquals(already.values.phone, "+919800000901");
 });
 
 Deno.test("a call report whose drafts keep failing is written from the record alone, and goes", async () => {
