@@ -38,14 +38,15 @@ import { DbAdminStore } from "../supabase/functions/_shared/chat/admin.ts";
 import { DbCallStore } from "../supabase/functions/_shared/call_store.ts";
 import { callVariables } from "../supabase/functions/_shared/call_vars.ts";
 import { type LunaDeps, runLuna } from "../supabase/functions/_shared/chat/luna.ts";
-import { responsesClient } from "../supabase/functions/_shared/openai.ts";
+// As production: model calls are timed into model_usage (here, the local database).
+import { observedResponsesClient as responsesClient } from "../supabase/functions/_shared/model_client.ts";
 import { jevClient } from "../supabase/functions/_shared/jev.ts";
 import { type PlaceHit, placesClient, type SearchPlaces } from "../supabase/functions/_shared/places.ts";
 import { serperClient, withWebPhones } from "../supabase/functions/_shared/serper.ts";
 import type { Task } from "../supabase/functions/_shared/chat/states.ts";
 import type { ConsentStored } from "../supabase/functions/_shared/chat/store.ts";
 
-import { dial } from "../supabase/functions/_shared/dial.ts";
+import { type DialArgs, dialForTurn } from "../supabase/functions/_shared/dial.ts";
 import {
   attemptResult,
   CallRejected,
@@ -169,7 +170,8 @@ function traced(store: ChatStore): ChatStore {
   });
 }
 
-const store = traced(new DbChatStore(db));
+const chat = new DbChatStore(db);
+const store = traced(chat);
 
 // Fake WhatsApp: messages go to the page, and are logged in `messages` as usual.
 let failSends = 0;
@@ -197,8 +199,9 @@ const readiness = () => benchReadiness((key) => Deno.env.get(key));
 const liveCalls = Deno.env.get("DEV_REAL_CALLS") === "1";
 const sarvam = sarvamConfigFromEnv();
 
-function liveDial(scoped: ChatStore) {
-  return async (args: Parameters<typeof dial>[1]) => {
+// As production (agent_runtime.ts): a turn lost before Sarvam releases the request.
+function liveDial(scoped: ChatStore, release: (requestId: string) => Promise<unknown>) {
+  return async (args: DialArgs) => {
     if (!readiness().phoneReady) {
       return { ok: false as const, error: "refused" as const, reason: "phone_setup_incomplete" };
     }
@@ -210,8 +213,11 @@ function liveDial(scoped: ChatStore) {
     if (business?.phone_e164 !== Deno.env.get("DEV_TEST_PHONE")) {
       return { ok: false as const, error: "refused" as const, reason: "test_target_only" };
     }
-    return dial({
+    return dialForTurn({
       store: new DbCallStore(serviceClient(scoped.turnToken)),
+      assertTurn: () => scoped.assertTurn?.() ?? Promise.resolve(),
+      markNotSubmitted: (id, reason) => callStore.markFailed(id, reason),
+      release: () => release(args.requestId),
       start: async (call) => {
         await scoped.assertTurn?.();
         assertTestTarget(call.businessPhone, Deno.env.get("DEV_TEST_PHONE"));
@@ -337,7 +343,13 @@ const turnDeps: AgentDeps = {
         onApproved: liveCalls
           ? (u, c) =>
             callAfterConsent(
-              { store: scoped, send: scopedSend, create: lunaDeps.create, dial: liveDial(scoped) },
+              {
+                store: scoped,
+                send: scopedSend,
+                create: lunaDeps.create,
+                // Their newer message is read against the plan again (as new_inbound).
+                dial: liveDial(scoped, (id) => chat.deferChangedConsent(id)),
+              },
               u,
               c,
             )
@@ -382,7 +394,8 @@ const turnDeps: AgentDeps = {
           if (lunaDeps) await turnDeps.luna(u, "", msg, scoped);
         },
         dial: async (a) => {
-          if (liveCalls) return liveDial(turnStore ?? store)(a);
+          // Back to awaiting the advance; the screenshot stays on record.
+          if (liveCalls) return liveDial(scoped, (id) => chat.callNotStarted(id))(a);
           const variables = callVariables(a.kind, await callStore.requestInputs(a.requestId, null), false);
           emit("call", {
             note: "Payment passed: production now places the confirm call.",
