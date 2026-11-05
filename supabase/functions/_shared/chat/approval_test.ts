@@ -86,6 +86,18 @@ Deno.test("a 👍 reaction on the plan can approve it; the check sees what it po
   );
 });
 
+Deno.test("a 👍 on anything but the plan is not an answer to it: no check, no consent", async () => {
+  const { deps, shown, started } = setup(yes(), [{
+    ...user1("[reacted 👍]"),
+    quoted: "Found two branches.",
+  }]);
+  assertEquals(await approvePlan(deps, user, null, "m"), {
+    ok: false,
+    reason: "they haven't answered the plan yet",
+  });
+  assertEquals([shown.length, started.length], [0, 0]);
+});
+
 Deno.test("a reply quoting something else is shown in full, not cut to a fragment (S4, S7)", async () => {
   const long = `${
     "Paragon said 9:30 is free, with a Rs 500 advance adjusted in the bill, ".repeat(3)

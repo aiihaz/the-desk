@@ -638,6 +638,7 @@ async function turn(
   const searches = new Map<string, ToolResult>();
   let anyFailed = false;
   let reminderSet = false;
+  let promiseQueried = false;
   let memoryAcknowledgmentDue = false;
   // One message is one errand of a kind, unless they asked for two.
   const started = new Set<unknown>();
@@ -766,12 +767,13 @@ async function turn(
           log.probabilities = { ...log.probabilities, l3: l3Scores };
           out.failed.forEach(failed);
           if (jev.mode === "gate" && out.problem) problem = out.problem;
-          // Shadow measurements must never alter the reply. Actual reminder writes
-          // remain guarded independently; gate mode may require repairing a promise.
+          // Shadow leaves style and scope judgments as measurements. A promised reminder
+          // is a fact the Desk would be stating (0012): in every mode it has to exist. Jev
+          // can misread one, so Luna is asked once; a reply she keeps after that goes out.
           if (
-            jev.mode === "gate" && !problem && out.promised && !reminderSet &&
-            !(await reminderExists(deps, user))
+            !problem && out.promised && !promiseQueried && !reminderSet && !(await reminderExists(deps, user))
           ) {
+            promiseQueried = true;
             failed("promised_reminder");
             problem = "you promised a reminder and none is set: set_follow_up first, or don't promise it";
           }

@@ -536,18 +536,31 @@ Deno.test("a long useful reply is not rejected for its length", async () => {
   assertEquals(sent, [{ kind: "text", body: text }]);
 });
 
-Deno.test("a promised reminder has to exist, however it's worded", async () => {
-  const t = luna([
-    [call("reply", { text: "Theek hai, kal yaad dila dungi." }, "a")],
-    [
-      call("set_follow_up", { waiting_for: "their call", remind_at: "2026-10-24T10:00:00+05:30" }),
-      call("reply", { text: "Kal 10 baje yaad dila dungi." }, "b"),
-    ],
-  ]);
+for (const jevMode of ["shadow", "gate"]) {
+  Deno.test(`a promised reminder has to exist, however it's worded (jev ${jevMode})`, async () => {
+    const t = luna([
+      [call("reply", { text: "Theek hai, kal yaad dila dungi." }, "a")],
+      [
+        call("set_follow_up", { waiting_for: "their call", remind_at: "2026-10-24T10:00:00+05:30" }),
+        call("reply", { text: "Kal 10 baje yaad dila dungi." }, "b"),
+      ],
+    ]);
+    jevReads(t, "later", () => 0.9);
+    t.store.texts.jev_mode = jevMode;
+    t.store.req = open();
+    await runLuna(t.deps, user, now);
+    assertEquals(JSON.parse(t.inputs[1].at(-1)!.output).reason.startsWith("you promised a reminder"), true);
+    assertEquals(t.store.followUps.length, 1);
+    assertEquals(t.sent, [{ kind: "text", body: "Kal 10 baje yaad dila dungi." }]);
+  });
+}
+
+Deno.test("a promise of a reminder that's already set goes out as written", async () => {
+  const t = luna([[call("reply", { text: "Kal 10 baje yaad dila dungi." })]]);
   jevReads(t, "later", () => 0.9);
-  t.store.req = open();
+  t.store.req = open({ remindAt: new Date("2026-10-24T04:30:00Z") });
   await runLuna(t.deps, user, now);
-  assertEquals(JSON.parse(t.inputs[1].at(-1)!.output).reason.startsWith("you promised a reminder"), true);
+  assertEquals(t.inputs.length, 1);
   assertEquals(t.sent, [{ kind: "text", body: "Kal 10 baje yaad dila dungi." }]);
 });
 
@@ -671,7 +684,7 @@ function reactionDeps(store: FakeChatStore, seen: string[]): TurnDeps {
   };
 }
 
-Deno.test("a 👍 on the open plan reaches Luna; on anything else it does nothing", async () => {
+Deno.test("a 👍 reaches Luna whatever it's on, as what it points at; a removed one reaches nothing", async () => {
   const store = new FakeChatStore();
   store.req = open({ state: "awaiting_yes" });
   store.prompt = {
@@ -686,21 +699,27 @@ Deno.test("a 👍 on the open plan reaches Luna; on anything else it does nothin
   };
   const seen: string[] = [];
   const deps = reactionDeps(store, seen);
+  // Routing is not approval: approval reads only reactions on the plan (approval_test).
   await handleTurn(user, inbound({ type: "reaction", text: "👍", quotedId: "wamid.other" }), deps);
-  assertEquals(seen, []);
   await handleTurn(user, inbound({ type: "reaction", text: "👍", quotedId: "wamid.plan" }), deps);
-  assertEquals(seen, ["[reacted 👍]"]);
+  await handleTurn(user, inbound({ type: "reaction", text: "", quotedId: "wamid.plan" }), deps);
+  assertEquals(seen, ["[reacted 👍]", "[reacted 👍]"]);
+  assertEquals(store.consents, []);
 });
 
-Deno.test("with no plan open, a casual 👍 triggers nothing", async () => {
-  const store = new FakeChatStore();
-  const seen: string[] = [];
-  await handleTurn(
-    user,
-    inbound({ type: "reaction", text: "👍", quotedId: "wamid.report" }),
-    reactionDeps(store, seen),
-  );
-  assertEquals(seen, []);
+Deno.test("with no plan open, a casual 👍 sends nothing and approves nothing", async () => {
+  const t = luna([[call("stay_quiet", { why: "a thumbs-up on the report" })]]);
+  t.store.lines = [
+    {
+      from: "desk",
+      text: "Booked: Paragon, 8 pm tonight, table for 4.",
+      at: new Date(now.getTime() - 60_000),
+    },
+    { from: "user", text: "[reacted 👍]", at: now },
+  ];
+  await runLuna(t.deps, user, now);
+  assertEquals(t.sent, []);
+  assertEquals(t.store.consents, []);
 });
 
 Deno.test("the approval check is told a plain 'ok thanks' and a 👍 on the plan count", () => {

@@ -519,18 +519,17 @@ Deno.test("memory acknowledgment waits for the actual write outcome", async () =
   assertEquals(store.kept.length, 1);
 });
 
-Deno.test("shadow reminder predictions are recorded without rejecting a contextual reply", async () => {
-  const { deps, store, sent, inputs } = setup([[
-    call("reply", { text: "You can message me when you've decided." }),
-  ]]);
+Deno.test("a reply Jev misreads as a reminder promise is queried once, then goes out as written", async () => {
+  const text = "You can message me when you've decided.";
+  const { deps, store, sent, inputs } = setup([[call("reply", { text })], [call("reply", { text })]]);
   withJev(deps, store, "shadow", new Error("router down"), {
     claims_action: noul(0),
     off_task_content: noul(0),
     promises_follow_up: noul(0.99),
   });
   await runLuna(deps, user, now);
-  assertEquals(sent, [{ kind: "text", body: "You can message me when you've decided." }]);
-  assertEquals(inputs.length, 1);
+  assertEquals(sent, [{ kind: "text", body: text }]);
+  assertEquals(inputs.length, 2);
 });
 
 Deno.test("gate mode still repairs a reminder promise with no scheduled follow-up", async () => {
