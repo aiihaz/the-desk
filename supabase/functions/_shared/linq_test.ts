@@ -1,9 +1,12 @@
 import { assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1.0.8";
 import {
   downloadLinqImage,
+  linqChatId,
+  markRead,
   parseLinqWebhook,
   parseStoredLinqMessage,
   send,
+  startTyping,
   textContent,
   verifyLinqSignature,
 } from "./linq.ts";
@@ -197,4 +200,62 @@ Deno.test("Linq sends provide a finite transport cancellation signal", async () 
       return Response.json({ message: { id: "sent" } });
     },
   );
+});
+
+Deno.test("the chat to mark read or type in comes from the message, or a reaction's event", () => {
+  assertEquals(linqChatId(parseLinqWebhook(event())!.raw), "chat-id");
+  assertEquals(linqChatId(parseLinqWebhook(reactionEvent())!.raw), "direct-chat-id");
+  assertEquals(linqChatId({}), null);
+});
+
+Deno.test("a read receipt marks the chat; a failure is logged, never thrown", async () => {
+  const seen: string[] = [];
+  await markRead({ token: "fake" }, "chat-id", async (url, init) => {
+    seen.push(`${init?.method} ${url} ${new Headers(init?.headers).get("Authorization")}`);
+    assertEquals(init?.signal instanceof AbortSignal, true);
+    return new Response(null, { status: 204 });
+  });
+  assertEquals(seen, ["POST https://api.linqapp.com/api/partner/v3/chats/chat-id/read Bearer fake"]);
+  await markRead({ token: "fake" }, "chat-id", async () => new Response("no", { status: 500 }));
+  await markRead({ token: "fake" }, "chat-id", () => Promise.reject(new Error("network")));
+  await markRead({ token: "" }, "chat-id");
+});
+
+Deno.test("typing: one call at a time, refreshed until a reply, and cleared once at the end", async () => {
+  const seen: string[] = [];
+  let release!: () => void;
+  const slowStart = new Promise<void>((r) => release = r);
+  const fetcher = async (url: string | URL | Request, init?: RequestInit) => {
+    assertEquals(String(url), "https://api.linqapp.com/api/partner/v3/chats/chat-id/typing");
+    if (seen.length === 0) await slowStart;
+    seen.push(init?.method ?? "");
+    return new Response(null, { status: 204 });
+  };
+  const typing = startTyping({ token: "fake" }, "chat-id", fetcher, 5);
+  const stopping = typing.stop();
+  release();
+  await stopping;
+  // The slow start lands first, so the clear is last and nothing is left showing.
+  assertEquals(seen, ["POST", "DELETE"]);
+  await typing.stop();
+  assertEquals(seen, ["POST", "DELETE"]);
+
+  const refreshed: string[] = [];
+  const t = startTyping({ token: "fake" }, "chat-id", async (_u, init) => {
+    refreshed.push(init?.method ?? "");
+    return new Response(null, { status: 204 });
+  }, 5);
+  await new Promise((r) => setTimeout(r, 18));
+  t.sent();
+  const afterReply = refreshed.length;
+  await new Promise((r) => setTimeout(r, 15));
+  assertEquals(refreshed.length, afterReply);
+  assertEquals(afterReply >= 3, true);
+  await t.stop();
+  assertEquals(refreshed.at(-1), "DELETE");
+});
+
+Deno.test("a failing typing call never reaches the turn", async () => {
+  const t = startTyping({ token: "fake" }, "chat-id", () => Promise.reject(new Error("network")));
+  await t.stop();
 });

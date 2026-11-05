@@ -9,7 +9,12 @@ import type { Inbound } from "../whatsapp.ts";
 import { command } from "./gate.ts";
 import { handleTurn, type TurnDeps } from "./turn.ts";
 
-export type AgentDeps = TurnDeps & { sleep?: (ms: number) => Promise<void> };
+export type AgentDeps = TurnDeps & {
+  sleep?: (ms: number) => Promise<void>;
+  // Shown while a claimed turn runs (Linq). Stopped before the turn is released, so a
+  // replacing turn's indicator is never cleared by the one it replaced.
+  typing?: (user: User, msg: Inbound) => { stop(): Promise<void> } | null;
+};
 
 // A turn that dies holds the user for at most this long.
 const LEASE_S = 90;
@@ -33,6 +38,7 @@ export async function handleInbound(user: User, msg: Inbound, deps: AgentDeps): 
   for (let waited = 0;; waited += RETRY_MS) {
     const claim = await store.claimTurn(user.id, msg.messageId, LEASE_S);
     if (claim.status === "claimed") {
+      const typing = deps.typing?.(user, msg) ?? null;
       const bound = claim.token ? store.forTurn?.(user.id, claim.token) : undefined;
       let lost = false;
       let renewing: Promise<void> | null = null;
@@ -63,9 +69,11 @@ export async function handleInbound(user: User, msg: Inbound, deps: AgentDeps): 
         : deps;
       try {
         await handleTurn(user, msg, guarded, claim.batch);
+        await typing?.stop();
         if (bound) await bound.completeTurn?.();
         return;
       } catch (e) {
+        await typing?.stop();
         if (bound) await bound.abandonTurn?.().catch(() => {});
         // The latest inbound worker (or durable recovery) owns the next decision.
         // Never convert a normal correction/STOP into an apology or stale outbox item.

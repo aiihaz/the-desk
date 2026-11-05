@@ -68,6 +68,74 @@ export async function send(
   return body.message.id;
 }
 
+// Read receipts and typing are courtesy signals: short timeouts, and a failure is
+// only logged, so neither can hold up or fail a reply.
+const PRESENCE_TIMEOUT_MS = 3_000;
+// One start shows typing for about 85–90s; Linq says to refresh every 60s.
+const TYPING_REFRESH_MS = 60_000;
+
+// From a normalized inbound: a message carries its chat, a reaction event names it.
+export function linqChatId(raw: unknown): string | null {
+  const r = raw as { linq?: { chat?: { id?: unknown } }; linq_event?: Event };
+  const id = r?.linq?.chat?.id ?? r?.linq_event?.data?.chat_id;
+  return typeof id === "string" && id ? id : null;
+}
+
+async function presence(
+  cfg: LinqConfig,
+  chatId: string,
+  path: "read" | "typing",
+  method: "POST" | "DELETE",
+  fetcher: typeof fetch,
+): Promise<void> {
+  if (!cfg.token) throw new Error("LINQ_API_TOKEN is not set");
+  const res = await fetcher(
+    `https://api.linqapp.com/api/partner/v3/chats/${encodeURIComponent(chatId)}/${path}`,
+    {
+      method,
+      signal: AbortSignal.timeout(PRESENCE_TIMEOUT_MS),
+      headers: { Authorization: `Bearer ${cfg.token}` },
+    },
+  );
+  await res.body?.cancel();
+  if (!res.ok) throw new Error(`linq ${path} ${method} failed ${res.status}`);
+}
+
+export async function markRead(cfg: LinqConfig, chatId: string, fetcher = fetch): Promise<void> {
+  await presence(cfg, chatId, "read", "POST", fetcher).catch((e) => console.warn(String(e?.message ?? e)));
+}
+
+export type Typing = {
+  // A sent message clears typing on Linq's side; stop refreshing so it doesn't come back.
+  sent(): void;
+  // Clears it. Awaited before the turn is released, so a replacing turn's start comes after.
+  stop(): Promise<void>;
+};
+
+// Shows typing until stop(). Calls go out one at a time, so a slow start can't land
+// after the stop and leave the indicator up.
+export function startTyping(
+  cfg: LinqConfig,
+  chatId: string,
+  fetcher = fetch,
+  refreshMs = TYPING_REFRESH_MS,
+): Typing {
+  let queue = Promise.resolve();
+  const call = (method: "POST" | "DELETE") =>
+    queue = queue.then(() => presence(cfg, chatId, "typing", method, fetcher))
+      .catch((e) => console.warn(String(e?.message ?? e)));
+  call("POST");
+  const refresh = setInterval(() => call("POST"), refreshMs);
+  let stopped: Promise<void> | null = null;
+  return {
+    sent: () => clearInterval(refresh),
+    stop: () => {
+      clearInterval(refresh);
+      return stopped ??= call("DELETE");
+    },
+  };
+}
+
 export async function verifyLinqSignature(
   body: string,
   headers: Headers,

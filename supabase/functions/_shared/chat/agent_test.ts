@@ -249,3 +249,53 @@ Deno.test("a refused dial for the caller contract raises an alert and tells the 
   assertEquals(store.alerts.map((a) => a.kind), ["caller_contract_mismatch"]);
   assertEquals(sent.length, 1);
 });
+
+function withTyping(deps: AgentDeps, log: string[]) {
+  deps.typing = (_u, m) => {
+    log.push(`typing:${m.messageId}`);
+    return { stop: async () => void log.push(`typing-stop:${m.messageId}`) };
+  };
+}
+
+Deno.test("typing shows for the claimed turn and stops before the turn is released", async () => {
+  const { store, deps } = setup();
+  withTyping(deps, store.turnLog);
+  deps.luna = async () => void store.turnLog.push("luna");
+  store.claims = [{ status: "claimed", batch: ["hi"] }];
+  await handleInbound(user, inbound({ text: "hi", messageId: "m1" }), deps);
+  assertEquals(store.turnLog, ["claim:m1:claimed", "typing:m1", "luna", "typing-stop:m1", "release:m1"]);
+});
+
+Deno.test("a replaced turn stops typing before it gives the turn up", async () => {
+  const { store, deps } = setup();
+  const log: string[] = [];
+  withTyping(deps, log);
+  const bound = Object.assign(new FakeChatStore(), {
+    renewTurn: async () => {},
+    assertTurn: async () => {},
+    completeTurn: async () => void log.push("complete"),
+    abandonTurn: async () => void log.push("abandon"),
+  });
+  Object.assign(store, { forTurn: () => bound });
+  store.claims = [{ status: "claimed", token: "generation", batch: ["hi"] }];
+  deps.luna = async () => {
+    throw new Error("turn superseded");
+  };
+  await handleInbound(user, inbound({ text: "hi", messageId: "m1" }), deps);
+  assertEquals(log, ["typing:m1", "typing-stop:m1", "abandon"]);
+  log.length = 0;
+  store.claims = [{ status: "claimed", token: "generation", batch: ["hi"] }];
+  deps.luna = async () => {};
+  await handleInbound(user, inbound({ text: "hi", messageId: "m2" }), deps);
+  assertEquals(log, ["typing:m2", "typing-stop:m2", "complete"]);
+});
+
+Deno.test("no typing for STOP, or for a message a newer one answers", async () => {
+  const { store, deps } = setup();
+  const log: string[] = [];
+  withTyping(deps, log);
+  await handleInbound(user, inbound({ text: "stop", messageId: "m1" }), deps);
+  store.claims = [{ status: "newer" }];
+  await handleInbound(user, inbound({ text: "dinner", messageId: "m2" }), deps);
+  assertEquals(log, []);
+});

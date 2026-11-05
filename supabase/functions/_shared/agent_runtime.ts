@@ -9,7 +9,14 @@ import { type AgentDeps, handleInbound } from "./chat/agent.ts";
 import { type LunaDeps, runLuna } from "./chat/luna.ts";
 import { DbChatStore } from "./chat/store.ts";
 import { createDelivery } from "./messaging.ts";
-import { downloadLinqImage } from "./linq.ts";
+import {
+  downloadLinqImage,
+  linqChatId,
+  linqConfigFromEnv,
+  markRead,
+  startTyping,
+  type Typing,
+} from "./linq.ts";
 import { dial, type DialArgs, dialForTurn } from "./dial.ts";
 import { handleScreenshot } from "./chat/payment.ts";
 import { jevClient } from "./jev.ts";
@@ -28,7 +35,14 @@ export function createAgentRuntime(channel: MessagingChannel = "whatsapp") {
   const sarvam = sarvamConfigFromEnv();
   const env = (k: string) => Deno.env.get(k) ?? "";
 
-  const send = createDelivery(store);
+  const delivery = createDelivery(store);
+  // The running turn's typing indicator per user: a reply ends its refresh.
+  const typingNow = new Map<string, Typing>();
+  const send: typeof delivery = async (user, msg) => {
+    const id = await delivery(user, msg);
+    typingNow.get(user.id)?.sent();
+    return id;
+  };
 
   // Google Places, then a web lookup for places listed with no phone (eng plan 3.3).
   const places: SearchPlaces = env("GOOGLE_MAPS_API_KEY")
@@ -69,6 +83,20 @@ export function createAgentRuntime(channel: MessagingChannel = "whatsapp") {
     store: chat,
     send,
     isAdmin: (waId) => admins.has(waId),
+    typing: channel === "linq"
+      ? (user, msg) => {
+        const chatId = linqChatId(msg.raw);
+        if (!chatId) return null;
+        const typing = startTyping(linqConfigFromEnv(), chatId);
+        typingNow.set(user.id, typing);
+        return {
+          stop: () => {
+            if (typingNow.get(user.id) === typing) typingNow.delete(user.id);
+            return typing.stop();
+          },
+        };
+      }
+      : undefined,
     luna: async (user, _text, msg, turnStore) => {
       const scoped = turnStore ?? chat;
       const scopedSend: typeof send = async (u, m) => {
@@ -161,6 +189,10 @@ export function createAgentRuntime(channel: MessagingChannel = "whatsapp") {
     store,
     chat,
     send,
+    markRead: (msg: import("./whatsapp.ts").Inbound) => {
+      const chatId = linqChatId(msg.raw);
+      return chatId ? markRead(linqConfigFromEnv(), chatId) : Promise.resolve();
+    },
     handOff: async (user: User, msg: import("./whatsapp.ts").Inbound) => {
       if (env(channel === "linq" ? "DESK_LINQ_ECHO" : "DESK_ECHO") === "1") {
         await send(user, { kind: "text", body: `The Desk got: ${msg.text ?? `(${msg.type})`}` });

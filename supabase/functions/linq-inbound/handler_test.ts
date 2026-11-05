@@ -140,3 +140,20 @@ Deno.test("reaction recovery applies the same ownership gate; removals are persi
   };
   assertEquals((await handle(await request(reactionEvent()), s.deps)).status, 503);
 });
+
+Deno.test("a new message gets a read receipt in the background; reactions and blocked users don't", async () => {
+  const s = setup();
+  const read: string[] = [];
+  const deps = { ...s.deps, markRead: async (m: Inbound) => void read.push(m.messageId) };
+  assertEquals((await handle(await request(), deps)).status, 200);
+  await handle(await request(), deps);
+  await Promise.all(s.pending);
+  assertEquals(read, ["inbound-id"]);
+  s.deps.store.acceptLinqReaction = async () => true;
+  await handle(await request(reactionEvent()), deps);
+  assertEquals(read, ["inbound-id"]);
+  const blocked = setup();
+  blocked.user.blocked = true;
+  await handle(await request(), { ...blocked.deps, markRead: deps.markRead });
+  assertEquals(read, ["inbound-id"]);
+});

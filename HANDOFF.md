@@ -80,6 +80,21 @@ Evaluation ([dev/conversation_eval.ts](dev/conversation_eval.ts), now type-check
 5. **Laundry pickup** asks for a time range on top of the address.
 6. Not qualified at all: real search, PostgreSQL races through the real adapters, Linq reaction webhooks live, voice calls.
 
+## Reply latency and presence (5 November, three separate decisions)
+
+Owner test 17:29–17:34 IST: replies took 23–60s, and model calls were only about 20% of that. The database is in Tokyo (`ap-northeast-1`), but functions run near the caller (from India, `ap-south-1`). Each Luna step makes 10–25 sequential database calls, at 200–500ms each from outside Tokyo. Per-step attribution is inferred from the gaps between `model_usage` rows, not instrumented. [dev/turn_latency.sql](dev/turn_latency.sql) is the measure; it reports single messages and corrections separately.
+
+| Baseline | Reply after last message | Turns started | Model time |
+|---|---|---|---|
+| single (3) | 23.4s, 42.7s, 29.0s | 1 each | 2.1s, 8.3s, 6.2s |
+| correction (2) | 44.3s, 59.8s (55.3s, 67.5s from first) | 2 each | 11.4s, 9.6s |
+
+1. **Pin linq-inbound to Tokyo**: add `&forceFunctionRegion=ap-northeast-1` to the Linq webhook URL (PUT the subscription; the signing secret is kept). It is config only. A probe showed the pinned URL serves from `ap-northeast-1`. Trade-off: no automatic region failover. The improvement isn't proven until it's measured again. **Applied 2026-11-05 21:10 IST** to subscription `b5f4c1e9…` (`message.received`, active); the welcome subscription is unchanged. Not yet measured. To undo, PUT the URL without the parameter.
+2. **Read receipts and typing** (uncommitted, not deployed): a new message is marked read in the background. Typing starts when a turn is claimed, is refreshed every 60s until a reply is sent, and is stopped before the turn completes or is abandoned. So a replaced turn never clears the indicator of the turn that replaces it. Every call is best effort, with a 3s timeout. Linq says typing may not appear for the first reply after ~5 quiet minutes.
+3. **c2bc169 is a reliability fix, not a speed fix.** It lets grounding retry within 40s, so a failing check can wait longer before giving up. It ships with item 2's deploy, but it is tracked separately.
+
+None of these fixes the **correction-restart cost**: a second message more than 1.5s after the first (`turn_debounce_ms`) throws away the running turn and starts again. Re-measure corrections separately after each change, so an overall speed-up doesn't hide it.
+
 ## Next steps
 
 1. **Owner acceptance on iMessage** against the deployed build: restaurant, salon, laundry, clinic, a correction, a second errand. Calls stay paused; plans are the thing to judge.

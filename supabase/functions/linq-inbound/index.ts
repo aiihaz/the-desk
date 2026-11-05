@@ -9,5 +9,6 @@ Deno.serve((req) =>
     // deno-lint-ignore no-explicit-any
     background: (p) => (globalThis as any).EdgeRuntime?.waitUntil(p) ?? p,
     handOff: runtime.handOff,
+    markRead: runtime.markRead,
   })
 );

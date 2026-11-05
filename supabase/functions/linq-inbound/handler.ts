@@ -7,6 +7,8 @@ export type Deps = {
   secret: string;
   background: (p: Promise<unknown>) => void;
   handOff: (user: User, msg: Inbound) => Promise<void>;
+  // Best effort and in the background: a read receipt never delays the acknowledgment.
+  markRead?: (msg: Inbound) => Promise<void>;
 };
 
 export async function handle(req: Request, deps: Deps): Promise<Response> {
@@ -39,7 +41,7 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
 // Also used by recovery, only for events already verified and persisted by handle().
 export async function ingestLinqPayload(
   payload: unknown,
-  deps: Pick<Deps, "store" | "background" | "handOff">,
+  deps: Pick<Deps, "store" | "background" | "handOff" | "markRead">,
 ): Promise<void> {
   const msg = parseLinqWebhook(payload);
   if (!msg) return;
@@ -50,6 +52,7 @@ export async function ingestLinqPayload(
   const user = await deps.store.upsertUser(msg.waId, msg.name);
   const isNew = await deps.store.saveInbound(user.id, msg);
   if ((isNew || await deps.store.inboundPending?.(msg.messageId)) && !user.blocked) {
+    if (msg.type !== "reaction" && deps.markRead) deps.background(deps.markRead(msg));
     deps.background(
       deps.handOff(user, msg).catch((e) => console.error("linq handoff failed", msg.messageId, e)),
     );
