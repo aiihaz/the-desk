@@ -1,6 +1,8 @@
+import type { CheckIntent } from "./intent_grounding.ts";
 // One inbound turn through the deterministic part of the chat agent: code gate (L0),
 // then the daily cap, then Luna (L1-L3). Nothing here reads approval: Luna proposes
 // plans and reads the user's answer, approval.ts checks it, the database binds it.
+import type { PlanRenderer } from "./plan_writer.ts";
 import type { User } from "../store.ts";
 import type { Inbound, Outbound } from "../whatsapp.ts";
 import { classify, type Route } from "./gate.ts";
@@ -82,21 +84,13 @@ export async function handleTurn(
     case "screenshot":
       return deps.onPayment(user, route, msg);
     case "luna": {
-      // A reaction asks for nothing unless it's on the open plan. Anything else (a 👍 on
-      // a report) gets no reply, and no model reads it.
-      if (msg.type === "reaction" && batch.length <= 1 && !(await onOpenPlan(store, user, msg))) {
-        deps.trace?.("reaction_ignored", { quoted: msg.quotedId });
-        return;
-      }
+      // Reactions can answer a clarification as well as a calling plan. Let Luna
+      // read the quoted conversation and decide whether an answer is needed.
+      // Routing is never approval: approvePlan separately checks the exact plan,
+      // its current version, the reaction's target, and subsequent corrections.
       return deps.luna(user, route.text, msg);
     }
   }
-}
-
-async function onOpenPlan(store: ChatStore, user: User, msg: Inbound): Promise<boolean> {
-  const { prompt } = await store.active(user.id);
-  if (!prompt || !msg.quotedId) return false;
-  return (await store.promptForMessage(user.id, msg.quotedId)) === prompt.id;
 }
 
 export async function sendTemplate(deps: PromptDeps, user: User, key: string): Promise<void> {
@@ -106,7 +100,10 @@ export async function sendTemplate(deps: PromptDeps, user: User, key: string): P
   await deps.send(user, { kind: "text", body: text });
 }
 
-export type PromptDeps = Pick<TurnDeps, "store" | "send" | "now" | "trace">;
+export type PromptDeps = Pick<TurnDeps, "store" | "send" | "now" | "trace"> & {
+  renderPlan?: PlanRenderer;
+  checkIntent?: CheckIntent;
+};
 
 // Opens a prompt (a plan or an option list) on the request's current version and sends it.
 export async function sendPrompt(
@@ -154,6 +151,33 @@ export async function proposePlan(
   if (r.task === "question" && r.fields.share_phone && !info.phone) {
     return { ok: false, reason: "no number on file to share" };
   }
+  if (deps.checkIntent) {
+    const [messages, memories] = await Promise.all([
+      store.history(user.id, new Date(now.getTime() - 24 * 3_600_000), 40),
+      store.memories(user.id),
+    ]);
+    const grounded = await deps.checkIntent({
+      phase: "plan",
+      task: r.task,
+      current: r.fields,
+      patch: {},
+      messages,
+      memories,
+      now,
+      profile: { name: info.name, phone: info.phone },
+    });
+    deps.trace?.("plan_grounding", grounded);
+    await store.assertTurn?.();
+    if (!grounded.ok) {
+      return {
+        ok: false,
+        reason: grounded.reason,
+        missing: grounded.clarification
+          ? [grounded.clarification]
+          : ["Could not verify the calling brief; do not claim it is ready."],
+      };
+    }
+  }
   if (r.state !== "confirming" && r.state !== "awaiting_yes") {
     if (r.state === "collecting" || r.state === "choosing_place") {
       await store.advance(r.id, "confirming");
@@ -170,7 +194,7 @@ export async function proposePlan(
     code.customer_name = info.name;
   }
   if (r.fields.exact_time && r.fields.tolerance_min === undefined) {
-    code.tolerance_min = await store.limitInt("match_tolerance_minutes", user.id) ?? 0;
+    code.tolerance_min = 0;
   }
   if (Object.entries(code).some(([k, v]) => (r.fields as Record<string, unknown>)[k] !== v)) {
     const res = await store.updateSlots(requestId, code);
@@ -203,6 +227,28 @@ export async function proposePlan(
     case "cancel":
       p = cancelReadback({ booking: await store.booking(r.bookingId!), now });
       break;
+  }
+  if (deps.renderPlan) {
+    const chat = await store.history(user.id, new Date(now.getTime() - 24 * 3_600_000), 24);
+    const text = await deps.renderPlan({
+      task: r.task,
+      fields: r.fields,
+      reference: p.text,
+      chat: chat.map(({ from, text }) => ({ from, text })),
+      language: info.language,
+    });
+    if (!text) {
+      return {
+        ok: false,
+        reason: "could not verify the proposed wording; do not ask for approval or claim a plan was sent",
+      };
+    }
+    await store.assertTurn?.();
+    const current = await store.request(requestId);
+    if (current.version !== r.version || current.pausedAt) {
+      return { ok: false, reason: "the plan changed while writing; read the current request again" };
+    }
+    p = { ...p, text, message: { kind: "text", body: text } };
   }
   const sent = await sendPrompt(deps, user, requestId, p);
   return sent.ok ? { ...sent, text: p.text } : sent;

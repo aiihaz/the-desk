@@ -53,8 +53,7 @@ Deno.test("booking plan: what will happen, what is shared, what isn't agreed, th
   assertEquals(
     p.text,
     "I'll call Paragon, Kannur Rd, Kozhikode and book a table for 4, tonight (Fri 23 Oct), 7:30–9:00 pm, " +
-      "in your name (Ihaz, +91 98…). If that isn't free, or they want an advance, I won't agree to anything; " +
-      "I'll come back to you with what they say.\n\nShall I go ahead?",
+      "in your name (Ihaz, +91 98…).\n\nShall I go ahead?",
   );
   assertEquals(p.kind, "ask");
   noButtonsNoYes(p);
@@ -99,7 +98,8 @@ Deno.test("no plan commits money: an advance only ever comes back to them", () =
     customerPhone: null,
     now,
   });
-  assertEquals(p.text.includes("in your name (Ihaz). If that isn't free, or they want an advance"), true);
+  assertEquals(p.text.includes("advance"), false);
+  assertEquals(p.text.includes("in your name (Ihaz)."), true);
   assertEquals(p.text.includes("Rs"), false);
 });
 
@@ -186,7 +186,29 @@ Deno.test("they don't want their number given: the plan says so, and shows no nu
     p.text,
     "I'll call Paragon, Kannur Rd, Kozhikode and book a table for 4, tonight (Fri 23 Oct), 7:30–9:00 pm, " +
       "in your name (Ihaz). I won't give them your number; if they need it to book, I'll come back to you " +
-      "first. If that isn't free, or they want an advance, I won't agree to anything; " +
-      "I'll come back to you with what they say.\n\nShall I go ahead?",
+      "first.\n\nShall I go ahead?",
   );
+});
+
+Deno.test("approved service location and requirements remain in the plan specification", () => {
+  const f = {
+    ...tonight,
+    service: "blazer collection",
+    service_address: "Flat 12, Lotus Apartments",
+    service_details: "Two blazers, return by Friday",
+    may_book: true,
+  };
+  const booking = bookingReadback({ place: paragon, f, customerPhone: null, now });
+  const question = questionReadback({
+    place: paragon,
+    f: {
+      questions: ["Can you collect these?"],
+      service_address: f.service_address,
+      service_details: f.service_details,
+    },
+  });
+  for (const plan of [booking, question]) {
+    assertEquals(plan.text.includes(f.service_address), true);
+    assertEquals(plan.text.includes(f.service_details), true);
+  }
 });

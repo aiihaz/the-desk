@@ -2,6 +2,7 @@
 // the call row; only then is Sarvam called. The voice agent's variables are built here
 // from the stored, consented fields (call_vars.ts), never taken from the caller. The
 // dial function and the chat agent's consent hand-off both start calls through here.
+import { isTurnInvalidated } from "./chat/turn_control.ts";
 import type { CallStore } from "./call_store.ts";
 import { callVariables } from "./call_vars.ts";
 import type { CallKind, Language, StartCall } from "./sarvam.ts";
@@ -10,6 +11,9 @@ import { CallRejected } from "./sarvam.ts";
 export type DialDeps = {
   store: CallStore;
   start: (call: StartCall) => Promise<string>;
+  beforeStart?: () => Promise<void>;
+  // Cleanup of this reserved call after proven non-submission must survive a lost turn.
+  markNotSubmitted?: (callId: string, reason: string) => Promise<void>;
 };
 
 export type DialArgs = {
@@ -29,6 +33,12 @@ export async function dial(deps: DialDeps, a: DialArgs): Promise<DialResult> {
   const r = await deps.store.reserveCall(a.requestId, a.kind, a.optionId, a.isRetry);
   if (!r.ok) return { ok: false, error: "refused", reason: r.reason };
 
+  const notSubmitted = async (error: unknown) => {
+    const mark = deps.markNotSubmitted ?? ((id: string, reason: string) => deps.store.markFailed(id, reason));
+    await mark(r.call_id, String(error)).catch(() =>
+      console.error("could not persist non-submission", r.call_id)
+    );
+  };
   let call: StartCall;
   try {
     // No proof, no call: reserve_call names the consent this call rests on.
@@ -47,18 +57,23 @@ export async function dial(deps: DialDeps, a: DialArgs): Promise<DialResult> {
     };
   } catch (e) {
     // The row stays, marked failed, so the attempt counts against the limits.
-    await deps.store.markFailed(r.call_id, String(e)).catch((e2) => console.error("markFailed", e2));
+    await notSubmitted(e);
+    if (isTurnInvalidated(e)) throw e;
     return { ok: false, error: "dial_failed", call_id: r.call_id, detail: String(e) };
   }
   let attemptId: string | undefined;
+  let transportStarted = false;
   try {
     await deps.store.beginSubmission(r.call_id);
+    await deps.beforeStart?.();
+    transportStarted = true;
     attemptId = await deps.start(call);
     await deps.store.markDialing(r.call_id, attemptId);
     return { ok: true, call_id: r.call_id, attempt_id: attemptId, flags: r.flags };
   } catch (e) {
-    if (e instanceof CallRejected) {
-      await deps.store.markFailed(r.call_id, String(e));
+    if (!transportStarted || e instanceof CallRejected) {
+      await notSubmitted(e);
+      if (isTurnInvalidated(e)) throw e;
       return { ok: false, error: "dial_failed", call_id: r.call_id, detail: String(e) };
     }
     // An external side effect cannot be rolled back by a failed local write.

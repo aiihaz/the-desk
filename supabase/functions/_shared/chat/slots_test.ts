@@ -193,3 +193,21 @@ Deno.test("the party size has one home: not repeated in service (S9 'table for 3
     patch: { share_phone: false },
   });
 });
+
+Deno.test("service context has its own bounded fields rather than overwriting the service name", () => {
+  const patch = {
+    service_address: " 12 Residency Road, Bengaluru ",
+    service_details: "Collect two blazers; return by Friday",
+  };
+  const result = checkSlots("booking", { service: "dry cleaning pickup" }, patch, now);
+  assertEquals(result, {
+    ok: true,
+    patch: { service_address: "12 Residency Road, Bengaluru", service_details: patch.service_details },
+  });
+  assertEquals(checkSlots("question", {}, patch, now).ok, true);
+  assertEquals(checkSlots("reschedule", {}, patch, now).ok, true);
+  assertEquals(checkSlots("cancel", {}, patch, now).ok, false);
+  assertEquals(checkSlots("booking", {}, { service_address: "x".repeat(501) }, now).ok, false);
+  assertEquals(checkSlots("booking", {}, { service_details: "x".repeat(1001) }, now).ok, false);
+  assertEquals(checkSlots("booking", {}, { service_address: "" }, now).ok, false);
+});

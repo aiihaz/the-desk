@@ -1,3 +1,5 @@
+import { createPlanWriter } from "./chat/plan_writer.ts";
+import { createIntentGrounding } from "./chat/intent_grounding.ts";
 // Shared production runtime: both channels use the same recovered, fenced chat agent.
 import { DbCallStore } from "./call_store.ts";
 import { callAfterConsent } from "./chat/calls.ts";
@@ -77,6 +79,14 @@ export function createAgentRuntime(channel: MessagingChannel = "whatsapp") {
         return runLuna(
           {
             ...luna,
+            renderPlan: createPlanWriter(
+              luna.create,
+              (await scoped.limitText("luna_model", user.id)) ?? "gpt-6-luna",
+            ),
+            checkIntent: createIntentGrounding(
+              luna.create,
+              (await scoped.limitText("luna_model", user.id)) ?? "gpt-6-luna",
+            ),
             store: scoped,
             send: scopedSend,
             onApproved: (u, c) =>
@@ -89,10 +99,9 @@ export function createAgentRuntime(channel: MessagingChannel = "whatsapp") {
                     await scoped.assertTurn?.();
                     return dial({
                       store: new DbCallStore(serviceClient(scoped.turnToken)),
-                      start: async (c) => {
-                        await scoped.assertTurn?.();
-                        return startCall(sarvam, c);
-                      },
+                      beforeStart: () => scoped.assertTurn?.() ?? Promise.resolve(),
+                      markNotSubmitted: (id, reason) => calls.markFailed(id, reason),
+                      start: (c) => startCall(sarvam, c),
                     }, a);
                   },
                 },
@@ -126,10 +135,9 @@ export function createAgentRuntime(channel: MessagingChannel = "whatsapp") {
             await scoped.assertTurn?.();
             return dial({
               store: new DbCallStore(serviceClient(scoped.turnToken)),
-              start: async (c) => {
-                await scoped.assertTurn?.();
-                return startCall(sarvam, c);
-              },
+              beforeStart: () => scoped.assertTurn?.() ?? Promise.resolve(),
+              markNotSubmitted: (id, reason) => calls.markFailed(id, reason),
+              start: (c) => startCall(sarvam, c),
             }, a);
           },
           create: responsesClient(env("OPENAI_API_KEY")),

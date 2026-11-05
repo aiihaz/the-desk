@@ -1,8 +1,8 @@
 import { assertEquals } from "jsr:@std/assert@1.0.8";
-import { event, SECRET, signedHeaders } from "../_shared/linq_test_helpers.ts";
+import { event, reactionEvent, SECRET, signedHeaders } from "../_shared/linq_test_helpers.ts";
 import type { Store, User } from "../_shared/store.ts";
 import type { Inbound } from "../_shared/whatsapp.ts";
-import { handle } from "./handler.ts";
+import { handle, ingestLinqPayload } from "./handler.ts";
 
 function setup() {
   const seen = new Set<string>();
@@ -45,8 +45,8 @@ function setup() {
     },
   };
 }
-async function request() {
-  const body = JSON.stringify(event());
+async function request(payload: unknown = event()) {
+  const body = JSON.stringify(payload);
   return new Request("https://desk.example/linq-inbound", {
     method: "POST",
     body,
@@ -101,4 +101,42 @@ Deno.test("Linq webhook rejects unsigned requests and unsupported methods", asyn
   );
   assertEquals((await handle(new Request("https://desk.example"), s.deps)).status, 405);
   assertEquals(s.handed.length, 0);
+});
+
+Deno.test("signed reactions require ownership of a previously sent direct-message target", async () => {
+  const rejected = setup();
+  assertEquals((await handle(await request(reactionEvent()), rejected.deps)).status, 200);
+  assertEquals(rejected.handed, []);
+  const accepted = setup();
+  const checked: string[][] = [];
+  accepted.deps.store.acceptLinqReaction = async (phone, target) => {
+    checked.push([phone, target]);
+    return target === "plan-id";
+  };
+  await handle(await request(reactionEvent()), accepted.deps);
+  await handle(await request(reactionEvent()), accepted.deps);
+  assertEquals(accepted.handed, ["linq-reaction:reaction-add-id"]);
+  assertEquals(checked[0], ["919876543210", "plan-id"]);
+  const foreign = reactionEvent();
+  foreign.event_id = "different";
+  foreign.data.message_id = "another-users-message";
+  await ingestLinqPayload(foreign, accepted.deps);
+  assertEquals(accepted.handed.length, 1);
+});
+
+Deno.test("reaction recovery applies the same ownership gate; removals are persisted as non-approval", async () => {
+  const s = setup();
+  s.deps.store.acceptLinqReaction = async () => true;
+  let saved: Inbound | undefined;
+  s.deps.store.saveInbound = async (_id, message) => {
+    saved = message;
+    return true;
+  };
+  await ingestLinqPayload(reactionEvent(true), s.deps);
+  assertEquals(saved?.text, "");
+  assertEquals(saved?.quotedId, "plan-id");
+  s.deps.store.acceptLinqReaction = async () => {
+    throw new Error("database unavailable");
+  };
+  assertEquals((await handle(await request(reactionEvent()), s.deps)).status, 503);
 });

@@ -218,3 +218,20 @@ Deno.test("a booking without their number: the call can book, carries no number,
   const shared = callVariables("first", { ...base, fields: { ...base.fields, may_book: true } }, false);
   assertEquals(shared.customer_phone, "+919812345678");
 });
+
+Deno.test("approved service context reaches the caller in its existing resolved brief", () => {
+  const address = "Flat 3B, 12 Residency Road, Bengaluru";
+  const details = "Collect two blazers; return by Friday, under Rs 600 total";
+  const input = { ...base, fields: { ...base.fields, service_address: address, service_details: details } };
+  const v = callVariables("first", input, false);
+  assertEquals(String(v.decided).includes(address), true);
+  assertEquals(String(v.decided).includes(details), true);
+  const q = callVariables("question", {
+    ...input,
+    task: "question",
+    fields: { questions: ["Can you collect from this address?"], service_address: address },
+  }, false);
+  assertEquals(String(q.decided).includes(address), true);
+  assertEquals(String(q.decided).includes(details), false);
+  assertEquals("customer_phone" in q, false);
+});

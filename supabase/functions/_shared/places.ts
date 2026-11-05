@@ -10,6 +10,7 @@ export type PlaceHit = {
   area: string | null;
   city: string | null;
   phone: string | null;
+  countryCode?: string | null;
   // The phone came from a web search (serper.ts), not Google Maps.
   phoneFromWeb?: boolean;
   // regularOpeningHours as Places returns it (periods with day/hour/minute).
@@ -41,7 +42,8 @@ export function placesClient(apiKey: string, timeoutMs = 10_000, f: typeof fetch
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`places ${res.status}: ${JSON.stringify(body?.error?.message ?? body)}`);
-    return parsePlaces(body);
+    // regionCode is only a ranking hint. Require explicit country evidence for live results.
+    return parsePlaces(body).filter((p) => p.countryCode === "IN");
   };
 }
 
@@ -58,6 +60,7 @@ export function parsePlaces(body: Row): PlaceHit[] {
     city: component(p.addressComponents, "locality") ??
       component(p.addressComponents, "administrative_area_level_3"),
     phone: toE164(p.internationalPhoneNumber),
+    countryCode: p.addressComponents?.find((c: Row) => c.types?.includes("country"))?.shortText ?? null,
     openingHours: p.regularOpeningHours ?? null,
     closed: p.businessStatus === "CLOSED_PERMANENTLY" || p.businessStatus === "CLOSED_TEMPORARILY",
   })).filter((p) => p.name);

@@ -147,6 +147,11 @@ export function taskCard(t: TaskView | null, now: Date, waiting: TaskView[] = []
     `known: ${describeFields(t.fields, now).join("; ") || "nothing yet"}`,
     `still needed for a plan: ${need.length ? need.join(", ") : "nothing"}`,
     `business: ${t.place ? placeName(t.place) : "not picked"}`,
+    ...(!t.place && t.fields.place_query
+      ? [
+        "business lookup: resolve the named place internally; ask only for genuine ambiguity, mismatch, or competing branches",
+      ]
+      : []),
   ];
   if (t.options.length) {
     lines.push(
@@ -228,6 +233,8 @@ function describeFields(f: Fields, now: Date): string[] {
   if (when) out.push(`time=${when}`);
   if (f.party_size) out.push(`party_size=${f.party_size}`);
   if (f.service) out.push(`service=${f.service}`);
+  if (f.service_address) out.push(`service_address=${f.service_address}`);
+  if (f.service_details) out.push(`service_details=${f.service_details}`);
   if (f.customer_name) out.push(`customer_name=${f.customer_name}`);
   if (f.share_name) out.push("gives their name on the call");
   if (f.share_phone) out.push("gives their number on the call");

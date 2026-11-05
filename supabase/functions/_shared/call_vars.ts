@@ -146,7 +146,7 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
   const mayBook = picked || (kind !== "question" && v.may_book === true);
   const conditions = typeof o?.value.conditions === "string" ? o.value.conditions : null;
 
-  const decided = kind === "question"
+  const baseDecision = kind === "question"
     ? `Only asking: ${v.question_text}`
     : kind === "cancel"
     ? `Cancel this booking: ${v.existing_booking}`
@@ -159,6 +159,16 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
       typeof v.customer_name === "string" ? `under the name ${v.customer_name}` : null,
       typeof v.also_ask === "string" ? `also ask: ${v.also_ask}` : null,
     ].filter(Boolean).join("; ");
+
+  // These fields are included in the approved proposal. Keep them in the existing
+  // decided variable so the deployed caller receives them without a new SDK contract.
+  const serviceContext = ["first", "question", "booking", "reschedule"].includes(kind)
+    ? [
+      typeof f.service_address === "string" ? `service location: ${f.service_address}` : null,
+      typeof f.service_details === "string" ? `service requirements: ${f.service_details}` : null,
+    ].filter(Boolean)
+    : [];
+  const decided = [baseDecision, ...serviceContext].filter(Boolean).join("; ");
 
   const flexible = picked || !when || kind === "question" || kind === "cancel" || kind === "payment_confirm"
     ? "Nothing."

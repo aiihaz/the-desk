@@ -46,11 +46,9 @@ export function withWebPhones(search: SearchPlaces, web: SearchWeb): SearchPlace
   return async (q) => {
     const hits = await search(q);
     let lookups = 0;
-    const out: PlaceHit[] = [];
-    for (const p of hits) {
+    return await Promise.all(hits.map(async (p) => {
       if (p.phone || p.closed || lookups >= MAX_LOOKUPS) {
-        out.push(p);
-        continue;
+        return p;
       }
       lookups++;
       try {
@@ -59,13 +57,12 @@ export function withWebPhones(search: SearchPlaces, web: SearchWeb): SearchPlace
         const words = (t: string) => t.split(/\s+/).filter(Boolean).length;
         const fit = found.filter((w) => indianE164(w.phone) && nameFits(p.name, w.title) && sameBranch(p, w))
           .sort((a, b) => words(a.title) - words(b.title))[0];
-        out.push(fit ? { ...p, phone: indianE164(fit.phone), phoneFromWeb: true } : p);
+        return fit ? { ...p, phone: indianE164(fit.phone), phoneFromWeb: true } : p;
       } catch (e) {
         console.warn("serper lookup failed", p.name, String((e as Error)?.message ?? e));
-        out.push(p);
+        return p;
       }
-    }
-    return out;
+    }));
   };
 }
 

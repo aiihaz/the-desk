@@ -1,4 +1,5 @@
 import { deepStrictEqual as assertEquals } from "node:assert/strict";
+import { approvePlan } from "./approval.ts";
 import type { User } from "../store.ts";
 import type { Outbound } from "../whatsapp.ts";
 import { inbound } from "./gate_test.ts";
@@ -116,4 +117,100 @@ Deno.test("daily cap: one message, then silence; STOP still works", async () => 
   await handleTurn(user, inbound({ text: "stop" }), deps);
   assertEquals(sent, [{ kind: "text", body: "[daily_cap]" }]);
   assertEquals(calls, ["command:stop"]);
+});
+
+Deno.test("reactions to conversational questions reach Luna even without an approval plan", async () => {
+  const { store, calls, deps } = setup();
+  store.lastOut = "clarification";
+  await handleTurn(user, inbound({ type: "reaction", text: "👍", quotedId: "clarification" }), deps);
+  assertEquals(calls, ["luna:[reacted 👍]"]);
+  assertEquals(store.consents, []);
+});
+
+Deno.test("delayed reactions retain context instead of being limited to the latest outgoing message", async () => {
+  const { store, calls, deps } = setup();
+  store.lastOut = "newer-context";
+  await handleTurn(user, inbound({ type: "reaction", text: "👍", quotedId: "earlier-question" }), deps);
+  assertEquals(calls, ["luna:[reacted 👍]"]);
+  assertEquals(store.consents, []);
+});
+
+Deno.test("a routed reaction to another message cannot approve the current plan", async () => {
+  for (const quoted of ["An earlier plan for two people", "The Indiranagar branch?", undefined]) {
+    const { store, deps } = setup();
+    store.req = { ...tonight };
+    await proposePlan(deps, user, "r1");
+    const plan = store.prompt!;
+    store.lines = [
+      { id: plan.waMessageId!, from: "desk", text: plan.text, at: now },
+      {
+        from: "user",
+        text: "[reacted 👍]",
+        at: new Date(now.getTime() + 1000),
+        ...(quoted ? { quoted } : {}),
+      },
+    ];
+    let readings = 0;
+    let started = 0;
+    deps.luna = async () => {
+      const result = await approvePlan(
+        {
+          store,
+          create: async () => {
+            readings++;
+            throw new Error("non-plan reaction must not reach approval reading");
+          },
+          onApproved: async () => {
+            started++;
+            return { started: true };
+          },
+        },
+        user,
+        null,
+        "reaction-in",
+      );
+      assertEquals(result.ok, false);
+    };
+    await handleTurn(user, inbound({ type: "reaction", text: "👍", quotedId: "other-message" }), deps);
+    assertEquals([readings, started, store.consents.length], [0, 0, 0]);
+  }
+});
+
+Deno.test("removed reactions remain silent without calling Luna", async () => {
+  const { calls, deps } = setup();
+  await handleTurn(user, inbound({ type: "reaction", text: null, quotedId: "clarification" }), deps);
+  assertEquals(calls, []);
+});
+
+Deno.test("an exact time never receives an invented default booking tolerance", async () => {
+  const { store, deps } = setup();
+  store.req = {
+    ...tonight,
+    fields: { party_size: 2, customer_name: "Ihaz", exact_time: "2026-10-23T20:00:00+05:30" },
+  };
+  store.limits.match_tolerance_minutes = 15;
+  await proposePlan(deps, user, "r1");
+  assertEquals(store.req!.fields.tolerance_min, 0);
+  assertEquals(store.prompt!.text.includes("either way"), false);
+});
+
+Deno.test("an incomplete grounded brief never opens or sends an approval plan", async () => {
+  const { store, deps, sent } = setup();
+  store.req = { ...tonight };
+  const res = await proposePlan(
+    {
+      ...deps,
+      checkIntent: async () => ({
+        ok: false,
+        reason: "brief_incomplete",
+        clarification: "Where should they collect it?",
+      }),
+    },
+    user,
+    "r1",
+  );
+  assertEquals(res.ok, false);
+  assertEquals(sent.length, 0);
+  assertEquals(store.prompt, null);
+  assertEquals(store.slotWrites, []);
 });

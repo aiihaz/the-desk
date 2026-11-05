@@ -74,3 +74,19 @@ Deno.test("same chain at another branch is not given the requested place's phone
   ]);
   assertEquals((await search({ text: "paragon" }))[0].phone, null);
 });
+
+Deno.test("phone enrichment overlaps two bounded lookups and preserves search order", async () => {
+  const releases: (() => void)[] = [];
+  const search = withWebPhones(
+    async () => [hit({ placeId: "a" }), hit({ placeId: "b" }), hit({ placeId: "c" })],
+    async () => {
+      await new Promise<void>((resolve) => releases.push(resolve));
+      return [];
+    },
+  );
+  const pending = search({ text: "paragon" });
+  await Promise.resolve();
+  assertEquals(releases.length, 2);
+  for (const release of releases) release();
+  assertEquals((await pending).map((p) => p.placeId), ["a", "b", "c"]);
+});

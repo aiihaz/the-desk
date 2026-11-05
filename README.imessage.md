@@ -1,5 +1,7 @@
 # The Desk on iMessage (Linq)
 
+> Current conversation-quality work is unfinished and not deployed. Start with [HANDOFF.md](HANDOFF.md) for the checkpoint, failing tests, evidence, and next steps.
+
 Alternate branch: `imessage-linq`. Both channels use the **same Supabase project**.
 Linq provides iMessage with RCS/SMS fallback. The existing Luna conversation,
 consent checks, Sarvam caller, booking verification, payment screenshot checks,

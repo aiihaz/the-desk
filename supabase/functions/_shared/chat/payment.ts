@@ -1,3 +1,4 @@
+import { isTurnInvalidated } from "./turn_control.ts";
 // The payment screenshot check (eng plan 2.2 step 3). A model reads the screenshot into
 // fields; code decides. It passes only if the payment succeeded, the amount is the
 // advance, it went to the payee the business gave, it was made after that call, and its
@@ -204,7 +205,10 @@ export async function handleScreenshot(
   const holds = await store.heldBookings(user.id);
   if (!holds.length) return deps.notAPayment(user);
 
-  const image = await deps.image(raw).catch(() => null);
+  const image = await deps.image(raw).catch((e) => {
+    if (isTurnInvalidated(e)) throw e;
+    return null;
+  });
   if (!image) {
     return say({ happened: { status: "could_not_open_the_image" }, next_step: "send_screenshot_again" });
   }
@@ -215,6 +219,7 @@ export async function handleScreenshot(
   try {
     s = await readScreenshot(deps.create, model, effort, image);
   } catch (e) {
+    if (isTurnInvalidated(e)) throw e;
     deps.trace?.("screenshot_read_failed", String((e as Error)?.message ?? e));
     return say({ happened: { status: "could_not_read_the_screenshot" }, next_step: "send_screenshot_again" });
   }

@@ -436,3 +436,48 @@ Deno.test("Linq reminders do not inherit WhatsApp's service window", async () =>
   equal(result.ok, true);
   equal(store.followUps.length, 1);
 });
+
+Deno.test("failed submission marker never claims the provider may have received a call", async () => {
+  const store = new FakeCallStore();
+  store.beginSubmission = async () => {
+    throw new Error("database unavailable");
+  };
+  let starts = 0;
+  const result = await dial({
+    store,
+    start: async () => {
+      starts++;
+      return "unexpected";
+    },
+  }, args);
+  equal(starts, 0);
+  ok(!result.ok);
+  equal(result.error, "dial_failed");
+  equal(store.calls.get("c-1")?.status, "failed");
+});
+
+Deno.test("supersession immediately before transport cleans up without a call or false uncertainty", async () => {
+  const store = new FakeCallStore();
+  let starts = 0;
+  let cleanup = false;
+  store.markFailed = async () => {
+    throw new Error("turn superseded");
+  };
+  await rejects(() =>
+    dial({
+      store,
+      beforeStart: async () => {
+        throw new Error("turn superseded");
+      },
+      markNotSubmitted: async (id) => {
+        equal(id, "c-1");
+        cleanup = true;
+      },
+      start: async () => {
+        starts++;
+        return "unexpected";
+      },
+    }, args), /turn superseded/);
+  equal(starts, 0);
+  equal(cleanup, true);
+});

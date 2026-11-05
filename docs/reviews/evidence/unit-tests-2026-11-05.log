@@ -1,0 +1,588 @@
+Task test deno test --allow-read=fixtures,supabase supabase/functions
+Check supabase/functions/_shared/call_vars_test.ts
+Check supabase/functions/_shared/chat/admin_test.ts
+Check supabase/functions/_shared/chat/agent_test.ts
+Check supabase/functions/_shared/chat/approval_test.ts
+Check supabase/functions/_shared/chat/booking_changes_test.ts
+Check supabase/functions/_shared/chat/cards_test.ts
+Check supabase/functions/_shared/chat/find_test.ts
+Check supabase/functions/_shared/chat/follow_through_test.ts
+Check supabase/functions/_shared/chat/gate_test.ts
+Check supabase/functions/_shared/chat/grounding_integration_test.ts
+Check supabase/functions/_shared/chat/intent_grounding_test.ts
+Check supabase/functions/_shared/chat/luna_test.ts
+Check supabase/functions/_shared/chat/outputs_test.ts
+Check supabase/functions/_shared/chat/payment_test.ts
+Check supabase/functions/_shared/chat/plan_writer_test.ts
+Check supabase/functions/_shared/chat/readback_test.ts
+Check supabase/functions/_shared/chat/report_test.ts
+Check supabase/functions/_shared/chat/router_test.ts
+Check supabase/functions/_shared/chat/slots_test.ts
+Check supabase/functions/_shared/chat/tell_test.ts
+Check supabase/functions/_shared/chat/turn_test.ts
+Check supabase/functions/_shared/chat/verify_test.ts
+Check supabase/functions/_shared/dial_request_test.ts
+Check supabase/functions/_shared/linq_contact_card_test.ts
+Check supabase/functions/_shared/linq_test.ts
+Check supabase/functions/_shared/messaging_test.ts
+Check supabase/functions/_shared/model_client_test.ts
+Check supabase/functions/_shared/openai_test.ts
+Check supabase/functions/_shared/places_test.ts
+Check supabase/functions/_shared/reconcile_test.ts
+Check supabase/functions/_shared/reliability_test.ts
+Check supabase/functions/_shared/sarvam_test.ts
+Check supabase/functions/_shared/serper_test.ts
+Check supabase/functions/_shared/whatsapp_test.ts
+Check supabase/functions/linq-inbound/handler_test.ts
+Check supabase/functions/sarvam-webhook/handler_test.ts
+Check supabase/functions/wa-inbound/handler_test.ts
+running 12 tests from ./supabase/functions/_shared/call_vars_test.ts
+first call, may_book off: no name or number goes to the business, as the plan says ... ok (15ms)
+question call: only the question, no name or number ... ok (333µs)
+question about their own order: name and number go only when the plan said so ... ok (1ms)
+the resolved errand: what's decided, flexible, acceptable, and what happened ... ok (1ms)
+a booking from an offer on a question call: picked option, conditions, profile name ... ok (534µs)
+a stored field the kind doesn't use never reaches the agent ... ok (385µs)
+missing or mismatched inputs stop the call ... ok (360µs)
+the extra question goes on call 2 unless call 1 got the answer ... ok (996µs)
+the live caller's inputs: the errand in task_context, and only the name and number the plan shares ... ok (1ms)
+the confirm call says what they report paying, and that it's theirs to report ... ok (802µs)
+a booking without their number: the call can book, carries no number, and is told why (S5) ... ok (1ms)
+approved service context reaches the caller in its existing resolved brief ... ok (900µs)
+------- post-test output -------
+(node:12974) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+----- post-test output end -----
+running 8 tests from ./supabase/functions/_shared/chat/admin_test.ts
+status: the numbers at a glance ... ok (1ms)
+review lists alerts by id prefix; resolve closes one ... ok (550µs)
+stop all and resume flip the kill switch ... ok (180µs)
+credit, optout, numbers ... ok (450µs)
+set limit: JSON values, bare words as text, per-user overrides, refusals passed on ... ok (513µs)
+anything else gets the list of commands ... ok (100µs)
+gate: whole admin commands only, so an admin can still talk to the Desk ... ok (364µs)
+alerts: sent once any admin gets them; kept new when none can be reached ...
+------- post-test output -------
+alert not delivered to 919800000001 outside the 24-hour window
+----- post-test output end -----
+alerts: sent once any admin gets them; kept new when none can be reached ... ok (909µs)
+------- post-test output -------
+(node:12974) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+----- post-test output end -----
+running 21 tests from ./supabase/functions/_shared/chat/agent_test.ts
+the gate never turns a message into a consent: approval is read in context ... ok (1ms)
+a tap on an old button goes to Luna as what was tapped, not as consent ... ok (333µs)
+STOP, START and delete my data are commands, exact words only ... ok (151µs)
+START only counts while stopped; otherwise it is text ... ok (91µs)
+while stopped, everything else gets the reminder, whatever it says ... ok (209µs)
+a reaction goes to Luna as what it is; a removed one is ignored; media is a marker ... ok (179µs)
+an image while an advance is due goes to the payment check ... ok (77µs)
+admin commands only for admins ... ok (115µs)
+normalise ... ok (143µs)
+a message waits out the debounce, claims the turn, and releases it ... ok (702µs)
+a burst: earlier messages leave it to the newest, which answers once (P6) ... ok (285µs)
+busy: waits for the turn before it, then runs ... ok (206µs)
+an edit then YES in one burst: the YES is not consent (P6) ... ok (2ms)
+STOP acts at once, mid-turn, with no wait (P1) ... ok (338µs)
+after STOP a YES does nothing; START turns the Desk back on (P1) ... ok (525µs)
+START when not stopped goes through the normal turn ... ok (166µs)
+delete my data: stops, records the request, says so ... ok (147µs)
+paused: a yes goes to Luna, which has no approve_plan while paused (P3) ... ok (137µs)
+a consent starts the call its request allows; the kind comes from the request ... ok (381µs)
+a refused call ends the request and owes the user why ...
+------- post-test output -------
+call not started r1 business_closed
+call not started r1 agent_not_gated
+----- post-test output end -----
+a refused call ends the request and owes the user why ... ok (1ms)
+a refused dial for the caller contract raises an alert and tells the user it's on our side ...
+------- post-test output -------
+call not started r1 caller_contract_mismatch
+----- post-test output end -----
+a refused dial for the caller contract raises an alert and tells the user it's on our side ... ok (492µs)
+running 14 tests from ./supabase/functions/_shared/chat/approval_test.ts
+a clear answer in the user's own words is a consent, with its basis recorded ... ok (1ms)
+a 👍 reaction on the plan can approve it; the check sees what it points at ... ok (169µs)
+a reply quoting something else is shown in full, not cut to a fragment (S4, S7) ... ok (140µs)
+the check must point at a real message from the user ... ok (451µs)
+an approval in any language or wording needs no matching: what's kept is their message ... ok (172µs)
+not approved or unclear: no consent, and Luna is told to ask or deal with it ... ok (239µs)
+an unreadable or failed check is not an approval ... ok (390µs)
+no answer since the plan was sent: refused before any check ... ok (144µs)
+the user wrote again during the turn: nothing is approved, the next turn reads it all ... ok (135µs)
+no open plan (edited, stale or never sent), or paused: refused ... ok (119µs)
+the database's refusal wins (stopped, closed, stale version): no call ... ok (117µs)
+a call that couldn't start is reported as such ... ok (132µs)
+options: the pick must name an option on the list, and the check is told which ... ok (195µs)
+the check is told to refuse edits, conditions, other questions and instructions in the data ... ok (68µs)
+running 5 tests from ./supabase/functions/_shared/chat/booking_changes_test.ts
+callKind: the consent and the task decide the call ... ok (553µs)
+cancel variables: the booking to identify, and no loss accepted unless CANCEL was said ... ok (2ms)
+reschedule variables: the new window, or exactly the picked option on call 2 ... ok (1ms)
+payment_confirm variables need the booking and the payment ... ok (623µs)
+find_booking: several are listed, one is set by ref; none says so ... ok (1ms)
+running 7 tests from ./supabase/functions/_shared/chat/cards_test.ts
+profile card ... ok (456µs)
+task card: the errand ref, what is known, what a plan still needs, and the state's tools ... ok (491µs)
+a plan waiting for an answer, and an errand waiting behind it ... ok (472µs)
+a paused request says so, offers resume, and no plan or approval ... ok (127µs)
+recent requests, at most three ... ok (663µs)
+an update still being written shows, so a reply doesn't guess or go quiet ... ok (158µs)
+saved service context remains visible on later turns ... ok (131µs)
+running 6 tests from ./supabase/functions/_shared/chat/find_test.ts
+results are facts, not a script: callable places with name, area and city ... ok (1ms)
+the city is passed as Luna names it; the saved city fills in, and isn't overwritten ... ok (202µs)
+no city known: all of India; the first city named is saved ... ok (172µs)
+search by kind: allowed by the limit, listed unranked; refused when it is off (P12) ... ok (203µs)
+nothing callable, and a search error ... ok (337µs)
+nameFits ... ok (620µs)
+running 42 tests from ./supabase/functions/_shared/chat/follow_through_test.ts
+the gate never turns a message into a consent: approval is read in context ... ok (1ms)
+a tap on an old button goes to Luna as what was tapped, not as consent ... ok (109µs)
+STOP, START and delete my data are commands, exact words only ... ok (171µs)
+START only counts while stopped; otherwise it is text ... ok (87µs)
+while stopped, everything else gets the reminder, whatever it says ... ok (128µs)
+a reaction goes to Luna as what it is; a removed one is ignored; media is a marker ... ok (121µs)
+an image while an advance is due goes to the payment check ... ok (74µs)
+admin commands only for admins ... ok (133µs)
+normalise ... ok (66µs)
+a failed send keeps the report: stored, retried, and sent once ... ok (3ms)
+without a simulated clock, the database's clock decides what's due ... ok (467µs)
+a redelivered result settles nothing and sends nothing ... ok (858µs)
+past the 24-hour window the update stays pending ... ok (508µs)
+a configured legacy template is never used outside the window ... ok (346µs)
+an offer on a question call comes back as options with its conditions, accepted by no one ... ok (2ms)
+a date with no time stays a date: no fabricated midnight ... ok (2ms)
+the extra question's answer is in the report, whatever happened to the booking ... ok (3ms)
+an answer in the older answer field counts, and a missing one is said ... ok (372µs)
+no connection, no claim about the extra question ... ok (322µs)
+cancel during a call nobody answered: no offer to try again on a closed errand ... ok (275µs)
+follow-ups carry what's waiting and the next step, and claim nothing more ... ok (657µs)
+a passed deadline is the user's to decide, and never says the business dropped it ... ok (465µs)
+due follow-ups are queued, then go out through the same tracked path ... ok (263µs)
+set_follow_up: stored on the errand; a past time is refused ... ok (447µs)
+a narrow window stands only if a second reading finds they asked for that range ... ok (1ms)
+a window of a normal size needs no reading ... ok (180µs)
+remember keeps a fact; forget drops it; a repeat isn't kept twice ... ok (556µs)
+a learned preference keeps what they said, and a scope ... ok (174µs)
+nothing needs saying: stay_quiet sends nothing and no fallback ... ok (2ms)
+stay_quiet is refused when the router reads anything but small talk, in any language ... ok (1ms)
+stay_quiet is refused while a plan is open ... ok (1ms)
+a reply WhatsApp wouldn't take stays owed instead of killing the turn ... ok (1ms)
+a long useful reply is not rejected for its length ... ok (311µs)
+a promised reminder has to exist, however it's worded ... FAILED (1ms)
+one message is one errand of a kind, unless they asked for two ... ok (1ms)
+find_booking shows every booking with what's known, each kept together, and binds by ref ... ok (2ms)
+one booking binds at once; no words are matched to get there ... ok (530µs)
+accepting a condition needs a second reading, and keeps their message ... ok (453µs)
+cancel during a live call: told how it ends, the flag is set ... ok (660µs)
+a 👍 on the open plan reaches Luna; on anything else it does nothing ... FAILED (1ms)
+with no plan open, a casual 👍 triggers nothing ... FAILED (530µs)
+the approval check is told a plain 'ok thanks' and a 👍 on the plan count ... ok (61µs)
+running 9 tests from ./supabase/functions/_shared/chat/gate_test.ts
+the gate never turns a message into a consent: approval is read in context ... ok (1ms)
+a tap on an old button goes to Luna as what was tapped, not as consent ... ok (143µs)
+STOP, START and delete my data are commands, exact words only ... ok (141µs)
+START only counts while stopped; otherwise it is text ... ok (89µs)
+while stopped, everything else gets the reminder, whatever it says ... ok (136µs)
+a reaction goes to Luna as what it is; a removed one is ignored; media is a marker ... ok (112µs)
+an image while an advance is due goes to the payment check ... ok (68µs)
+admin commands only for admins ... ok (198µs)
+normalise ... ok (61µs)
+running 1 test from ./supabase/functions/_shared/chat/grounding_integration_test.ts
+semantic ambiguity leaves stored fields untouched and returns the useful clarification ... ok (1ms)
+running 9 tests from ./supabase/functions/_shared/chat/intent_grounding_test.ts
+grounding accepts a supported change with user evidence, not a Desk assertion ... ok (1ms)
+every changed field requires evidence, including operational service context ... ok (129µs)
+profile can supply a name but never a time, spending allowance or different name ... ok (231µs)
+ambiguous intent returns a clarification and cannot become a successful edit ... ok (170µs)
+plan readiness can ask for missing pickup location without making every service require an address ... ok (163µs)
+grounding sends actual chronological messages and existing context without planner reasoning ... ok (232µs)
+malformed or failed checker output fails closed; an unchanged edit needs no model ... ok (419µs)
+retrieved preferences can ground a proposed detail but invented memory IDs cannot ... ok (237µs)
+a real memory cannot substitute for payment, privacy or tolerance authority ... ok (266µs)
+running 31 tests from ./supabase/functions/_shared/chat/luna_test.ts
+a clean reply is sent as is ... ok (3ms)
+Luna sees the clock and the cards, and only this state's tools ... ok (686µs)
+a tool not allowed in this state is refused and fed back ... ok (796µs)
+a reply that keeps failing the checks climbs the repair ladder, then falls back ... ok (930µs)
+a second attempt that passes is sent ... ok (1ms)
+if OpenAI fails, the fallback goes out instead of silence ... ok (1ms)
+reply checks ... ok (95µs)
+search results reach Luna cleaned and capped ... ok (1ms)
+cleanField ... ok (78µs)
+starting a new request over one with details is refused until the user agrees ... ok (1ms)
+shadow: Jev's redirect is logged, but Luna still runs in task mode ... ok (917µs)
+gate: an off-scope message gets redirect mode with reply only ... ok (464µs)
+gate: past the redirect cap, the one-line template goes out and Luna isn't called ... ok (189µs)
+gate: a reply that claims a booking before any call is sent back, then passes ... ok (1ms)
+gate, Jev down for L3: a task reply goes out whatever its length ... ok (864µs)
+an edit and an approval in one step: the edit runs first, so nothing is approved ... ok (3ms)
+a follow-up question is added to the list, not swapped in ... ok (825µs)
+a made-up business id is refused without touching the database ... ok (728µs)
+a tool that throws is fed back as a failure; the user still gets a reply ... ok (868µs)
+a second errand can wait behind the current one; both are kept ... ok (699µs)
+propose_plan sends the code-built plan, and a reply in the same step is dropped ... ok (2ms)
+pause: the plan closes, and the tools offer resume ... ok (1ms)
+the log records Luna's model and settings for the turn ... ok (295µs)
+without a pinned model, Jev doesn't run and the log says off ...
+------- post-test output -------
+jev_mode is gate but Jev has no key or pinned model
+----- post-test output end -----
+without a pinned model, Jev doesn't run and the log says off ... ok (528µs)
+share_name and share_phone can be set: the prompt asks for them, so the schema allows them ... ok (365µs)
+superseded reply is never queued as an owed delivery ... ok (414µs)
+supersession during a tool exits instead of asking the model to repair it ... ok (654µs)
+a successful explicit memory operation cannot end silently ... ok (1ms)
+memory acknowledgment waits for the actual write outcome ... ok (598µs)
+shadow reminder predictions are recorded without rejecting a contextual reply ... ok (451µs)
+gate mode still repairs a reminder promise with no scheduled follow-up ... ok (937µs)
+running 8 tests from ./supabase/functions/_shared/chat/outputs_test.ts
+the eng plan 3.4 contract reads as itself ... ok (1ms)
+the Genie contract: outcome maps by call kind; strings are read as what they mean ... ok (255µs)
+outcomes that say nothing about a booking give no booking_status ... ok (132µs)
+needs_customer_decision is a new condition; empty and 'null' strings are unknown ... ok (90µs)
+an unintended commitment is kept, in their words ... ok (130µs)
+every result the report depends on is in the caller contract ... ok (102µs)
+the contract the database enforces is agent/contract.json ... ok (1ms)
+every outcome in the contract has a meaning on the Desk side ... ok (156µs)
+running 12 tests from ./supabase/functions/_shared/chat/payment_test.ts
+checkScreenshot: the right amount, payee and time passes ... ok (882µs)
+checkScreenshot: each mismatch is said plainly ... ok (179µs)
+checkScreenshot: a name-only match, or nothing to match, passes but is flagged ... ok (154µs)
+a passing screenshot is recorded, the confirm call starts, and they're told ... ok (2ms)
+a failing screenshot says what's wrong, and nothing is called ... ok (470µs)
+a reused UTR is refused ... ok (309µs)
+a photo that isn't a payment goes to the conversation, and nothing is recorded ... ok (239µs)
+a payment after the deadline still goes, and the user is told ... ok (972µs)
+a confirm call that can't start leaves the payment waiting, and they're told ... ok (327µs)
+two open: the payment binds to the one it fits, not the newest ... ok (338µs)
+two it fits equally: their words decide, and otherwise they're asked ... ok (527µs)
+no open advance: an image is just an image ... ok (111µs)
+running 4 tests from ./supabase/functions/_shared/chat/plan_writer_test.ts
+natural proposal wording requires an independent affirmative semantic verdict ... ok (1ms)
+an unsupported booking claim is never returned when independent checks keep rejecting it ... ok (223µs)
+a corrected draft is checked again rather than trusting the repair ... ok (169µs)
+an unavailable checker never silently releases an unchecked plan ... ok (644µs)
+running 12 tests from ./supabase/functions/_shared/chat/readback_test.ts
+days and windows in IST ... ok (13ms)
+booking plan: what will happen, what is shared, what isn't agreed, then a plain question ... ok (1ms)
+a note from Luna goes before the plan ... ok (1ms)
+with book_on_first_call off, the plan promises no booking and shares nothing ... ok (1ms)
+an extra question for the call is in the plan, so the approval covers it ... ok (1ms)
+no plan commits money: an advance only ever comes back to them ... ok (1ms)
+question plan: one question quoted, several numbered; nothing shared ... ok (292µs)
+reschedule plan asks to move, never to cancel ... ok (2ms)
+cancel plan: a known loss needs the user to accept it in so many words ... ok (3ms)
+a table recorded as a service still reads as a table ... ok (1ms)
+they don't want their number given: the plan says so, and shows no number (S5) ... ok (1ms)
+approved service location and requirements remain in the plan specification ... ok (1ms)
+running 47 tests from ./supabase/functions/_shared/chat/report_test.ts
+booked and verified: the facts say so, and the errand is done ... ok (6ms)
+booked but not verified: not called done, and they're told to check, with the number ... ok (1ms)
+booked with no verifier wired: never reported as confirmed ... ok (477µs)
+an optional mention doesn't downgrade a booking, and still reaches the user ... ok (848µs)
+a required condition nobody approved goes to the user as their decision, in their words ... ok (965µs)
+the wrong year: stored with no date, the captured words kept, nothing confirmed ... ok (1ms)
+a booked time the caller couldn't give is taken from the call itself ... ok (2ms)
+a dash for a reference is no reference ... ok (645µs)
+call 2: the check gets the picked option ... ok (1ms)
+the Genie contract: outcome options_found on call 1 becomes options ... ok (1ms)
+no answer, busy, failed: nothing is done, and the approval is spent ... ok (565µs)
+a lost result: what they said can't be told, and they're pointed at the business ... ok (172µs)
+anything the outputs don't make clear is never reported as booked ... ok (861µs)
+an advance: every term is kept and told, nothing is agreed, and the errand waits ... ok (1ms)
+an advance of any size comes back the same way: no cap, nothing lost ... ok (1ms)
+what the business didn't say is told as not known ... ok (260µs)
+not booked because of an advance is an advance, with or without the status ... ok (244µs)
+the older outcome name still reads as an advance ... ok (91µs)
+an address that isn't a UPI ID isn't held against the screenshot as one ... ok (1ms)
+cancelled during the call: the terms are told, the errand ends, nothing waits ... ok (1ms)
+other times offered: they become options, each value exact, the prompt the words sent ... ok (3ms)
+a question answered: the business's words, cleaned ... ok (1ms)
+a question call that brings an offer: their answer and the offer both reach the user ... ok (1ms)
+the extra question's answer comes back on any booking call ... ok (745µs)
+the extra question unanswered on call 1 is said; on call 2 it isn't news ... ok (1ms)
+an opt-out is recorded and told; a redelivered result says nothing twice ... ok (396µs)
+when an errand ends, the one waiting behind it goes in the same message ... ok (490µs)
+readOutcome: options in the past or without a time or label are dropped ... ok (155µs)
+confirm call: received and booked, verified against the booking's time and what was paid ... ok (1ms)
+confirm call: 'not seen' is the business's claim, with one redial, then their number ... ok (1ms)
+confirm call: wrong amount: what they said is kept, and nothing is agreed ... ok (1ms)
+cancel: cancelled only when the business's words confirm it; a refund only as their words ... ok (1ms)
+cancel: a charge is kept for the next plan, even with no amount, and the booking stands ... ok (449µs)
+reschedule: moved (verified), kept with other times, or unclear ... ok (3ms)
+a move that didn't verify: the original is said to stand until it does ... ok (2ms)
+cancelled during the call, booked anyway: it stands, and they're asked ... ok (545µs)
+cancelled during the call, options found: they're told but not opened ... ok (849µs)
+cancelled during a question call: the answer still reaches them, and the errand closes ... ok (218µs)
+the contract, as Sarvam returns it, reaches the user with nothing hand-filled ... ok (2ms)
+a caller with only call_summary: not 'nothing is done', and flagged ... ok (339µs)
+confirm call: the time the business asked for is the redial, not the default (S8) ... ok (1ms)
+other times with an advance: every term stays with the options (S3) ... ok (1ms)
+an incomplete payment handle is never a place to pay (S8) ... ok (317µs)
+reschedule: an original the business cancelled is told as cancelled, not maybe (S6) ... ok (1ms)
+a wrong number is not an answer from the business, and isn't offered again (S9) ... ok (474µs)
+voicemail or a phone menu: nothing was said, so nothing is unclear ... ok (238µs)
+the call itself goes with the facts: transcript by who spoke, and the caller's notes ... ok (568µs)
+running 5 tests from ./supabase/functions/_shared/chat/router_test.ts
+only a clear off-scope or injection redirects; low confidence never blocks ... ok (941µs)
+recommendations redirect while rec is off for v1 ... ok (94µs)
+a router timeout or error means task mode ... ok (532µs)
+claims are allowed only while a call is under way or done ... ok (289µs)
+off-task content fails in any state; a Jev error is reported, not thrown ... ok (371µs)
+running 12 tests from ./supabase/functions/_shared/chat/slots_test.ts
+questions are a list: a follow-up is added, never swapped in (P7, P10) ... ok (1ms)
+valid booking slots pass and strings are trimmed ... ok (377µs)
+bad values are refused with a reason for Luna ... ok (189µs)
+Luna cannot set code-only slots or another task's slots ... ok (90µs)
+also_ask is a booking slot, capped at 150 characters ... ok (160µs)
+an edit is checked against the merged fields ... ok (152µs)
+what a plan still needs, and the collecting state ... ok (192µs)
+a new exact time replaces a fuzzy window, and a new window an exact time ... ok (126µs)
+a narrow window is never rewritten: refused, unless their words confirmed it ... ok (199µs)
+the same question added twice is asked once (S4) ... ok (158µs)
+the party size has one home: not repeated in service (S9 'table for 3 for 3') ... ok (178µs)
+service context has its own bounded fields rather than overwriting the service name ... ok (175µs)
+running 14 tests from ./supabase/functions/_shared/chat/tell_test.ts
+values go in exactly as stored, whatever the language around them ... ok (1ms)
+fill: a missing value or a made-up one is refused ... ok (486µs)
+a draft that drops a value is sent back, and the rewrite goes out ... ok (561µs)
+the reader sees the finished message against the facts, and can send it back ... ok (324µs)
+nothing faithful in three drafts: nothing goes out, and it stays owed ... ok (383µs)
+an unreadable verdict from the reader isn't a pass ... ok (182µs)
+a model that can't be reached: no message at all, no code-written stand-in ... ok (333µs)
+recovered after an outage: the message says it's late, in the model's own words ... ok (259µs)
+a message on time isn't called late ... ok (217µs)
+the writer gets the user's language and recent chat ... ok (256µs)
+owed once: telling the same thing twice writes one message ... ok (190µs)
+writing and sending are separate: a written message waits for its send ... ok (171µs)
+checkReply: what WhatsApp and the voice rules forbid, in any language ... ok (113µs)
+the check reads the call itself, not only what code made of it ... ok (247µs)
+running 23 tests from ./supabase/functions/_shared/chat/turn_test.ts
+the gate never turns a message into a consent: approval is read in context ... ok (1ms)
+a tap on an old button goes to Luna as what was tapped, not as consent ... ok (138µs)
+STOP, START and delete my data are commands, exact words only ... ok (219µs)
+START only counts while stopped; otherwise it is text ... ok (108µs)
+while stopped, everything else gets the reminder, whatever it says ... ok (174µs)
+a reaction goes to Luna as what it is; a removed one is ignored; media is a marker ... ok (144µs)
+an image while an advance is due goes to the payment check ... ok (93µs)
+admin commands only for admins ... ok (164µs)
+normalise ... ok (78µs)
+IST day start ... ok (124µs)
+a plan: code fields are written first, then the plan is sent as text and bound ... ok (2ms)
+a plan with nothing to change writes no slots (no needless version bump) ... ok (1ms)
+no plan while something is missing, or while paused ... ok (163µs)
+the profile name is what the plan books under when they gave no other ... ok (1ms)
+a typed yes or an old button goes to Luna, never straight to consent ... ok (402µs)
+free text goes to Luna; STOP goes to commands ... ok (232µs)
+daily cap: one message, then silence; STOP still works ... ok (208µs)
+reactions to conversational questions reach Luna even without an approval plan ... ok (112µs)
+delayed reactions retain context instead of being limited to the latest outgoing message ... ok (228µs)
+a routed reaction to another message cannot approve the current plan ... ok (4ms)
+removed reactions remain silent without calling Luna ... ok (168µs)
+an exact time never receives an invented default booking tolerance ... ok (787µs)
+an incomplete grounded brief never opens or sends an approval plan ... ok (206µs)
+running 19 tests from ./supabase/functions/_shared/chat/verify_test.ts
+timeCheck: call 1 window ... ok (524µs)
+timeCheck: call 1 exact time uses the request's tolerance, else the default ... ok (96µs)
+timeCheck: call 2 must be the picked option's time ... ok (115µs)
+verified only when the time matches and a line of the business's confirms it ... ok (1ms)
+the agent's line, or no line, is not the business confirming ... ok (1ms)
+what's kept as the business's confirmation is their line, whatever language it's in ... ok (518µs)
+something optional is disclosed, not blocking: the booking stands ... ok (486µs)
+something required that the user already approved doesn't block ... ok (406µs)
+one rule: a required condition the user never approved blocks, and is theirs to decide ... ok (412µs)
+a condition on a booking that didn't check out isn't a decision: it's unverified ... ok (428µs)
+a condition with a bad line or unclear judgment isn't dropped: it counts as required ... ok (551µs)
+what the user accepted reaches the check, so it can be covered ... ok (480µs)
+not confirmed, unclear, a wrong time, no transcript: all unverified ... ok (1ms)
+a failing model call is not a verification ... ok (802µs)
+a year-less reading is never a time or a guess; the call's own reading settles it ... ok (661µs)
+a wrong year is never corrected: the booking stays unverified, flagged ... ok (1ms)
+a note wrong only in its year: the call's own reading, from TODAY, can settle it (S2) ... ok (1ms)
+a different day is not a year mistake ... ok (781µs)
+a date with no time is flagged, never verified ... ok (312µs)
+running 7 tests from ./supabase/functions/_shared/dial_request_test.ts
+reserves, builds the variables from stored fields, dials, stores the attempt id ... ok (10ms)
+variables in the body are refused: no caller tells the voice agent anything (P15) ... ok (630µs)
+must_reask from reserve_call reaches the agent ... ok (708µs)
+a required input missing: the call row fails, Sarvam is never called ... ok (768µs)
+refused by check_dial → 409 with the reason, Sarvam never called ... ok (273µs)
+Sarvam error → call row marked failed, 502 ... ok (654µs)
+bad input → 400 before any reservation ... ok (359µs)
+running 5 tests from ./supabase/functions/_shared/linq_contact_card_test.ts
+contact card follows a successful text; later replies honor the per-chat cooldown ... ok (9ms)
+contact cards are skipped for RCS, SMS and a disabled feature ... ok (345µs)
+inactive cards are not shared and release the claim with retry backoff ... ok (553µs)
+card/API/storage failures never fail or repeat an accepted text ...
+------- post-test output -------
+Linq contact card unavailable; text delivery remains successful
+Linq contact card unavailable; text delivery remains successful
+Linq contact card cooldown could not be saved
+----- post-test output end -----
+card/API/storage failures never fail or repeat an accepted text ... ok (1ms)
+a rejected text triggers no identity sharing or successful outbound log ... ok (774µs)
+running 11 tests from ./supabase/functions/_shared/linq_test.ts
+Linq signature: valid raw body, tampering, missing secret and replay ... ok (3ms)
+Linq inbound: normalized phone, quoted reply and text history ... ok (384µs)
+Linq inbox recovery preserves the message, timestamp and quoted consent ... ok (203µs)
+Linq ignores groups, email handles, outbound and status events ... ok (520µs)
+Linq screenshot preserves image URL and caption for payment verification ... ok (131µs)
+Linq send uses v3 messages with automatic routing and verifies returned id ... ok (7ms)
+Linq delivery logs original content outside WhatsApp's window; WhatsApp still rejects ... ok (303µs)
+documented Linq reactions preserve target and recover without treating removal as approval ... ok (272µs)
+attachment reads enforce both declared and streaming size bounds ... ok (2ms)
+reaction timestamps use documented envelope time when reacted_at is absent ... ok (118µs)
+Linq sends provide a finite transport cancellation signal ... ok (196µs)
+------- post-test output -------
+(node:12974) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+----- post-test output end -----
+running 4 tests from ./supabase/functions/_shared/messaging_test.ts
+same phone has distinct channel identities without changing the WhatsApp key ... ok (691µs)
+interleaved replies to the same phone use each persisted channel ... ok (687µs)
+late call reports and retries route by user UUID, not namespaced or stale wa_id ... ok (332µs)
+missing or blocked delivery targets cannot be sent through either channel ... ok (563µs)
+------- post-test output -------
+(node:12974) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+----- post-test output end -----
+running 2 tests from ./supabase/functions/_shared/model_client_test.ts
+hosted telemetry does not delay a completed model response and has lifecycle ownership ... ok (671µs)
+telemetry failure does not turn a valid response into a conversational failure ...
+------- post-test output -------
+model usage persistence failed
+----- post-test output end -----
+telemetry failure does not turn a valid response into a conversational failure ... ok (372µs)
+running 2 tests from ./supabase/functions/_shared/openai_test.ts
+incomplete model output is not executed as a completed decision ... ok (7ms)
+completed model responses retain output while malformed success fails explicitly ... ok (693µs)
+running 4 tests from ./supabase/functions/_shared/places_test.ts
+parsePlaces: name, area, city, phone, closed ... ok (1ms)
+toE164 ... ok (83µs)
+placesClient: India, field mask, errors ... ok (7ms)
+live Places lookup excludes foreign and unverifiable countries despite the India hint ... ok (411µs)
+running 5 tests from ./supabase/functions/_shared/reconcile_test.ts
+a finished attempt is reported as its webhook would have been, with the transcript ... ok (1ms)
+an attempt still going, or not found, waits until the give-up time ... ok (168µs)
+no result after the give-up time: closed as timeout, the user told, never redialled ... ok (216µs)
+no-answer attempts need no transcript; Analytics down closes nothing early ... ok (358µs)
+nothing open: Sarvam isn't asked ... ok (104µs)
+running 18 tests from ./supabase/functions/_shared/reliability_test.ts
+internal authorization rejects missing, anon and user credentials ... ok (9ms)
+Meta redelivery completes ingestion after a partial database failure ... ok (3ms)
+a provider-accepted call survives failure to persist its attempt ID ... ok (2ms)
+transport failure is uncertain; definite rejection is failed ... ok (1ms)
+successful calling still returns the provider attempt ... ok (630µs)
+a correction arriving during the approval checker prevents dispatch ... ok (816µs)
+an unintended commitment reaches the user's durable facts ... ok (2ms)
+closed windows defer updates without sending templates or failing them ... ok (370µs)
+the shared send path never sends paid templates ... ok (280µs)
+recovery reconstructs the same inbound message from its stored body ... ok (689µs)
+a failed fenced turn remains incomplete and is abandoned for retry ... ok (2ms)
+a window update describes unfinished work without claiming an action ... ok (160µs)
+uncertain submission is never described as nothing happened or ended ...
+------- post-test output -------
+call not started r1 uncertain
+----- post-test output end -----
+uncertain submission is never described as nothing happened or ended ... ok (859µs)
+a model response cannot send after losing its turn generation ... ok (2ms)
+a reminder outside the current WhatsApp window is refused ... ok (338µs)
+Linq reminders do not inherit WhatsApp's service window ... ok (264µs)
+failed submission marker never claims the provider may have received a call ... ok (540µs)
+supersession immediately before transport cleans up without a call or false uncertainty ... ok (764µs)
+running 12 tests from ./supabase/functions/_shared/sarvam_test.ts
+buildOutbound: version, numbers, variables, webhook ... ok (1ms)
+buildOutbound: stored fields cannot override call_kind ... ok (145µs)
+every call kind ignores the Maps destination and any supplied destination override ... ok (370µs)
+buildOutbound: no language override unless asked ... ok (133µs)
+buildOutbound: rejects bad version, numbers and a missing token ... ok (601µs)
+startCall: posts to Instant Outbound with the API key ... ok (8ms)
+paused calling makes no HTTP request, including for retries and follow-ups ... ok (666µs)
+startCall: a 422 is a definite rejection ... ok (485µs)
+verifyWebhookToken ... ok (211µs)
+parseWebhook: connected call carries outputs and transcript ... ok (460µs)
+parseWebhook: no answer and provider failure ... ok (221µs)
+parseWebhook: rejects other payloads ... ok (58µs)
+running 6 tests from ./supabase/functions/_shared/serper_test.ts
+indianE164: the ways local results write Indian numbers ... ok (640µs)
+a place with no phone gets one from the web only when the name fits, marked as such ... ok (2ms)
+no fitting name, a closed place, or a failing lookup: left without a phone ...
+------- post-test output -------
+serper lookup failed Hotel Paragon 429
+----- post-test output end -----
+no fitting name, a closed place, or a failing lookup: left without a phone ... ok (713µs)
+serperClient: India, key header, places parsed ... ok (8ms)
+same chain at another branch is not given the requested place's phone ... ok (249µs)
+phone enrichment overlaps two bounded lookups and preserves search order ... ok (376µs)
+running 7 tests from ./supabase/functions/_shared/whatsapp_test.ts
+signature: valid, tampered, wrong secret, malformed ... ok (3ms)
+parse: text message with profile name ... ok (707µs)
+parse: button and list replies carry our ids ... ok (336µs)
+parse: delivery status, and non-WhatsApp payloads are ignored ... ok (248µs)
+payloads: Meta's limits are enforced before sending ... ok (1ms)
+24-hour window ... ok (94µs)
+e164 ... ok (211µs)
+running 6 tests from ./supabase/functions/linq-inbound/handler_test.ts
+Linq webhook dedupes messages across redelivery ... ok (11ms)
+Linq webhook retries persistence failure and never hands off blocked users ... ok (2ms)
+Linq redelivery resumes an unfinished turn and completes event ingestion ... ok (1ms)
+Linq webhook rejects unsigned requests and unsupported methods ... ok (364µs)
+signed reactions require ownership of a previously sent direct-message target ... ok (1ms)
+reaction recovery applies the same ownership gate; removals are persisted as non-approval ... ok (543µs)
+running 6 tests from ./supabase/functions/sarvam-webhook/handler_test.ts
+wrong or missing token → 401, nothing stored ... ok (9ms)
+connected result closes the call and hands off once ... ok (1ms)
+no answer is stored as no_answer ... ok (300µs)
+no call_id in metadata → matched by attempt id ... ok (276µs)
+call the Desk did not start → stored, 200, no hand-off ... ok (338µs)
+bad json and unknown payloads → 400 ... ok (544µs)
+running 6 tests from ./supabase/functions/wa-inbound/handler_test.ts
+GET: Meta subscription check ... ok (8ms)
+POST: bad signature → 401, nothing stored ... ok (1ms)
+POST: text → user created, message stored, handed off once ... ok (1ms)
+POST: Meta redelivery is not handed off twice ... ok (1ms)
+POST: blocked user's message is stored but not handed off ... ok (615µs)
+POST: status updates are stored, no handoff; bad JSON → 400 ... ok (1ms)
+
+ ERRORS 
+
+a promised reminder has to exist, however it's worded => ./supabase/functions/_shared/chat/follow_through_test.ts:507:6
+error: TypeError: Cannot read properties of undefined (reading 'at')
+  assertEquals(JSON.parse(t.inputs[1].at(-1)!.output).reason.startsWith("you promised a reminder"), true);
+                                      ^
+    at file:///workspace/the-desk/supabase/functions/_shared/chat/follow_through_test.ts:518:39
+
+a 👍 on the open plan reaches Luna; on anything else it does nothing => ./supabase/functions/_shared/chat/follow_through_test.ts:642:6
+error: AssertionError: Expected values to be strictly deep-equal:
++ actual - expected
+
++ [
++   '[reacted 👍]'
++ ]
+- []
+
+  assertEquals(seen, []);
+  ^
+    at file:///workspace/the-desk/supabase/functions/_shared/chat/follow_through_test.ts:658:3
+
+with no plan open, a casual 👍 triggers nothing => ./supabase/functions/_shared/chat/follow_through_test.ts:663:6
+error: AssertionError: Expected values to be strictly deep-equal:
++ actual - expected
+
++ [
++   '[reacted 👍]'
++ ]
+- []
+
+  assertEquals(seen, []);
+  ^
+    at file:///workspace/the-desk/supabase/functions/_shared/chat/follow_through_test.ts:671:3
+
+ FAILURES 
+
+a promised reminder has to exist, however it's worded => ./supabase/functions/_shared/chat/follow_through_test.ts:507:6
+a 👍 on the open plan reaches Luna; on anything else it does nothing => ./supabase/functions/_shared/chat/follow_through_test.ts:642:6
+with no plan open, a casual 👍 triggers nothing => ./supabase/functions/_shared/chat/follow_through_test.ts:663:6
+
+FAILED | 419 passed | 3 failed (3s)
+
+error: Test failed

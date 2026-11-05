@@ -1,9 +1,16 @@
 import { assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1.0.8";
-import { parseLinqWebhook, parseStoredLinqMessage, send, textContent, verifyLinqSignature } from "./linq.ts";
+import {
+  downloadLinqImage,
+  parseLinqWebhook,
+  parseStoredLinqMessage,
+  send,
+  textContent,
+  verifyLinqSignature,
+} from "./linq.ts";
 import { deliver, OutsideServiceWindow } from "./deliver.ts";
 import type { Store } from "./store.ts";
 
-import { event, SECRET, signedHeaders } from "./linq_test_helpers.ts";
+import { event, reactionEvent, SECRET, signedHeaders } from "./linq_test_helpers.ts";
 
 Deno.test("Linq signature: valid raw body, tampering, missing secret and replay", async () => {
   const body = JSON.stringify(event());
@@ -122,4 +129,72 @@ Deno.test("Linq delivery logs original content outside WhatsApp's window; WhatsA
   await assertRejects(() => deliver(store, async () => "sent-id", user, msg), OutsideServiceWindow);
   assertEquals(await deliver(store, async () => "sent-id", user, msg, new Date(), false), "sent-id");
   assertEquals(logged, [["u", "sent-id", msg]]);
+});
+
+Deno.test("documented Linq reactions preserve target and recover without treating removal as approval", () => {
+  const added = parseLinqWebhook(reactionEvent())!;
+  assertEquals([added.type, added.text, added.quotedId, added.messageId], [
+    "reaction",
+    "👍",
+    "plan-id",
+    "linq-reaction:reaction-add-id",
+  ]);
+  assertEquals(parseStoredLinqMessage(added.raw), added);
+  const removed = parseLinqWebhook(reactionEvent(true))!;
+  assertEquals(removed.text, "");
+  assertEquals(parseStoredLinqMessage(removed.raw), removed);
+  const own = reactionEvent();
+  own.data.is_from_me = true;
+  assertEquals(parseLinqWebhook(own), null);
+  const email = reactionEvent();
+  email.data.from_handle.handle = "someone@example.com";
+  assertEquals(parseLinqWebhook(email), null);
+  const unknown = reactionEvent();
+  unknown.data.reaction_type = "sticker";
+  assertEquals(parseLinqWebhook(unknown), null);
+});
+
+Deno.test("attachment reads enforce both declared and streaming size bounds", async () => {
+  const raw = {
+    linq: { parts: [{ type: "media", mime_type: "image/png", url: "https://storage.example/image" }] },
+  };
+  for (
+    const response of [
+      () => new Response(new Uint8Array(4), { headers: { "content-length": "4" } }),
+      () => new Response(new Uint8Array(4)),
+    ]
+  ) {
+    await assertRejects(
+      () => downloadLinqImage(raw, async () => response(), { maxBytes: 3 }),
+      Error,
+      "size limit",
+    );
+  }
+  const result = await downloadLinqImage(raw, async (_url, init) => {
+    assertEquals(init?.redirect, "error");
+    assertEquals(init?.signal instanceof AbortSignal, true);
+    assertEquals(init?.headers, undefined);
+    return new Response(new Uint8Array([1, 2]));
+  }, { maxBytes: 3 });
+  assertEquals(result?.bytes, new Uint8Array([1, 2]));
+});
+
+Deno.test("reaction timestamps use documented envelope time when reacted_at is absent", () => {
+  const payload = reactionEvent();
+  const { reacted_at: _at, chat_id: _chat, ...data } = payload.data;
+  const message = parseLinqWebhook({ ...payload, data })!;
+  assertEquals(message.at.toISOString(), payload.created_at.replace("Z", ".000Z"));
+  assertEquals(message.quotedId, "plan-id");
+});
+
+Deno.test("Linq sends provide a finite transport cancellation signal", async () => {
+  await send(
+    { token: "fake", timeoutMs: 1 },
+    "919876543210",
+    { kind: "text", body: "fixture" },
+    async (_url, init) => {
+      assertEquals(init?.signal instanceof AbortSignal, true);
+      return Response.json({ message: { id: "sent" } });
+    },
+  );
 });

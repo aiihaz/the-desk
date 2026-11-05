@@ -43,6 +43,10 @@ export async function ingestLinqPayload(
 ): Promise<void> {
   const msg = parseLinqWebhook(payload);
   if (!msg) return;
+  if (
+    msg.type === "reaction" && (!msg.quotedId ||
+      !await deps.store.acceptLinqReaction?.(msg.waId, msg.quotedId))
+  ) return;
   const user = await deps.store.upsertUser(msg.waId, msg.name);
   const isNew = await deps.store.saveInbound(user.id, msg);
   if ((isNew || await deps.store.inboundPending?.(msg.messageId)) && !user.blocked) {

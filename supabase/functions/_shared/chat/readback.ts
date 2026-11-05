@@ -140,6 +140,13 @@ function withNote(note: string | null | undefined, text: string): string {
   return note?.trim() ? `${note.trim()}\n\n${text}` : text;
 }
 
+function serviceContext(f: Fields): string {
+  return [
+    f.service_address ? `Service location: ${f.service_address}.` : "",
+    f.service_details ? `Details: ${f.service_details}.` : "",
+  ].filter(Boolean).map((text) => ` ${text}`).join("");
+}
+
 // Plans lead with what will happen (place, what, when), then what will be shared, then
 // one plain question. No call agrees an advance, so a plan doesn't mention one: if the
 // business wants one, its terms come back to the user. f.may_book must already be set from
@@ -150,7 +157,7 @@ export function bookingReadback(
   const { place, f, now } = x;
   const price = f.max_price_rs !== undefined ? `, for up to ${rs(f.max_price_rs)}` : "";
   const what_ = `${what(f)}, ${fmtWhen(f, now, true)}${price}`;
-  const also = f.also_ask ? ` I'll also ask: "${f.also_ask}".` : "";
+  const also = (f.also_ask ? ` I'll also ask: "${f.also_ask}".` : "") + serviceContext(f);
   if (!f.may_book) {
     return ask(withNote(
       x.note,
@@ -167,9 +174,10 @@ export function bookingReadback(
     : "";
   return ask(withNote(
     x.note,
-    `I'll call ${callee(place)} and book ${what_}, in your name (${who}). ${phone}` +
-      `If that isn't free, or they want an advance, I won't agree to anything; I'll come back to you ` +
-      `with what they say.${also}` +
+    `I'll call ${callee(place)} and book ${what_}, in your name (${who}).${phone ? ` ${phone.trim()}` : ""}${
+      also ? " " : ""
+    }` +
+      `${also.trimStart()}` +
       "\n\nShall I go ahead?",
   ));
 }
@@ -187,7 +195,9 @@ export function questionReadback(
     : "I won't book anything or share your name or number.";
   return ask(withNote(
     x.note,
-    `I'll call ${callee(x.place)} and ask: ${asks}\n\n${who} If they offer to book, I'll check with ` +
+    `I'll call ${callee(x.place)} and ask: ${asks}${
+      serviceContext(x.f)
+    }\n\n${who} If they offer to book, I'll check with ` +
       "you first.\n\nShall I call them?",
   ));
 }
@@ -230,7 +240,9 @@ export function rescheduleReadback(x: { booking: BookingSummary; f: Fields; now:
     : "If they can, I'll check with you before moving it.";
   return ask(
     `${bookingLine(b, x.now)}\nI'll call and ask to move it to ${fmtWhen(x.f, x.now, true)}. ${ifCan} ` +
-      `If not, I'll ask them to keep ${b.time ? fmtTime(b.time) : "it as it is"} and check with you.` +
+      `If not, I'll ask them to keep ${b.time ? fmtTime(b.time) : "it as it is"} and check with you.${
+        serviceContext(x.f)
+      }` +
       "\n\nShall I call them?",
   );
 }

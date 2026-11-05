@@ -13,6 +13,7 @@ Deno.test("parsePlaces: name, area, city, phone, closed", () => {
     area: "Ashok Nagar",
     city: "Bengaluru",
     phone: "+919800000101",
+    countryCode: "IN",
     openingHours: fixture("two_branches").places[0].regularOpeningHours,
     closed: false,
   });
@@ -56,4 +57,15 @@ Deno.test("placesClient: India, field mask, errors", async () => {
     () => bad({ text: "x" }),
     (e: unknown) => e instanceof Error && e.message.includes("places 403"),
   );
+});
+
+Deno.test("live Places lookup excludes foreign and unverifiable countries despite the India hint", async () => {
+  const body = fixture("two_branches");
+  body.places[0].addressComponents.find((c: { types: string[] }) => c.types.includes("country")).shortText =
+    "US";
+  body.places[1].addressComponents = [];
+  const client = placesClient("fake", 1000, async () => Response.json(body));
+  const hits = await client({ text: "a similarly named business" });
+  assertEquals(hits.length, 3);
+  assertEquals(hits.every((p) => p.countryCode === "IN"), true);
 });

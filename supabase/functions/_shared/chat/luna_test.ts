@@ -468,3 +468,72 @@ Deno.test("supersession during a tool exits instead of asking the model to repai
   assertEquals(inputs.length, 1);
   assertEquals(sent.length, 0);
 });
+
+Deno.test("a successful explicit memory operation cannot end silently", async () => {
+  const { deps, sent, inputs } = setup([
+    [
+      call("remember", { text: "prefers a window seat", kind: "preference", scope: "all" }),
+      call("stay_quiet", {}),
+    ],
+    [call("reply", { text: "I'll remember you prefer a window seat." })],
+  ]);
+  await runLuna(deps, user, now);
+  assertEquals(sent, [{ kind: "text", body: "I'll remember you prefer a window seat." }]);
+  const outputs = inputs[1].filter((x) => x.type === "function_call_output").map((x) => JSON.parse(x.output));
+  assertEquals(outputs.some((x) => x.outcome === "created"), true);
+  assertEquals(outputs.some((x) => x.ok === false && x.reason.includes("acknowledge")), true);
+});
+
+Deno.test("memory acknowledgment waits for the actual write outcome", async () => {
+  const { deps, store, sent } = setup([
+    [
+      call("remember", { text: "prefers a window seat", kind: "preference", scope: "all" }),
+      call("reply", { text: "I've newly saved that." }),
+    ],
+    [call("reply", { text: "That's already saved." })],
+  ]);
+  store.kept.push({
+    id: "a-memory",
+    text: "prefers a window seat",
+    kind: "preference",
+    scope: "all",
+    source: "said",
+  });
+  await runLuna(deps, user, now);
+  assertEquals(sent, [{ kind: "text", body: "That's already saved." }]);
+  assertEquals(store.kept.length, 1);
+});
+
+Deno.test("shadow reminder predictions are recorded without rejecting a contextual reply", async () => {
+  const { deps, store, sent, inputs } = setup([[
+    call("reply", { text: "You can message me when you've decided." }),
+  ]]);
+  withJev(deps, store, "shadow", new Error("router down"), {
+    claims_action: noul(0),
+    off_task_content: noul(0),
+    promises_follow_up: noul(0.99),
+  });
+  await runLuna(deps, user, now);
+  assertEquals(sent, [{ kind: "text", body: "You can message me when you've decided." }]);
+  assertEquals(inputs.length, 1);
+});
+
+Deno.test("gate mode still repairs a reminder promise with no scheduled follow-up", async () => {
+  const { deps, store, sent, inputs } = setup([
+    [call("reply", { text: "I'll remind you tomorrow." })],
+    [call("reply", { text: "Message me when you've decided." })],
+  ]);
+  withJev(deps, store, "gate", new Error("router down"));
+  let checks = 0;
+  deps.jev = async (req) => {
+    if ("intent" in req.questions) throw new Error("router down");
+    return {
+      claims_action: noul(0),
+      off_task_content: noul(0),
+      promises_follow_up: noul(checks++ === 0 ? 0.99 : 0),
+    } as never;
+  };
+  await runLuna(deps, user, now);
+  assertEquals(sent, [{ kind: "text", body: "Message me when you've decided." }]);
+  assertEquals(inputs.length, 2);
+});

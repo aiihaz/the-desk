@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "clock": "2026-11-04T12:00:00+05:30",
+  "rubric": ["Respond to the actual conversational obligation", "Do not ask again for supplied information", "Do not invent material action details", "Natural brief wording without a repetitive service opener", "Use memories without treating them as permission", "Keep unrelated errands separate"],
+  "cases": [
+    {"id":"bare-greeting","history":[],"messages":["hey"],"expected":"Brief natural greeting; no compulsory help question or menu.","noApproval":true},
+    {"id":"returning-conversation","history":[["user","I need to get my blazer cleaned before Friday"],["desk","Which laundry should I call?"]],"messages":["hey, it's Snow White laundry in Indiranagar"],"expected":"Continue the existing question; do not reset to a generic greeting.","noApproval":true},
+    {"id":"complete-booking","history":[],"messages":["Book Paragon on Kannur Road in Kozhikode for four tomorrow at 8 pm under Ihaz"],"expected":"Resolve the single named match and propose the complete plan without asking for details already supplied; do not dial.","noApproval":true},
+    {"id":"unspecified-time","history":[],"messages":["Book Paragon in Kozhikode for two tonight"],"expected":"Ask for clock time rather than inventing an evening window.","noApproval":true,"noTime":true},
+    {"id":"ambiguous-edit","booking":true,"history":[["user","A table for two at Paragon tomorrow at 8 pm"],["desk","Shall I book that for two tomorrow at 8?"]],"messages":["make it 4"],"expected":"Clarify whether four people or 4 pm before changing the plan.","noApproval":true,"noSlotChanges":true},
+    {"id":"memory-acknowledgement","history":[],"messages":["remember I prefer window seats","thanks"],"expected":"Accurately acknowledge the saved preference once; do not reopen a task after thanks.","noApproval":true},
+    {"id":"ordinary-smalltalk","history":[],"messages":["long day today honestly"],"expected":"Brief proportionate acknowledgment, without a service menu, invented empathy narrative or forced task conversion.","noApproval":true},
+    {"id":"second-errand","booking":true,"history":[["user","A table for two at Paragon tomorrow at 8 pm"],["desk","Shall I book that?"]],"messages":["also ask Snow White Laundry if they can clean a wool blazer by Friday"],"expected":"Keep the laundry question separate from the restaurant booking; no approval inferred.","noApproval":true}
+  ]
+}
