@@ -29,32 +29,42 @@ export type CreateResponse = (req: {
 }) => Promise<ResponseOut>;
 
 // A hung request must not leave the user in silence: after timeoutMs the call fails and
-// the chat agent sends its fallback message.
+// the chat agent sends its fallback message. A 429 or 5xx is tried again (twice, briefly)
+// inside that same time: nothing is kept at OpenAI, so a second request changes nothing.
 export function responsesClient(
   apiKey: string,
   timeoutMs = 30_000,
   fetcher: typeof fetch = fetch,
+  retryDelayMs = 400,
 ): CreateResponse {
   return async (req) => {
-    const res = await fetcher("https://api.openai.com/v1/responses", {
-      method: "POST",
-      signal: AbortSignal.timeout(
-        Math.max(1, Math.min(timeoutMs, req.deadlineAt ? req.deadlineAt - Date.now() : timeoutMs)),
-      ),
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: req.model,
-        instructions: req.instructions,
-        input: req.input,
-        tools: req.tools,
-        tool_choice: "required",
-        reasoning: { effort: req.reasoningEffort },
-        max_output_tokens: req.maxOutputTokens,
-        // Nothing kept at OpenAI; reasoning comes back encrypted so the next step can use it.
-        store: false,
-        include: ["reasoning.encrypted_content"],
-      }),
-    });
+    const until = Math.min(Date.now() + timeoutMs, req.deadlineAt ?? Infinity);
+    const send = () =>
+      fetcher("https://api.openai.com/v1/responses", {
+        method: "POST",
+        signal: AbortSignal.timeout(Math.max(1, until - Date.now())),
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: req.model,
+          instructions: req.instructions,
+          input: req.input,
+          tools: req.tools,
+          tool_choice: "required",
+          reasoning: { effort: req.reasoningEffort },
+          max_output_tokens: req.maxOutputTokens,
+          // Nothing kept at OpenAI; reasoning comes back encrypted so the next step can use it.
+          store: false,
+          include: ["reasoning.encrypted_content"],
+        }),
+      });
+    let res = await send();
+    for (let retry = 1; retry <= 2 && (res.status === 429 || res.status >= 500); retry++) {
+      const wait = retryDelayMs * retry;
+      if (Date.now() + wait >= until) break;
+      await res.body?.cancel();
+      await new Promise((r) => setTimeout(r, wait));
+      res = await send();
+    }
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`openai ${res.status}: ${JSON.stringify(body?.error ?? body)}`);
     if (body.status && body.status !== "completed") {

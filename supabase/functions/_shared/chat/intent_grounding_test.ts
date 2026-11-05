@@ -180,3 +180,14 @@ Deno.test("a real memory cannot substitute for payment, privacy or tolerance aut
     );
   }
 });
+
+Deno.test("null over a field never set is no change: nothing to ground, no model asked", async () => {
+  let asked = 0;
+  const create: CreateResponse = async () => {
+    asked++;
+    return { output: [], usage: { input_tokens: 0, output_tokens: 0 } };
+  };
+  const input = { ...base, current: { party_size: 4 }, patch: { party_size: 4, service: null } };
+  equal(await createIntentGrounding(create, "test")(input), { ok: true, evidence: [] });
+  equal(asked, 0);
+});

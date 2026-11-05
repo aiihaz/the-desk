@@ -216,7 +216,9 @@ for (const scenario of fixture.cases.slice(0, count)) {
   let approvalAttempts = 0;
   let sent = 0;
   const wrapped: CreateResponse = async (req) => {
-    if (++modelCalls > 64) throw new Error("evaluation model-call cap reached");
+    // Per case, so one runaway case can't starve the ones after it.
+    modelCalls++;
+    if (calls.length >= 48) throw new Error("evaluation model-call cap reached for this case");
     const started = performance.now();
     const actual = { ...req, model: Deno.env.get("DESK_EVAL_MODEL") ?? req.model };
     const response = await create(actual);
@@ -286,6 +288,10 @@ for (const scenario of fixture.cases.slice(0, count)) {
     failures.push("invented clock time");
   }
   if (scenario.noSlotChanges && state.slotWrites.length) failures.push("ambiguous edit changed state");
+  const fallbacks = traces.filter((t) => t.event === "fallback" || t.event === "luna_error");
+  if (fallbacks.length) {
+    failures.push(`fell back: ${JSON.stringify(fallbacks.map((t) => t.data)).slice(0, 300)}`);
+  }
   const want = scenario.expect ?? {};
   const planSent = traces.some((t) => t.event === "plan_sent");
   if (want.plan === true && !(planSent && state.prompt)) failures.push("no plan was stored and sent");
@@ -356,6 +362,7 @@ for (const scenario of fixture.cases.slice(0, count)) {
         input: [{
           role: "user",
           content: JSON.stringify({
+            NOW: `${fixture.clock} (Asia/Kolkata); resolving "tomorrow" or a weekday to its date is expected`,
             EXPECTED: scenario.expected,
             RUBRIC: fixture.rubric,
             EARLIER: scenario.history.map(([from, text]) => ({ from, text })),

@@ -41,7 +41,9 @@ Read all the messages together, their quoted targets and corrections, in any lan
 
 For phase edit, check every changed field in PATCH. Unchanged CURRENT values are context, not new claims. Every material changed value needs user evidence; cite the message number. A profile name can supply customer_name unless the user says otherwise. Profile information never supplies a new permission, preference, time or budget. Retrieved MEMORIES can support a relevant proposed preference or known fact, including a reference such as my usual, without making the user repeat it. Cite its exact memory_id and use source memory. A current correction overrides memory. Memory never establishes permission to act, spend, share personal details, or silently add a numerical booking tolerance. Never invent a remembered fact or cite a memory absent from MEMORIES. The later current-plan approval remains mandatory. Questions added, removed or reworded must preserve what the user actually asked. Clearing a field also needs a correction or valid conflict resolution, not arbitrary forgetting.
 
-Never manufacture precision: 'tonight' or 'evening' supplies no clock bounds. 'Around 8' is approximate intent, not an authorized 7:30–8:30 window, and not an exact 8pm booking. A window or numeric tolerance needs support for its boundaries. Resolve explicit relative dates using NOW and Asia/Kolkata. Do not demand that users spell ISO dates. No invented spending allowance, phone-sharing exception, name, quantity or service requirement.
+Never manufacture precision: 'tonight' or 'evening' supplies no clock bounds. A stated clock time ('8 pm', 'tomorrow 8pm', '8 baje') is exact as given; do not question its exactness. 'Around 8' is approximate intent, not an authorized 7:30–8:30 window, and not an exact 8pm booking. A window or numeric tolerance needs support for its boundaries. Resolve explicit relative dates using NOW and Asia/Kolkata. Do not demand that users spell ISO dates. No invented spending allowance, phone-sharing exception, name, quantity or service requirement.
+
+You never ask whether to go ahead or whether the plan is right: the user answers the plan itself after this check, so 'do you want me to book…' is never a clarification. A value given earlier in the conversation and not corrected since still stands, including after a correction of another field.
 
 For phase plan, additionally check that the complete candidate brief is grounded and sufficient for the particular action. A pickup booking needs an agreed pickup location if the call will arrange collection; a call merely asking whether collection is available does not. Determine necessary information from the actual operation, not a generic questionnaire or a list of service names. Do not require information only the business can provide. Do not declare a brief ready if the user's required details cannot be represented in its fields: request that missing context before promising the action. Do not silently drop a requirement or squeeze it into an unrelated value.
 
@@ -88,8 +90,10 @@ export function createIntentGrounding(
   effort = "low",
 ): CheckIntent {
   return async (input) => {
+    // Clearing a field that was never set (null over absent) changes nothing to ground.
     const changed = Object.keys(input.patch).filter((key) =>
-      JSON.stringify(input.patch[key]) !== JSON.stringify((input.current as Record<string, unknown>)[key])
+      JSON.stringify(input.patch[key] ?? null) !==
+        JSON.stringify((input.current as Record<string, unknown>)[key] ?? null)
     );
     if (input.phase === "edit" && !changed.length) return { ok: true, evidence: [] };
     try {
