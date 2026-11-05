@@ -108,7 +108,11 @@ const placeIds: Record<string, string> = {
   "snow-white": "b5000000-0000-4000-8000-000000000002",
 };
 const businessId = (placeId: string) => placeIds[placeId] ??= crypto.randomUUID();
-for (const scenario of fixture.cases.slice(0, count)) {
+// DESK_EVAL_ONLY=id,id runs just those cases.
+const only = Deno.env.get("DESK_EVAL_ONLY")?.split(",").map((s) => s.trim());
+for (
+  const scenario of only ? fixture.cases.filter((c) => only.includes(c.id)) : fixture.cases.slice(0, count)
+) {
   const now = new Date(fixture.clock);
   const state = new FakeChatStore();
   state.promptAt = now;
@@ -363,6 +367,8 @@ for (const scenario of fixture.cases.slice(0, count)) {
           role: "user",
           content: JSON.stringify({
             NOW: `${fixture.clock} (Asia/Kolkata); resolving "tomorrow" or a weekday to its date is expected`,
+            DESK_RULES:
+              "Every call needs the user's yes on a plan that states it, so a plan ending in a request to go ahead is required, not redundant. The plan may add details from search results (branch, area) and the user's profile name (bookings are made under it unless they say otherwise).",
             EXPECTED: scenario.expected,
             RUBRIC: fixture.rubric,
             EARLIER: scenario.history.map(([from, text]) => ({ from, text })),

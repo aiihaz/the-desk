@@ -16,6 +16,7 @@ import {
 import { missing } from "./slots.ts";
 import type { ChatStore, Refused } from "./store.ts";
 import { WRONG_NUMBER } from "./tools.ts";
+import { isTurnInvalidated } from "./turn_control.ts";
 
 export type TurnDeps = {
   store: ChatStore;
@@ -234,25 +235,29 @@ export async function proposePlan(
   }
   if (deps.renderPlan) {
     const chat = await store.history(user.id, new Date(now.getTime() - 24 * 3_600_000), 24);
-    const text = await deps.renderPlan({
-      task: r.task,
-      fields: r.fields,
-      reference: p.text,
-      chat: chat.map(({ from, text }) => ({ from, text })),
-      language: info.language,
-    });
-    if (!text) {
-      return {
-        ok: false,
-        reason: "could not verify the proposed wording; do not ask for approval or claim a plan was sent",
-      };
+    // The written wording, once checked, is what they approve. If it can't be written or
+    // isn't faithful in time, the plan goes out as the readback (the reference) instead of
+    // not at all: that wording is exact by construction.
+    let text: string | null = null;
+    try {
+      text = await deps.renderPlan({
+        task: r.task,
+        fields: r.fields,
+        reference: p.text,
+        chat: chat.map(({ from, text }) => ({ from, text })),
+        language: info.language,
+      });
+    } catch (e) {
+      if (isTurnInvalidated(e)) throw e;
+      deps.trace?.("plan_writer_failed", { error: String((e as Error)?.message ?? e) });
     }
+    if (!text) deps.trace?.("plan_readback_used", { request_id: requestId });
     await store.assertTurn?.();
     const current = await store.request(requestId);
     if (current.version !== r.version || current.pausedAt) {
       return { ok: false, reason: "the plan changed while writing; read the current request again" };
     }
-    p = { ...p, text, message: { kind: "text", body: text } };
+    if (text) p = { ...p, text, message: { kind: "text", body: text } };
   }
   const sent = await sendPrompt(deps, user, requestId, p);
   return sent.ok ? { ...sent, text: p.text } : sent;

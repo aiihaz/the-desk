@@ -49,3 +49,27 @@ Deno.test("a 503 or 429 is tried again within the time; a 400 and a third failur
   await rejects(() => responsesClient("fake", 1000, late.fetcher, 5_000)(req), /openai 503/);
   equal(late.calls(), 1);
 });
+Deno.test("a hung attempt is sent again inside the time; a call out of time fails", async () => {
+  const body = { status: "completed", output: [], usage: { input_tokens: 2, output_tokens: 1 } };
+  let n = 0;
+  const hangOnce: typeof fetch = (_u, init) => {
+    if (n++ > 0) return Promise.resolve(Response.json(body));
+    return new Promise((_ok, fail) =>
+      init!.signal!.addEventListener("abort", () => fail(init!.signal!.reason))
+    );
+  };
+  equal(await responsesClient("fake", 5_000, hangOnce, 1, 30)(req), body);
+  equal(n, 2);
+  let m = 0;
+  const hangs: typeof fetch = (_u, init) => {
+    m++;
+    return new Promise((_ok, fail) =>
+      init!.signal!.addEventListener("abort", () => fail(init!.signal!.reason))
+    );
+  };
+  await rejects(
+    () => responsesClient("fake", 200, hangs, 1, 150)(req),
+    (e: Error) => e.name === "TimeoutError",
+  );
+  equal(m, 1);
+});

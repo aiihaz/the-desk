@@ -227,3 +227,54 @@ Deno.test("an incomplete grounded brief never opens or sends an approval plan", 
   assertEquals(store.prompt, null);
   assertEquals(store.slotWrites, []);
 });
+
+Deno.test("checked wording is what they approve; a writer that fails or isn't faithful leaves the readback", async () => {
+  const readback = setup();
+  readback.store.req = { ...tonight };
+  await proposePlan(readback.deps, user, "r1");
+  const reference = readback.store.prompt!.text;
+
+  const written = setup();
+  written.store.req = { ...tonight };
+  await proposePlan(
+    { ...written.deps, renderPlan: async () => "Paragon, 4 people tonight? Shall I?" },
+    user,
+    "r1",
+  );
+  assertEquals(written.store.prompt!.text, "Paragon, 4 people tonight? Shall I?");
+
+  for (
+    const renderPlan of [async () => null, async () => {
+      throw new Error("The operation was aborted due to timeout");
+    }]
+  ) {
+    const t = setup();
+    t.store.req = { ...tonight };
+    const res = await proposePlan({ ...t.deps, renderPlan }, user, "r1");
+    assertEquals(res.ok, true);
+    assertEquals(t.store.prompt!.text, reference);
+    assertEquals((t.sent[0] as { body: string }).body, reference);
+  }
+});
+
+Deno.test("a turn lost while the plan is written sends nothing", async () => {
+  const t = setup();
+  t.store.req = { ...tonight };
+  let thrown: unknown;
+  try {
+    await proposePlan(
+      {
+        ...t.deps,
+        renderPlan: async () => {
+          throw new Error("turn superseded");
+        },
+      },
+      user,
+      "r1",
+    );
+  } catch (e) {
+    thrown = e;
+  }
+  assertEquals(String(thrown), "Error: turn superseded");
+  assertEquals(t.sent.length, 0);
+});
