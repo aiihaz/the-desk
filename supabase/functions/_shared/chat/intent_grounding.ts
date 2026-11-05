@@ -103,7 +103,8 @@ export function createIntentGrounding(
         model,
         reasoningEffort: effort,
         maxOutputTokens: 1200,
-        deadlineAt: Date.now() + 20_000,
+        // Room for one hung attempt (20s) to be sent again.
+        deadlineAt: Date.now() + 40_000,
         instructions: GROUNDING,
         tools: [TOOL],
         input: [{

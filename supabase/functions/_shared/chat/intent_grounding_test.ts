@@ -117,7 +117,7 @@ Deno.test("grounding sends actual chronological messages and existing context wi
   equal(data.CURRENT, { party_size: 2 });
   equal(data.PATCH, { party_size: 4 });
   equal(request!.tools.length, 1);
-  equal(request!.deadlineAt! <= Date.now() + 20_000, true);
+  equal(request!.deadlineAt! <= Date.now() + 40_000, true);
 });
 Deno.test("malformed or failed checker output fails closed; an unchanged edit needs no model", async () => {
   equal((await createIntentGrounding(answer({ decision: "yes", evidence: [] }), "test")(base)).ok, false);

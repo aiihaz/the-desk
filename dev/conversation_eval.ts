@@ -200,10 +200,12 @@ for (
       state.req = request(task);
       return { ok: true as const, request_id: state.req.id, state: state.req.state };
     },
-    setBusiness: async (_r: string, id: string) => {
-      if (!state.req) throw new Error("no request");
-      state.req.businessId = id;
-      return { ok: true as const, changed: true, state: state.req.state, version: state.req.version };
+    // By request id, as the database does: a queued errand's business is its own.
+    setBusiness: async (requestId: string, id: string) => {
+      const r = [state.req, ...state.waiting].find((r) => r?.id === requestId);
+      if (!r) throw new Error("unknown request");
+      r.businessId = id;
+      return { ok: true as const, changed: true, state: r.state, version: r.version };
     },
   }) as ChatStore;
   state.lines = scenario.history.map(([from, text], i) => ({
@@ -225,7 +227,18 @@ for (
     if (calls.length >= 48) throw new Error("evaluation model-call cap reached for this case");
     const started = performance.now();
     const actual = { ...req, model: Deno.env.get("DESK_EVAL_MODEL") ?? req.model };
-    const response = await create(actual);
+    let response: Awaited<ReturnType<CreateResponse>>;
+    try {
+      response = await create(actual);
+    } catch (error) {
+      calls.push({
+        model: actual.model,
+        tool_names: actual.tools.map((t) => t.name),
+        error: (error as Error).message,
+        latency_ms: Math.round(performance.now() - started),
+      });
+      throw error;
+    }
     calls.push({
       model: actual.model,
       reasoning: actual.reasoningEffort,
