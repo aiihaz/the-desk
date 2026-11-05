@@ -1,4 +1,4 @@
--- 0017_never_silent.sql: a report that can't be written yet doesn't leave the user in silence,
+-- 0024_never_silent.sql (numbered as on imessage-linq and the hosted project): a report that can't be written yet doesn't leave the user in silence,
 -- and a number that reached someone else isn't put back in front of them.
 --   - A call report whose writes keep failing (its drafts don't pass the check against the
 --     call, or a model can't be reached) owes the user a short notice once: the call is
@@ -7,7 +7,7 @@
 --     (chat/tell.ts plain), so it goes out even when the call can't be put into words the
 --     check accepts.
 --   - wrong_number_for() lets the chat refuse a plan for a number already recorded as wrong
---     (0016), before the user approves it, not only at the dial.
+--     (0019), before the user approves it, not only at the dial.
 
 insert into limits (key, value, value_type, nullable, description) values
   ('report_stall_notice_attempts', '2', 'int', false,

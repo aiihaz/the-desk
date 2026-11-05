@@ -1,4 +1,4 @@
--- 0017: a call report that can't be written yet is told as late, once, on its own; and a
+-- 0024: a call report that can't be written yet is told as late, once, on its own; and a
 -- number recorded as wrong can be looked up before a plan is made for it.
 -- Clock: Friday 2026-10-23 in IST.
 begin;

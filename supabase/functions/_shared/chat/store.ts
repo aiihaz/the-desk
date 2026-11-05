@@ -140,9 +140,9 @@ export type CallSettlement = {
     date?: string | null;
     captured?: string | null;
     approved?: string | null;
-    // retry: when the confirm call is redialled, the time the message names (0016).
+    // retry: when the confirm call is redialled, the time the message names (0019).
     retry_at?: string;
-    // back: the number reached someone else; it isn't dialled again for this user (0016).
+    // back: the number reached someone else; it isn't dialled again for this user (0019).
     wrong_number?: boolean;
   } | null;
   optOut?: boolean;
@@ -222,7 +222,7 @@ export interface ChatStore {
   // A saved place by label or alias, case-insensitive.
   myPlace(userId: string, label: string): Promise<{ label: string; business_id: string | null } | null>;
   businessExists(businessId: string): Promise<boolean>;
-  // This business's current number reached someone else on a call for this user (0016).
+  // This business's current number reached someone else on a call for this user (0019).
   wrongNumberFor(userId: string, businessId: string): Promise<boolean>;
   // When the last update the Desk sent asked them something (its next_step), if it did.
   lastAsk(userId: string): Promise<Date | null>;

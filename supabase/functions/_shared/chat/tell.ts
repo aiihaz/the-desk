@@ -10,7 +10,7 @@
 //     they don't establish, and leaves out nothing the user needs).
 // A write that fails stays owed (0015): it's retried, an alert goes to the review surface if
 // it keeps failing, and when it finally goes the message says it's late. Nothing code-written
-// stands in for it, but the user isn't left waiting in silence either (0017): after a few
+// stands in for it, but the user isn't left waiting in silence either (0024): after a few
 // failed writes they're told the result is still being written up, and a call report whose
 // drafts keep failing their check against the call is written from what the Desk records
 // alone, saying that the rest of the call couldn't be checked.
