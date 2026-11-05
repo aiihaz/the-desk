@@ -7,7 +7,12 @@ insert into users (id, wa_id, name) values
   ('a0000000-0000-0000-0000-000000000001', '919800000001', 'Ihaz');
 
 -- Seed
-select is((select count(*)::int from limits), 64, 'all limit keys are seeded');
+-- Every limit is usable. No total here: each migration's own suite checks the keys it
+-- adds, so branches that add limits don't fight over one number.
+select is((select count(*)::int from limits where nullif(trim(description), '') is null
+            or (value = 'null'::jsonb and not nullable)), 0, 'every limit has a description and a usable default');
+select is((select count(*)::int from limits where key in ('max_calls_per_request', 'max_calls_per_business_per_day',
+            'book_on_first_call', 'max_inbound_per_user_per_day', 'match_tolerance_minutes')), 5, 'the base keys are seeded');
 select is(limit_int('max_calls_per_request'), 4, 'placeholder default is readable');
 select is(limit_int('max_calls_per_business_per_day'), null, 'business limit is off by default');
 select is(limit_bool('book_on_first_call'), true, 'book_on_first_call defaults to true');
