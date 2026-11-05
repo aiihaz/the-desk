@@ -63,7 +63,7 @@ const TOOL = {
         items: {
           type: "object",
           properties: {
-            field: { type: "string" },
+            field: { type: "string", description: "The PATCH key this supports, e.g. questions" },
             message: { type: ["integer", "null"] },
             source: { type: "string", enum: ["user", "profile", "memory"] },
             memory_id: { type: ["string", "null"] },
@@ -133,7 +133,10 @@ export function createIntentGrounding(
         memory_id?: string | null;
       }[];
       for (const field of changed) {
-        const cited = evidence.filter((e) => e?.field === field);
+        // "questions[0]" supports questions: the model may cite an item of a list.
+        const cited = evidence.filter((e) =>
+          typeof e?.field === "string" && e.field.replace(/[[.].*$/, "") === field
+        );
         if (
           !cited.length || cited.some((e) => {
             if (e.source === "profile") {

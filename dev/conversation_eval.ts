@@ -18,12 +18,34 @@ type Case = {
   messages: string[];
   expected: string;
   booking?: boolean;
+  // All messages arrive before one turn (a burst), instead of a turn each.
+  burst?: boolean;
   noApproval?: boolean;
   noTime?: boolean;
   noSlotChanges?: boolean;
+  // What must be true afterwards, read from state, not from wording.
+  expect?: {
+    plan?: boolean; // a plan was stored and sent (plan_sent), or none was
+    fields?: Record<string, unknown>; // final request fields
+    business?: string; // fixture placeId the request is bound to
+    queuedTask?: string; // a separate errand of this task waits
+    queuedQuestions?: number; // and carries at least this many questions
+    bookingUnchanged?: boolean; // the open booking kept its fields and business
+    memories?: number; // memories kept
+    replies?: number; // messages the Desk sent
+  };
 };
 const raw = await Deno.readTextFile("fixtures/conversation/quality-smoke.json");
-const fixture = JSON.parse(raw) as { version: number; clock: string; rubric: string[]; cases: Case[] };
+type FixturePlace = Omit<PlaceHit, "openingHours" | "closed"> & { found_by: string };
+const fixture = JSON.parse(raw) as {
+  version: number;
+  clock: string;
+  rubric: string[];
+  // The fake search: a place is a hit when its found_by pattern matches the query. This stands in
+  // for Google and never reaches the product.
+  places: FixturePlace[];
+  cases: Case[];
+};
 const hash = async (s: string) =>
   Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))).map((n) =>
     n.toString(16).padStart(2, "0")
@@ -37,7 +59,12 @@ if (!key) {
 if (!key) throw new Error("OPENAI_API_KEY is required; no credential is written to results");
 const output = Deno.env.get("DESK_EVAL_OUTPUT") ?? `/tmp/desk-quality-${Date.now()}.json`;
 const count = Number(Deno.env.get("DESK_EVAL_CASES") ?? "8");
-if (!Number.isInteger(count) || count < 1 || count > 8) throw new Error("DESK_EVAL_CASES must be 1–8");
+if (!Number.isInteger(count) || count < 1 || count > fixture.cases.length) {
+  throw new Error(`DESK_EVAL_CASES must be 1–${fixture.cases.length}`);
+}
+// Optional model judgment of each transcript against its expectation and the rubric.
+// Recorded beside the state checks; it is not a human verdict.
+const judging = Deno.env.get("DESK_EVAL_JUDGE") !== "off";
 const create = responsesClient(key);
 let modelCalls = 0;
 const results: Record<string, unknown>[] = [];
@@ -61,6 +88,7 @@ const run = {
     plan_writer: true,
     intent_grounding: true,
     jev: "off",
+    judge: judging,
   },
   started_at: new Date().toISOString(),
   rubric: fixture.rubric,
@@ -74,6 +102,12 @@ const run = {
   results,
 };
 await Deno.writeTextFile(output, JSON.stringify(run, null, 2));
+// Business IDs are UUIDs, as in production; choose_business refuses anything else.
+const placeIds: Record<string, string> = {
+  paragon: "b5000000-0000-4000-8000-000000000001",
+  "snow-white": "b5000000-0000-4000-8000-000000000002",
+};
+const businessId = (placeId: string) => placeIds[placeId] ??= crypto.randomUUID();
 for (const scenario of fixture.cases.slice(0, count)) {
   const now = new Date(fixture.clock);
   const state = new FakeChatStore();
@@ -91,10 +125,11 @@ for (const scenario of fixture.cases.slice(0, count)) {
     pausedAt: null,
   });
   if (scenario.booking) {
+    // An open plan for a table at Paragon, waiting for their answer.
     state.req = {
       ...request("booking"),
       state: "confirming",
-      businessId: "b:paragon",
+      businessId: businessId("paragon"),
       fields: {
         party_size: 2,
         exact_time: "2026-11-05T20:00:00+05:30",
@@ -102,17 +137,31 @@ for (const scenario of fixture.cases.slice(0, count)) {
         may_book: true,
       },
     };
+    const shown = scenario.history.findLast(([from]) => from === "desk")?.[1];
+    if (shown) {
+      state.req.state = "awaiting_yes";
+      state.prompt = {
+        id: "c5000000-0000-4000-8000-000000000001",
+        kind: "ask",
+        optionIds: [],
+        confirmWord: "yes",
+        waMessageId: `history-${scenario.history.length - 1}`,
+        sentAt: new Date(now.getTime() - 1000),
+        text: shown,
+        message: { kind: "text", body: shown },
+      };
+    }
   }
   const store = Object.assign(state, {
     savePlace: async (p: PlaceHit) => {
-      const id = "b:" + p.placeId;
+      const id = businessId(p.placeId);
       places.set(id, p);
       state.saved.push(p.placeId);
       return id;
     },
     place: async (id: string) =>
       places.get(id) ?? { name: "Paragon", address: "Kannur Road, Kozhikode", city: "Kozhikode" },
-    businessExists: async (id: string) => places.has(id) || id === "b:paragon",
+    businessExists: async (id: string) => places.has(id) || id === businessId("paragon"),
     request: async (id: string) => {
       const found = [state.req, ...state.waiting].find((r) => r?.id === id);
       if (!found) throw new Error("unknown request");
@@ -159,6 +208,7 @@ for (const scenario of fixture.cases.slice(0, count)) {
     at: new Date(now.getTime() - (scenario.history.length - i) * 1000),
     id: `history-${i}`,
   }));
+  const before = state.req ? structuredClone(state.req) : null;
   const transcript: Record<string, unknown>[] = [];
   const traces: Record<string, unknown>[] = [];
   const calls: Record<string, unknown>[] = [];
@@ -182,10 +232,13 @@ for (const scenario of fixture.cases.slice(0, count)) {
     return response;
   };
   const started = performance.now();
-  for (const [index, text] of scenario.messages.entries()) {
+  const turns = scenario.burst ? [scenario.messages] : scenario.messages.map((m) => [m]);
+  for (const [index, texts] of turns.entries()) {
     const id = `input-${index}`;
-    state.lines.push({ from: "user", text, at: now, id });
-    transcript.push({ from: "user", text });
+    texts.forEach((text, i) => {
+      state.lines.push({ from: "user", text, at: now, id: i === texts.length - 1 ? id : `${id}-${i}` });
+      transcript.push({ from: "user", text });
+    });
     try {
       await runLuna(
         {
@@ -203,29 +256,13 @@ for (const scenario of fixture.cases.slice(0, count)) {
             return id;
           },
           searchPlaces: async ({ text }) =>
-            /paragon/i.test(text)
-              ? [{
-                placeId: "paragon",
-                name: "Paragon",
-                address: "Kannur Road, Kozhikode",
-                area: "Kannur Road",
-                city: "Kozhikode",
-                phone: "+919999999991",
-                openingHours: null,
-                closed: false,
-              }]
-              : /snow white/i.test(text)
-              ? [{
-                placeId: "snow-white",
-                name: "Snow White Laundry",
-                address: "Indiranagar, Bengaluru",
-                area: "Indiranagar",
-                city: "Bengaluru",
-                phone: "+919999999992",
-                openingHours: null,
-                closed: false,
-              }]
-              : [],
+            fixture.places.filter((p) => new RegExp(p.found_by, "i").test(text)).map((
+              { found_by: _, ...p },
+            ) => ({
+              ...p,
+              openingHours: null,
+              closed: false,
+            })),
           onApproved: async () => {
             approvalAttempts++;
             throw new Error("External action disabled in quality evaluation");
@@ -249,11 +286,95 @@ for (const scenario of fixture.cases.slice(0, count)) {
     failures.push("invented clock time");
   }
   if (scenario.noSlotChanges && state.slotWrites.length) failures.push("ambiguous edit changed state");
+  const want = scenario.expect ?? {};
+  const planSent = traces.some((t) => t.event === "plan_sent");
+  if (want.plan === true && !(planSent && state.prompt)) failures.push("no plan was stored and sent");
+  if (want.plan === false && planSent) failures.push("a plan was sent before it could be ready");
+  const same = (a: unknown, b: unknown) =>
+    typeof a === "string" && typeof b === "string" && !Number.isNaN(Date.parse(a)) && /T\d/.test(a)
+      ? Date.parse(a) === Date.parse(b)
+      : JSON.stringify(a) === JSON.stringify(b);
+  for (const [k, v] of Object.entries(want.fields ?? {})) {
+    const got = (state.req?.fields as Record<string, unknown> | undefined)?.[k];
+    if (!same(got, v)) failures.push(`field ${k}: ${JSON.stringify(got)}, expected ${JSON.stringify(v)}`);
+  }
+  if (want.business && state.req?.businessId !== businessId(want.business)) {
+    failures.push(`business: not bound to ${want.business}`);
+  }
+  if (want.queuedTask) {
+    const queued = state.waiting.find((r) => r.task === want.queuedTask);
+    if (!queued) failures.push(`no separate ${want.queuedTask} errand`);
+    else if ((queued.fields.questions?.length ?? 0) < (want.queuedQuestions ?? 0)) {
+      failures.push(`${want.queuedTask} errand is missing its question`);
+    }
+  }
+  if (
+    want.bookingUnchanged && before &&
+    (JSON.stringify(state.req?.fields) !== JSON.stringify(before.fields) ||
+      state.req?.businessId !== before.businessId)
+  ) failures.push("the open booking was changed");
+  if (want.memories !== undefined && state.kept.length !== want.memories) {
+    failures.push(`memories: ${state.kept.length}, expected ${want.memories}`);
+  }
+  if (want.replies !== undefined && sent !== want.replies) {
+    failures.push(`replies: ${sent}, expected ${want.replies}`);
+  }
+  let judgment: unknown = null;
+  if (judging) {
+    try {
+      const res = await wrapped({
+        model: Deno.env.get("DESK_EVAL_JUDGE_MODEL") ?? Deno.env.get("DESK_EVAL_MODEL") ?? "gpt-6-luna",
+        reasoningEffort: "medium",
+        maxOutputTokens: 1500,
+        instructions:
+          "You review one conversation between a user and Desk, an assistant that makes phone calls to businesses in India. Judge only from the transcript. For the EXPECTED behaviour and each RUBRIC item that applies, say whether the Desk's messages meet it, with a one-line reason quoting the Desk. Unnecessary questions, re-asking known facts, invented details and generic service openers are failures. Do not reward length or politeness alone.",
+        tools: [{
+          type: "function",
+          strict: false,
+          name: "judgment",
+          description: "Per-criterion verdicts for this transcript.",
+          parameters: {
+            type: "object",
+            properties: {
+              verdicts: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    criterion: { type: "string" },
+                    pass: { type: "boolean" },
+                    reason: { type: "string" },
+                  },
+                  required: ["criterion", "pass", "reason"],
+                },
+              },
+              unnecessary_questions: { type: "integer" },
+            },
+            required: ["verdicts", "unnecessary_questions"],
+          },
+        }],
+        input: [{
+          role: "user",
+          content: JSON.stringify({
+            EXPECTED: scenario.expected,
+            RUBRIC: fixture.rubric,
+            EARLIER: scenario.history.map(([from, text]) => ({ from, text })),
+            TRANSCRIPT: transcript,
+          }),
+        }],
+      });
+      const out = res.output.find((o) => o.type === "function_call" && o.name === "judgment");
+      judgment = out && out.type === "function_call" ? JSON.parse(out.arguments) : { error: "no judgment" };
+    } catch (error) {
+      judgment = { error: (error as Error).message };
+    }
+  }
   const result = {
     id: scenario.id,
     expected: scenario.expected,
     human_quality_verdict: "unreviewed",
     failures,
+    model_judgment: judgment,
     transcript,
     traces,
     model_calls: calls,
@@ -266,9 +387,21 @@ for (const scenario of fixture.cases.slice(0, count)) {
   };
   results.push(result);
   await Deno.writeTextFile(output, JSON.stringify(run, null, 2));
-  console.log(JSON.stringify({ id: scenario.id, failures, transcript, model_calls: calls.length }));
+  const misses = (judgment as { verdicts?: { pass: boolean; criterion: string }[] } | null)?.verdicts
+    ?.filter((v) => !v.pass).map((v) => v.criterion);
+  console.log(
+    JSON.stringify({
+      id: scenario.id,
+      failures,
+      judge_misses: misses ?? null,
+      transcript,
+      model_calls: calls.length,
+    }),
+  );
 }
-const totals = results.flatMap((r) => r.model_calls as Record<string, unknown>[]).reduce<{ input_tokens: number; output_tokens: number }>((sum, c) => {
+const totals = results.flatMap((r) => r.model_calls as Record<string, unknown>[]).reduce<
+  { input_tokens: number; output_tokens: number }
+>((sum, c) => {
   const usage = c.usage as { input_tokens?: number; output_tokens?: number };
   sum.input_tokens += usage?.input_tokens ?? 0;
   sum.output_tokens += usage?.output_tokens ?? 0;

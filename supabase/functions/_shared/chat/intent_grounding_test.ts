@@ -39,6 +39,22 @@ Deno.test("every changed field requires evidence, including operational service 
   const input = { ...base, patch: { party_size: 4, service_address: "12 Residency Road" } };
   equal((await createIntentGrounding(answer(yes(2)), "test")(input)).ok, false);
 });
+Deno.test("an added question cited as an item of the list is supported; one cited as another field is not", async () => {
+  const input = {
+    ...base,
+    task: "question" as const,
+    current: {},
+    patch: { questions: ["Can you clean a wool blazer by Friday?"] },
+    messages: [{
+      from: "user" as const,
+      text: "ask if they can clean a wool blazer by Friday",
+      at: base.now,
+    }],
+  };
+  equal((await createIntentGrounding(answer(yes(1, "user", "questions[0]")), "test")(input)).ok, true);
+  equal((await createIntentGrounding(answer(yes(1, "user", "questions")), "test")(input)).ok, true);
+  equal((await createIntentGrounding(answer(yes(1, "user", "questions_extra")), "test")(input)).ok, false);
+});
 Deno.test("profile can supply a name but never a time, spending allowance or different name", async () => {
   const nameInput = { ...base, patch: { customer_name: "Ihaz" } };
   equal(
