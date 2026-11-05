@@ -23,5 +23,26 @@ select is((select value->>'status' from turn_claims where name='next'),'claimed'
 select is((select jsonb_array_length(value->'batch') from turn_claims where name='next'),2,'successor sees both original request and correction');
 select complete_turn('a3000000-0000-0000-0000-000000000001',(select (value->>'token')::uuid from turn_claims where name='next'));
 select is((select count(*)::int from messages where user_id='a3000000-0000-0000-0000-000000000001' and handled_at is null),0,'successor completes the combined input');
+
+-- A turn lost between the YES and Sarvam started no call (dialForTurn): its request is read
+-- against the plan again, not left in calling_1. One with a call still open is left alone.
+insert into businesses(id,name,phone_e164,source) values('b3000000-0000-0000-0000-000000000001','Fresh place','+919300000003','user');
+insert into caller_numbers(id,e164,provider) values('c3000000-0000-0000-0000-000000000001','+919300000004','sarvam');
+insert into turn_claims values('request',start_request('a3000000-0000-0000-0000-000000000001','question',now()));
+update requests set state='calling_1',business_id='b3000000-0000-0000-0000-000000000001'
+ where id=(select (value->>'request_id')::uuid from turn_claims where name='request');
+insert into turn_claims select 'version',to_jsonb(version) from requests where id=(select (value->>'request_id')::uuid from turn_claims where name='request');
+insert into calls(id,user_id,request_id,business_id,caller_number_id,kind,agent_version,status)
+ select 'f3000000-0000-0000-0000-000000000001',user_id,id,business_id,'c3000000-0000-0000-0000-000000000001','question','test','queued'
+ from requests where id=(select (value->>'request_id')::uuid from turn_claims where name='request');
+select defer_changed_consent((select (value->>'request_id')::uuid from turn_claims where name='request'));
+select is((select state from requests where id=(select (value->>'request_id')::uuid from turn_claims where name='request')),'calling_1',
+ 'a call still open keeps the request calling');
+update calls set status='failed',submission_state='rejected' where id='f3000000-0000-0000-0000-000000000001';
+select defer_changed_consent((select (value->>'request_id')::uuid from turn_claims where name='request'));
+select is((select state from requests where id=(select (value->>'request_id')::uuid from turn_claims where name='request')),'confirming',
+ 'a lost turn''s request goes back to its plan');
+select ok((select version > (select value::int from turn_claims where name='version') from requests
+ where id=(select (value->>'request_id')::uuid from turn_claims where name='request')),'and the plan shown before no longer stands');
 select * from finish();
 rollback;

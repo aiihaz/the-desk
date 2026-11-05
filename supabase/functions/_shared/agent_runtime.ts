@@ -10,7 +10,7 @@ import { type LunaDeps, runLuna } from "./chat/luna.ts";
 import { DbChatStore } from "./chat/store.ts";
 import { createDelivery } from "./messaging.ts";
 import { downloadLinqImage } from "./linq.ts";
-import { dial, type DialArgs } from "./dial.ts";
+import { dial, type DialArgs, dialForTurn } from "./dial.ts";
 import { handleScreenshot } from "./chat/payment.ts";
 import { jevClient } from "./jev.ts";
 import { observedResponsesClient as responsesClient } from "./model_client.ts";
@@ -95,15 +95,15 @@ export function createAgentRuntime(channel: MessagingChannel = "whatsapp") {
                   store: scoped,
                   send: scopedSend,
                   create: luna.create,
-                  dial: async (a) => {
-                    await scoped.assertTurn?.();
-                    return dial({
+                  dial: (a) =>
+                    dialForTurn({
                       store: new DbCallStore(serviceClient(scoped.turnToken)),
-                      beforeStart: () => scoped.assertTurn?.() ?? Promise.resolve(),
+                      assertTurn: () => scoped.assertTurn?.() ?? Promise.resolve(),
                       markNotSubmitted: (id, reason) => calls.markFailed(id, reason),
+                      // Their newer message is read against the plan again (as new_inbound).
+                      release: () => chat.deferChangedConsent(a.requestId),
                       start: (c) => startCall(sarvam, c),
-                    }, a);
-                  },
+                    }, a),
                 },
                 u,
                 c,
@@ -131,15 +131,15 @@ export function createAgentRuntime(channel: MessagingChannel = "whatsapp") {
         {
           store: scoped,
           send: scopedSend,
-          dial: async (a) => {
-            await scoped.assertTurn?.();
-            return dial({
+          dial: (a) =>
+            dialForTurn({
               store: new DbCallStore(serviceClient(scoped.turnToken)),
-              beforeStart: () => scoped.assertTurn?.() ?? Promise.resolve(),
+              assertTurn: () => scoped.assertTurn?.() ?? Promise.resolve(),
               markNotSubmitted: (id, reason) => calls.markFailed(id, reason),
+              // Back to awaiting the advance; the screenshot stays on record.
+              release: () => chat.callNotStarted(a.requestId),
               start: (c) => startCall(sarvam, c),
-            }, a);
-          },
+            }, a),
           create: responsesClient(env("OPENAI_API_KEY")),
           image: async (raw) => {
             if (channel === "linq") return downloadLinqImage(raw);

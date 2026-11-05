@@ -30,6 +30,26 @@ export type DialResult =
   | { ok: false; error: "refused"; reason: string }
   | { ok: false; error: "dial_failed" | "submission_unknown"; call_id: string; detail: string };
 
+// A dial inside a chat turn. The turn is checked before the reservation and again before
+// Sarvam. A turn lost anywhere here started no call, so the request is put back where it
+// can be decided again (release, outside the turn's fence) instead of waiting in calling_1.
+export async function dialForTurn(
+  deps: Omit<DialDeps, "beforeStart"> & { assertTurn: () => Promise<void>; release: () => Promise<unknown> },
+  a: DialArgs,
+): Promise<DialResult> {
+  try {
+    await deps.assertTurn();
+    return await dial({ ...deps, beforeStart: deps.assertTurn }, a);
+  } catch (e) {
+    if (isTurnInvalidated(e)) {
+      await deps.release().catch(() =>
+        console.error("could not release request after a lost turn", a.requestId)
+      );
+    }
+    throw e;
+  }
+}
+
 export async function dial(deps: DialDeps, a: DialArgs): Promise<DialResult> {
   const r = await deps.store.reserveCall(a.requestId, a.kind, a.optionId, a.isRetry);
   if (!r.ok) return { ok: false, error: "refused", reason: r.reason };

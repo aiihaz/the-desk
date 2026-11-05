@@ -5,7 +5,7 @@ import { deepStrictEqual as equal, ok, rejects } from "node:assert/strict";
 import { authorizeInternal } from "./internal_auth.ts";
 import { handle as inbound } from "../wa-inbound/handler.ts";
 import { sign } from "./test_sign.ts";
-import { dial } from "./dial.ts";
+import { dial, dialForTurn } from "./dial.ts";
 import { CallRejected } from "./sarvam.ts";
 import { FakeCallStore } from "./test_call_store.ts";
 import { FakeChatStore } from "./chat/test_chat_store.ts";
@@ -480,4 +480,44 @@ Deno.test("supersession immediately before transport cleans up without a call or
     }, args), /turn superseded/);
   equal(starts, 0);
   equal(cleanup, true);
+});
+
+Deno.test("a turn lost around a dial releases the request; one lost before it reserves nothing", async () => {
+  for (const lostAt of ["before reserving", "before Sarvam"]) {
+    const store = new FakeCallStore();
+    let checks = 0;
+    let starts = 0;
+    const released: string[] = [];
+    await rejects(() =>
+      dialForTurn({
+        store,
+        assertTurn: async () => {
+          if (lostAt === "before reserving" || checks++ > 0) throw new Error("turn superseded");
+        },
+        markNotSubmitted: async (id, reason) => store.markFailed(id, reason),
+        release: async () => void released.push("r-1"),
+        start: async () => {
+          starts++;
+          return "unexpected";
+        },
+      }, args), /turn superseded/);
+    equal(starts, 0);
+    equal(released, ["r-1"]);
+    equal(store.calls.get("c-1")?.status, lostAt === "before reserving" ? undefined : "failed");
+  }
+});
+
+Deno.test("an ordinary dial failure inside a turn is not a lost turn: nothing is released", async () => {
+  const store = new FakeCallStore();
+  const released: string[] = [];
+  const result = await dialForTurn({
+    store,
+    assertTurn: async () => {},
+    release: async () => void released.push("r-1"),
+    start: async () => {
+      throw new CallRejected("busy line");
+    },
+  }, args);
+  equal(result.ok, false);
+  equal(released, []);
 });
