@@ -65,6 +65,7 @@ export type Tool =
   | "stay_quiet"
   | "set_follow_up"
   | "recall_errands"
+  | "show_transcript"
   | "remember"
   | "forget";
 
@@ -131,6 +132,7 @@ export function toolsFor(state: State | null, paused = false, open: Open = {}): 
     "stay_quiet",
     ...(state || open.advances ? ["set_follow_up" as Tool] : []),
     "recall_errands",
+    "show_transcript",
     "remember",
     "forget",
   ];

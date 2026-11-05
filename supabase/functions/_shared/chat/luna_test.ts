@@ -69,6 +69,7 @@ Deno.test("Luna sees the clock and the cards, and only this state's tools", asyn
     "find_booking",
     "stay_quiet",
     "recall_errands",
+    "show_transcript",
     "remember",
     "forget",
   ]);

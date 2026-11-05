@@ -14,6 +14,7 @@ import type {
   ChatStore,
   ConsentStored,
   HeldBooking,
+  KeptTranscript,
   LiveOption,
   Memory,
   OpenDecision,
@@ -213,6 +214,17 @@ export class FakeChatStore implements ChatStore {
   bookings: UpcomingBooking[] = [];
   async upcomingBookings() {
     return this.bookings;
+  }
+  transcripts: (KeptTranscript & { lines: { role: string; en_text: string }[] })[] = [];
+  transcriptMessages: [string, string][] = [];
+  async keptTranscripts() {
+    return this.transcripts.map(({ lines: _, ...k }) => k);
+  }
+  async transcriptLines(_u: string, callId: string) {
+    return this.transcripts.find((k) => k.id === callId)?.lines ?? [];
+  }
+  async markTranscriptMessage(waMessageId: string, callId: string) {
+    this.transcriptMessages.push([waMessageId, callId]);
   }
   bookingSet: string[] = [];
   async setRequestBooking(_r: string, bookingId: string) {

@@ -10,7 +10,8 @@
       "addressComponents": [
         { "longText": "Mahatma Gandhi Road", "shortText": "MG Road", "types": ["route"] },
         { "longText": "Ashok Nagar", "shortText": "Ashok Nagar", "types": ["sublocality_level_1", "sublocality", "political"] },
-        { "longText": "Bengaluru", "shortText": "Bengaluru", "types": ["locality", "political"] }
+        { "longText": "Bengaluru", "shortText": "Bengaluru", "types": ["locality", "political"] },
+        { "longText": "Karnataka", "shortText": "KA", "types": ["administrative_area_level_1", "political"] }
       ],
       "regularOpeningHours": { "periods": [{ "open": { "day": 2, "hour": 17, "minute": 0 }, "close": { "day": 2, "hour": 23, "minute": 30 } }] }
     },

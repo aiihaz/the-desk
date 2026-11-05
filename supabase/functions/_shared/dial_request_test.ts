@@ -57,6 +57,20 @@ Deno.test("variables in the body are refused: no caller tells the voice agent an
   assertEquals([store.reserved, started], [[], []]);
 });
 
+Deno.test("no language given: the call opens in the business's local language, English in a metro", async () => {
+  const { deps, store, started } = setup();
+  assertEquals((await handle(post(ok), deps)).status, 200);
+  assertEquals(started[0].language, "Malayalam");
+
+  store.target = { ...store.target, city: "Bengaluru", state: "Karnataka" };
+  await handle(post(ok), deps);
+  assertEquals(started[1].language, "English");
+
+  store.target = { ...store.target, city: null, state: null };
+  await handle(post(ok), deps);
+  assertEquals(started[2].language, undefined);
+});
+
 Deno.test("must_reask from reserve_call reaches the agent", async () => {
   const { deps, store, started } = setup();
   store.reservation = { ...store.reservation, must_reask: true } as typeof store.reservation;

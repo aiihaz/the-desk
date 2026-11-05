@@ -148,6 +148,9 @@ export type CallSettlement = {
   optOut?: boolean;
 };
 
+// A call whose transcript is still kept (0023 user_transcripts), newest first.
+export type KeptTranscript = { id: string; kind: CallKind; at: Date; place: string; until: Date };
+
 export type UpcomingBooking = {
   id: string;
   status: string;
@@ -272,6 +275,11 @@ export interface ChatStore {
   lastCall(requestId: string): Promise<{ kind: CallKind; status: string } | null>;
   // This user's upcoming Desk bookings (booked or held), soonest first.
   upcomingBookings(userId: string): Promise<UpcomingBooking[]>;
+  // Calls whose transcript is still kept, and one call's lines (show_transcript, 0023).
+  keptTranscripts(userId: string): Promise<KeptTranscript[]>;
+  transcriptLines(userId: string, callId: string): Promise<{ role: string; en_text: string }[]>;
+  // A sent message showed this call's transcript, so it goes when the transcript does.
+  markTranscriptMessage(waMessageId: string, callId: string): Promise<void>;
   setRequestBooking(requestId: string, bookingId: string): Promise<Changed | Refused>;
   // A payment screenshot's check result (record_payment, 0011).
   recordPayment(
@@ -832,6 +840,7 @@ export class DbChatStore implements ChatStore {
       name: p.name,
       address: p.address,
       city: p.city,
+      state: p.state ?? null,
       phone_e164: p.phone,
       opening_hours: p.openingHours,
       source: p.placeId.startsWith("dev/") ? "user" : p.phoneFromWeb ? "serper" : "places",
@@ -918,6 +927,30 @@ export class DbChatStore implements ChatStore {
       .order("created_at", { ascending: false }).limit(1).maybeSingle();
     if (error) throw error;
     return data as { kind: CallKind; status: string } | null;
+  }
+
+  async keptTranscripts(userId: string): Promise<KeptTranscript[]> {
+    const rows = await this.rpc<Row[]>("user_transcripts", { p_user_id: userId });
+    return rows.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      at: new Date(r.at),
+      place: r.place,
+      until: new Date(r.until),
+    }));
+  }
+
+  async transcriptLines(userId: string, callId: string): Promise<{ role: string; en_text: string }[]> {
+    const { data, error } = await this.db.from("calls").select("transcript").eq("id", callId)
+      .eq("user_id", userId).maybeSingle();
+    if (error) throw error;
+    return Array.isArray(data?.transcript) ? data.transcript : [];
+  }
+
+  async markTranscriptMessage(waMessageId: string, callId: string): Promise<void> {
+    const { error } = await this.db.from("messages").update({ transcript_call_id: callId })
+      .eq("wa_message_id", waMessageId);
+    if (error) throw error;
   }
 
   async upcomingBookings(userId: string): Promise<UpcomingBooking[]> {

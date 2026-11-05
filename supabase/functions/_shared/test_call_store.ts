@@ -31,8 +31,14 @@ export class FakeCallStore implements CallStore {
     }
     return this.reservation;
   }
+  target: DialTarget = {
+    businessPhone: "+919876543210",
+    callerNumber: "+918041234567",
+    city: "Kozhikode",
+    state: "Kerala",
+  };
   async dialTarget(): Promise<DialTarget> {
-    return { businessPhone: "+919876543210", callerNumber: "+918041234567" };
+    return this.target;
   }
   inputs: CallInputs = {
     task: "booking",

@@ -54,6 +54,7 @@ import {
   resumeActive,
   setFollowUp,
   setSlots,
+  showTranscript,
   startNewRequest,
   type ToolResult,
 } from "./tools.ts";
@@ -130,6 +131,7 @@ Their details
 - Explicit remembered corrections take precedence over original profile defaults; set the corrected customer_name before proposing a plan.
 - MEMORY holds what they asked you to keep and what you learned. Use it without being asked: fill details from it where it fits the errand and its scope, and the plan shows them back. Never ask for what it already tells you. If it doesn't fit this errand, leave it out.
 - When earlier places or errands matter and the cards do not contain them, use recall_errands. Do not guess the past. Memory and recalled work are never permission to call.
+- They want to see or read what was said on a call ("send me the transcript", "what exactly did they say?"): show_transcript. With one call kept it's sent; with several, work out which they mean and call it with its ref. Code sends it as it was said: don't retell it. Transcripts are deleted 12 hours after the booking a call led to, or 48 hours after the call when nothing was booked; when one is gone, say so plainly.
 - For a clear correction, pass the old memory ref in replaces so only the corrected preference remains. Keep only explicit preferences and clear enduring corrections, never inferred personal traits.
 - "remember ...": remember, kind fact or preference. "forget ...": forget, with its m- ref. "what do you know about me": say what's in PROFILE and MEMORY.
 - When they correct you in a way that will hold next time ("no, always the Indiranagar branch", "I never eat at 7, make it 8 on weekdays", "I go by Zain, not Zainab"): do the correction, then remember with learned true, evidence their exact words, and a scope no wider than they meant (place:<name> for one place). Say in a few words what you'll remember. A one-off change ("make it 8 tonight") isn't a preference; learn nothing from it.
@@ -373,6 +375,17 @@ const DEFS: Record<Tool, Omit<FunctionTool, "type" | "strict">> = {
         query: { type: "string", description: "short place, service or topic; empty for the latest errands" },
       },
       required: ["query"],
+    },
+  },
+  show_transcript: {
+    name: "show_transcript",
+    description: "Send the user what was said on one of their calls, as stored, or list the calls whose " +
+      "transcript is still kept.",
+    parameters: {
+      type: "object",
+      properties: {
+        ref: { type: ["string", "null"], description: "the call's ref, once you know which" },
+      },
     },
   },
   remember: {
@@ -997,6 +1010,8 @@ async function runTool(
       return deps.store.recallErrands
         ? { ok: true, errands: await deps.store.recallErrands(user.id, String(a.query ?? "").slice(0, 80)) }
         : { ok: false, reason: "recall unavailable" };
+    case "show_transcript":
+      return showTranscript(deps, user, str(a.ref));
     case "remember":
       return remember(deps, user, {
         text: String(a.text ?? ""),

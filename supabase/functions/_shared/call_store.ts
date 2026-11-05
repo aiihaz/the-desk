@@ -18,7 +18,13 @@ export type Reservation =
     flags: string[];
   };
 
-export type DialTarget = { businessPhone: string; callerNumber: string };
+// city and state: where the business is, for the language the call opens in.
+export type DialTarget = {
+  businessPhone: string;
+  callerNumber: string;
+  city: string | null;
+  state: string | null;
+};
 
 export interface CallStore {
   reserveCall(
@@ -65,11 +71,16 @@ export class DbCallStore implements CallStore, ReconcileStore {
 
   async dialTarget(callId: string): Promise<DialTarget> {
     const { data, error } = await this.db.from("calls")
-      .select("businesses(phone_e164), caller_numbers(e164)").eq("id", callId).single();
+      .select("businesses(phone_e164, city, state), caller_numbers(e164)").eq("id", callId).single();
     if (error) throw error;
     // deno-lint-ignore no-explicit-any
     const row = data as any;
-    return { businessPhone: row.businesses.phone_e164, callerNumber: row.caller_numbers.e164 };
+    return {
+      businessPhone: row.businesses.phone_e164,
+      callerNumber: row.caller_numbers.e164,
+      city: row.businesses.city,
+      state: row.businesses.state,
+    };
   }
 
   async callInputs(callId: string): Promise<CallInputs> {

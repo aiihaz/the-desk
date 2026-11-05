@@ -9,8 +9,9 @@ import { fmtFull } from "./readback.ts";
 import { readChat, readingSettings } from "./reading.ts";
 import { checkSlots, collectingState, missing, type QuestionOps } from "./slots.ts";
 import { group, type Task, TASKS } from "./states.ts";
-import type { ActiveRequest } from "./store.ts";
+import type { ActiveRequest, KeptTranscript } from "./store.ts";
 import type { PromptDeps } from "./turn.ts";
+import { AGENT_ROLES } from "./verify.ts";
 
 // create: for the second readings a tool needs. Without it they don't pass.
 export type ToolDeps = PromptDeps & {
@@ -458,6 +459,71 @@ export async function forget(deps: ToolDeps, user: User, ref: string): Promise<T
 export async function myPlaces(deps: ToolDeps, user: User, label: string): Promise<ToolResult> {
   const hit = await deps.store.myPlace(user.id, label);
   return hit ? { ok: true, ...hit } : { ok: false, reason: "no saved place with that name" };
+}
+
+// What was said on a call (0023). Code sends the transcript as stored, so no model retells
+// it. Each is kept until some hours after the booking it led to, or after the call when
+// nothing was booked; the messages that showed it are cleared with it.
+export async function showTranscript(deps: ToolDeps, user: User, ref: string | null): Promise<ToolResult> {
+  const kept = await deps.store.keptTranscripts(user.id);
+  if (!kept.length) {
+    const after = await deps.store.limitInt("transcript_hours_after_event", user.id);
+    const without = await deps.store.limitInt("transcript_hours_without_event", user.id);
+    return {
+      ok: false,
+      reason: `no call transcript is kept now. Each is deleted ${after} hours after the booking it led to, ` +
+        `or ${without} hours after the call when nothing was booked. Say so plainly`,
+    };
+  }
+  const refOf = (k: KeptTranscript) => k.id.slice(0, 8);
+  const show = (k: KeptTranscript) => ({
+    ref: refOf(k),
+    place: k.place,
+    when: fmtFull(k.at),
+    kept_until: fmtFull(k.until),
+  });
+  const want = ref?.trim().toLowerCase();
+  const chosen = want ? kept.find((k) => refOf(k) === want) : kept.length === 1 ? kept[0] : undefined;
+  if (want && !chosen) return { ok: false, reason: "no kept transcript has that ref", calls: kept.map(show) };
+  if (!chosen) {
+    return {
+      ok: true,
+      calls: kept.map(show),
+      next: "work out which call they mean from the chat, then show_transcript with its ref. Ask only if " +
+        "you can't tell",
+    };
+  }
+  const lines = await deps.store.transcriptLines(user.id, chosen.id);
+  if (!lines.length) return { ok: false, reason: "that call's transcript has just been deleted" };
+  const parts = transcriptMessages(chosen, lines);
+  for (const body of parts) {
+    const id = await deps.send(user, { kind: "text", body });
+    await deps.store.markTranscriptMessage(id, chosen.id);
+  }
+  deps.trace?.("show_transcript", { call: chosen.id, parts: parts.length });
+  return {
+    ok: true,
+    sent: "transcript",
+    ...show(chosen),
+    next: "it's sent as it was said; don't repeat or retell it. Add at most one short line",
+  };
+}
+
+// Chat messages stay well under WhatsApp's 4096 characters; a long call takes several.
+const TRANSCRIPT_PART_CHARS = 3500;
+
+export function transcriptMessages(k: KeptTranscript, lines: { role: string; en_text: string }[]): string[] {
+  const head = `What was said on the call to ${k.place}, ${fmtFull(k.at)} (in English). ` +
+    `Kept until ${fmtFull(k.until)}.`;
+  const parts = [head];
+  for (const l of lines) {
+    const t = cleanField(l.en_text, 800);
+    if (!t) continue;
+    const line = `${AGENT_ROLES.has(l.role) ? "Desk" : k.place}: ${t}`;
+    if (parts[parts.length - 1].length + line.length + 2 > TRANSCRIPT_PART_CHARS) parts.push(line);
+    else parts[parts.length - 1] += `\n\n${line}`;
+  }
+  return parts;
 }
 
 // Text from outside (search results now, call transcripts later) is data, not

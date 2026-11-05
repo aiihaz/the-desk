@@ -12,6 +12,7 @@ Deno.test("parsePlaces: name, area, city, phone, closed", () => {
     address: "12 MG Road, Ashok Nagar, Bengaluru",
     area: "Ashok Nagar",
     city: "Bengaluru",
+    state: "Karnataka",
     phone: "+919800000101",
     openingHours: fixture("two_branches").places[0].regularOpeningHours,
     closed: false,

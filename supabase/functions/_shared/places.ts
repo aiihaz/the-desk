@@ -9,6 +9,8 @@ export type PlaceHit = {
   // The neighbourhood, to tell two branches apart ("MG Road", "Indiranagar").
   area: string | null;
   city: string | null;
+  // The state, for the language a call opens in (call_language.ts).
+  state?: string | null;
   phone: string | null;
   // The phone came from a web search (serper.ts), not Google Maps.
   phoneFromWeb?: boolean;
@@ -57,6 +59,7 @@ export function parsePlaces(body: Row): PlaceHit[] {
       component(p.addressComponents, "sublocality") ?? component(p.addressComponents, "route"),
     city: component(p.addressComponents, "locality") ??
       component(p.addressComponents, "administrative_area_level_3"),
+    state: component(p.addressComponents, "administrative_area_level_1"),
     phone: toE164(p.internationalPhoneNumber),
     openingHours: p.regularOpeningHours ?? null,
     closed: p.businessStatus === "CLOSED_PERMANENTLY" || p.businessStatus === "CLOSED_TEMPORARILY",

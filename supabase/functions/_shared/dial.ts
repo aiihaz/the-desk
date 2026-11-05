@@ -3,6 +3,7 @@
 // from the stored, consented fields (call_vars.ts), never taken from the caller. The
 // dial function and the chat agent's consent hand-off both start calls through here.
 import type { CallStore } from "./call_store.ts";
+import { openingLanguage } from "./call_language.ts";
 import { callVariables } from "./call_vars.ts";
 import type { CallKind, Language, StartCall } from "./sarvam.ts";
 import { CallRejected } from "./sarvam.ts";
@@ -43,7 +44,8 @@ export async function dial(deps: DialDeps, a: DialArgs): Promise<DialResult> {
       callerNumber: target.callerNumber,
       businessPhone: target.businessPhone,
       variables,
-      language: a.language,
+      // An explicit language (the dial function's body) wins over where the business is.
+      language: a.language ?? openingLanguage(target.city, target.state),
     };
   } catch (e) {
     // The row stays, marked failed, so the attempt counts against the limits.
