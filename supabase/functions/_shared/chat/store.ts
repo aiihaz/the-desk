@@ -239,6 +239,10 @@ export interface ChatStore {
   // A saved place by label or alias, case-insensitive.
   myPlace(userId: string, label: string): Promise<{ label: string; business_id: string | null } | null>;
   businessExists(businessId: string): Promise<boolean>;
+  // This business's current number reached someone else on a call for this user (0016).
+  wrongNumberFor(userId: string, businessId: string): Promise<boolean>;
+  // When the last update the Desk sent asked them something (its next_step), if it did.
+  lastAsk(userId: string): Promise<Date | null>;
   // Upserts a search result by place_id (fresh phone and hours each search) and returns its id.
   savePlace(p: PlaceHit): Promise<string>;
   setCity(userId: string, city: string): Promise<void>;
@@ -1030,6 +1034,19 @@ export class DbChatStore implements ChatStore {
       time: b.time ? new Date(b.time) : null,
       conditions: (b.conditions as Row[]).filter((c) => c.required && !c.covered),
     }));
+  }
+
+  wrongNumberFor(userId: string, businessId: string): Promise<boolean> {
+    return this.rpc<boolean>("wrong_number_for", { p_user_id: userId, p_business_id: businessId });
+  }
+
+  async lastAsk(userId: string): Promise<Date | null> {
+    const { data, error } = await this.db.from("deliveries")
+      .select("facts, sent_at").eq("user_id", userId).eq("status", "sent").not("facts", "is", null)
+      .not("sent_at", "is", null).order("sent_at", { ascending: false }).limit(1);
+    if (error) throw error;
+    const d = (data as Row[])[0];
+    return d?.facts?.next_step ? new Date(d.sent_at) : null;
   }
 
   async owedUpdates(userId: string): Promise<string[]> {

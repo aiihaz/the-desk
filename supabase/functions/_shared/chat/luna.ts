@@ -26,7 +26,7 @@ import type { OpenPrompt } from "./gate.ts";
 import { fmtWhen } from "./readback.ts";
 import { currentQuestions } from "./slots.ts";
 import { BOOKING_CHANGES, type Open, type Task, TASKS, type Tool, toolsFor } from "./states.ts";
-import type { ActiveRequest, ConsentStored } from "./store.ts";
+import type { ActiveRequest, ChatLine, ConsentStored } from "./store.ts";
 import {
   checkOutput,
   type JevMode,
@@ -515,10 +515,18 @@ async function quietRefused(
   user: User,
   intent: string | null,
   anyFailed: boolean,
+  lines: ChatLine[],
 ): Promise<string | null> {
   if (anyFailed) return "an action failed; tell them";
   if ((await deps.store.active(user.id)).prompt) {
     return "a plan is open; read their message against it (approve_plan, or answer)";
+  }
+  // The Desk's last update asked them something, and this is their first word since (the
+  // line being answered now, if the chat has it already): an "Okay" there is an answer
+  // (R3), whatever a router makes of it on its own.
+  const asked = await deps.store.lastAsk(user.id);
+  if (asked && lines.filter((l) => l.from === "user" && l.at > asked).length <= 1) {
+    return "the Desk's last update asked them something and this is their answer to it: act on it, or ask what they mean";
   }
   if (intent && intent !== "greeting") return "their message needs an answer";
   return null;
@@ -675,7 +683,9 @@ async function turn(
       const key = call.name === "find_business"
         ? JSON.stringify([args.query, args.area, args.city, args.by_kind])
         : null;
-      const quiet = call.name === "stay_quiet" ? await quietRefused(deps, user, intent, anyFailed) : null;
+      const quiet = call.name === "stay_quiet"
+        ? await quietRefused(deps, user, intent, anyFailed, lines)
+        : null;
       const repeat = call.name === "start_new_request" && args.separate !== true && started.has(args.task);
       const result: ToolResult = ended
         ? { ok: false, reason: "not run: the turn already ended" }

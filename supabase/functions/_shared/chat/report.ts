@@ -66,9 +66,11 @@ export type AdvanceTerms = {
   // Whether they're keeping the slot until the customer decides.
   holding: "yes" | "no" | null;
   mode: string | null;
-  // Only a destination someone can pay to (payable); otherwise null, and addressUnclear.
+  // Only a destination someone can pay to (payable), and one the call shows the business
+  // confirmed (confirmAddress); otherwise null, with addressUnclear or addressUnconfirmed.
   address: string | null;
   addressUnclear: boolean;
+  addressUnconfirmed?: boolean;
   payee: string | null;
   deadline: string | null;
   time: string | null;
@@ -342,6 +344,8 @@ function advanceFacts(t: AdvanceTerms, now: Date) {
     t.amount_rs === null ? "the amount" : null,
     t.addressUnclear
       ? "where exactly to pay: what was noted on the call is incomplete"
+      : t.addressUnconfirmed
+      ? "where exactly to pay: the address wasn't read back to the business in full and confirmed"
       : t.address || t.payee
       ? null
       : "where to pay",
@@ -365,6 +369,27 @@ function advanceFacts(t: AdvanceTerms, now: Date) {
       slot: t.time ? when(t.time, now) : null,
     },
   };
+}
+
+// A payment address is only somewhere to send money once the call shows it, whole, as the
+// business gave it: said plainly, or spelled out and read back to them in full and confirmed.
+// The caller may piece one together from letters without ever reading it back (R6); one
+// misheard letter is a stranger's account. A model reads the call; code withholds the
+// address unless it's verified.
+async function confirmAddress(
+  deps: ReportDeps,
+  call: CallForReport,
+  r: CallResult,
+  t: AdvanceTerms,
+): Promise<AdvanceTerms> {
+  if (!t.address) return t;
+  const v = await claimHolds(
+    deps,
+    call,
+    `The business gave "${t.address}" as where to pay, exactly as written here, every letter, number and symbol. If they spelled it out or gave it in parts, it was read back to them whole and they confirmed it.`,
+    r,
+  );
+  return v.verified ? t : { ...t, address: null, addressUnconfirmed: true };
 }
 
 // They want an advance. Nothing is agreed: the terms go to the user, who decides and pays
@@ -413,9 +438,11 @@ async function decideBooking(
       };
     }
     case "needs_advance":
-      return advanceDecision(outcome.terms, now);
+      return advanceDecision(await confirmAddress(deps, call, r, outcome.terms), now);
     case "options": {
-      const a = outcome.advance ? advanceFacts(outcome.advance, now) : null;
+      const a = outcome.advance
+        ? advanceFacts(await confirmAddress(deps, call, r, outcome.advance), now)
+        : null;
       const told = offered(outcome.options, {
         why_not_what_they_asked: outcome.reason,
         ...(a
@@ -764,6 +791,7 @@ async function originalCancelled(
         status: "business_says_original_booking_already_cancelled_nothing_new_booked",
         detail,
         values: { original },
+        next: "offer_to_book_again",
       },
     };
   }
@@ -816,24 +844,36 @@ function noConversation(status: string, call: CallForReport): Decision {
   };
 }
 
-// The call itself, for the writer and its check. Long calls keep their last lines.
-const TRANSCRIPT_CHARS = 12_000;
+// The call itself, for the writer and its check: all of it, unless it's very long. Then it
+// keeps its opening and its end, where terms and outcomes are said, and says how much of the
+// middle is left out. A tail alone hid terms said early on (R10), so the check refused
+// drafts that told them and drafts that didn't.
+const TRANSCRIPT_CHARS = 32_000;
+const OPENING_CHARS = 12_000;
 
-function callEvidence(r: CallResult): CallEvidence | undefined {
+export function callEvidence(r: CallResult): CallEvidence | undefined {
   if (r.status !== "completed") return undefined;
   const lines = (r.transcript ?? []).flatMap((l) => {
-    const t = cleanField(l.en_text, 800);
+    const t = cleanField(l.en_text, 2000);
     return t ? [`${AGENT_ROLES.has(l.role) ? "caller" : "business"}: ${t}`] : [];
   });
-  const transcript: string[] = [];
-  let size = 0;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    size += lines[i].length;
-    if (size > TRANSCRIPT_CHARS) {
-      transcript.unshift("(earlier lines left out)");
-      break;
+  let transcript = lines;
+  if (lines.join("").length > TRANSCRIPT_CHARS) {
+    const head: string[] = [];
+    let size = 0;
+    for (const l of lines) {
+      if (size + l.length > OPENING_CHARS) break;
+      head.push(l);
+      size += l.length;
     }
-    transcript.unshift(lines[i]);
+    const tail: string[] = [];
+    for (let i = lines.length - 1; i >= head.length; i--) {
+      if (size + lines[i].length > TRANSCRIPT_CHARS) break;
+      tail.unshift(lines[i]);
+      size += lines[i].length;
+    }
+    const left = lines.length - head.length - tail.length;
+    transcript = [...head, `(${left} lines from the middle of the call left out)`, ...tail];
   }
   const caller_noted: Record<string, string> = {};
   for (const [k, v] of Object.entries(r.outputs ?? {})) {

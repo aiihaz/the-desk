@@ -344,6 +344,20 @@ Deno.test("a made-up business id is refused without touching the database", asyn
   assertEquals(out.reason, "unknown business_id; use one from find_business or my_places");
 });
 
+Deno.test("a place whose number reached someone else can't be picked again (R3)", async () => {
+  const id = "0b5c3f2e-7d41-4a8e-9c1f-2e6d8a4b7c90";
+  const { store, inputs, deps } = setup([
+    [call("choose_business", { business_id: id })],
+    [call("reply", { text: "That number was wrong. Another branch?" })],
+  ]);
+  store.wrongNumbers.add(id);
+  store.req = { ...awaitingYes({}), state: "choosing_place" };
+  await runLuna(deps, user, now);
+  const out = JSON.parse(inputs[1].find((i) => i.type === "function_call_output")!.output);
+  assertEquals(out.ok, false);
+  assertEquals(out.reason.startsWith("this place's number reached someone else"), true);
+});
+
 Deno.test("a tool that throws is fed back as a failure; the user still gets a reply", async () => {
   const { store, sent, inputs, deps } = setup([
     [call("cancel_request", {})],

@@ -57,8 +57,12 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
 
   const matches = [];
   for (const p of callable) {
+    const id = await deps.store.savePlace(p);
     matches.push({
-      business_id: await deps.store.savePlace(p),
+      business_id: id,
+      ...(await deps.store.wrongNumberFor(user.id, id)
+        ? { number_reached_someone_else_before: "the Desk won't call it; not one to offer" }
+        : {}),
       name: cleanField(p.name, 80),
       area: cleanField(p.area, 60),
       address: cleanField(p.address, 120),

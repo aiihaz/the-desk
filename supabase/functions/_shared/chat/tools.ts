@@ -272,6 +272,7 @@ export async function setBusiness(
   if (!UUID.test(businessId)) return { ok: false, reason: UNKNOWN_BUSINESS };
   const r = await target(deps, user, ref);
   if (!r) return ref ? NO_ERRAND : { ok: false, reason: "no_active_request" };
+  if (await deps.store.wrongNumberFor(user.id, businessId)) return { ok: false, reason: WRONG_NUMBER };
   const res = await deps.store.setBusiness(r.id, businessId);
   deps.trace?.("set_business", res);
   if (!res.ok) return res;
@@ -329,6 +330,11 @@ export async function chooseBusiness(
   }
   return setBusiness(deps, user, businessId, ref);
 }
+
+// The Desk said it won't call that number again (report.ts wrongNumber); check_dial holds it
+// too, but a plan they can't have shouldn't reach them to approve.
+export const WRONG_NUMBER =
+  "this place's number reached someone else on an earlier call, and the Desk won't call it again: say so, and offer another branch or place";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UNKNOWN_BUSINESS = "unknown business_id; use one from find_business or my_places";

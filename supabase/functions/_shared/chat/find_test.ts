@@ -103,3 +103,13 @@ Deno.test("nameFits", () => {
   assertEquals(nameFits("navu", "Toit Brewpub"), false);
   assertEquals(nameFits("a", "Anything"), false);
 });
+
+Deno.test("a match whose number reached someone else before is marked, not hidden (R3)", async () => {
+  const { store, deps } = setup();
+  store.wrongNumbers.add("b:test-place-indiranagar");
+  const r = await findBusiness(deps, user, { query: "navu", area: null, city: "Bengaluru", byKind: false });
+  const marked = (r.matches as Record<string, unknown>[]).map((
+    m,
+  ) => [m.name, "number_reached_someone_else_before" in m]);
+  assertEquals(marked, [["Navu Bar & Kitchen", false], ["Navu", true], ["Toit Brewpub", false]]);
+});
