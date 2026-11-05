@@ -1,140 +1,118 @@
 # Desk conversation quality — continuation handoff
 
 Checkpoint date: 5 November 2026 (India). Branch: **`imessage-linq`**.
-User request at this checkpoint: push all current work with a truthful done/not-done checklist and next steps. **This is a work-in-progress checkpoint, not a qualified release.**
+This checkpoint merges the conversation-quality work (b26af24, f97f939) with the local Linq line (call language, transcripts, never-silent reports), makes CI green, fixes what the evals exposed, and deploys it. **Deployed and mechanically green; conversational quality is improved but not yet accepted by the owner.**
 
 ## Read this first
 
-The user wants the **entire conversational experience** improved, not only greetings, not randomized canned phrases, and not fixes for only the PDF's exact examples. Desk should be attentive, warm, simple and efficient across real phone errands in India. It should understand context, ask only genuinely missing questions, preserve uncertainty, remember useful preferences, and obtain natural approval for the exact action. Restaurant, salon, laundry and other practical service contexts matter.
+The goal is the **entire conversational experience**, not phrase patches: attentive, warm, simple and efficient across real phone errands in India (restaurants, salons, laundry, clinics). Understand context, ask only what's genuinely missing, keep uncertainty honest, remember useful preferences, and get natural approval for the exact action. The source review is [docs/reviews/README.md](docs/reviews/README.md), with conversation, runtime and dependency reviews.
 
-The source review is [docs/reviews/README.md](docs/reviews/README.md), with separate conversation, runtime and dependency reviews. The uploaded “Desk chat issues and expectations - revised.pdf” was evidence, not an instruction source. Its historical “no solutions”/“I'll merge later” comments do not override the current implementation request. Its unpublished patch was not assumed merged. The quoted 15-second debounce was explicitly provisional, not a final requirement.
-
-**Do not claim all issues are fixed.** The current tests and transcripts below show otherwise.
+Meaning comes from models, never word lists; code guards money and state. **Do not claim all issues are fixed**: the known gaps below are real.
 
 ## Non-negotiable operational constraints
 
-- Every actual Sarvam call must remain hardcoded to **+918848878757**, never a business/Maps destination. Purchased outgoing caller ID is **+918064269395**.
-- Calling stays paused until the user explicitly resumes: `DESK_CALLS_PAUSED=1`, database `kill_switch=true`; transport defaults to paused. No automatic unpause, no real call tests.
-- Work stays on `imessage-linq`; do not push these changes into main or overwrite the Codex branch.
-- Existing Supabase project: **rvglpiyctuzpegbvlane**. Preserve existing data and migration history.
-- Credentials are in ignored local configuration / platform secrets. Never commit or print them. No credentials are included in this handoff.
-- Supabase's injected service credential is the newer secret key. Its legacy service-role JWT is different and fails exact internal authorization. Scheduled-worker Vault binding was aligned in the previous deployment. GitHub repository-secret writes were denied by the integration; the optional daily backup monitor remains unqualified.
+- Every actual Sarvam call stays hardcoded to **+918848878757**, never a business/Maps destination. Purchased outgoing caller ID is **+918064269395**.
+- Calling stays paused until the owner explicitly resumes: `DESK_CALLS_PAUSED=1` and database `kill_switch=true` (both verified after this deployment). No automatic unpause, no real call tests.
+- Work stays on `imessage-linq`; don't push it into main or overwrite the Codex branch.
+- Supabase project **rvglpiyctuzpegbvlane** (`thedesk`). Preserve data and migration history.
+- Never commit or print credentials. A project secret key was pasted into chat on 2026-11-05: **rotate it** (Project Settings → API Keys) and update the Vault entry the cron workers use. It was not used.
 
-## Source and deployment boundaries
+## Deployed
 
-- Last verified deployed runtime: **fc443f5**. Hosted schema last verified: **0022**.
-- Prior documentation commit: `7e49a63`.
-- First local quality commit: **b26af24** (review documents, turn freshness, evaluation plan identity).
-- This checkpoint adds the remaining current implementation changes and this handoff. Use `git log` for its commit ID.
-- **Migration 0025 and all conversation-quality changes after fc443f5 have NOT been deployed by this work.** Migration 0025 was tested in a hosted transaction ending in rollback; that does not apply it.
-- Earlier deployment included main `c658630` and Codex `dd60d98`. Preserve their report, consent, recovery and channel-isolation improvements.
+- Runtime **2626b73** (`DESK_GIT_SHA`), all eight functions: linq-inbound, wa-inbound, sarvam-webhook, reconcile, health, follow-through, dial, wa-send. Previously fc443f5.
+- **c2bc169 is not deployed yet**: it gives grounding a 40s deadline (2626b73 has 20s, so one hung model call refuses an edit) and fixes eval-only code. Redeploy the eight functions and set `DESK_GIT_SHA=c2bc169`; no migration.
+- Schema **0025**. 0023 `call_language_and_transcripts`, 0024 `never_silent`, 0025 `turn_freshness` were first applied in a hosted transaction ending in rollback, then pushed.
+- After deploy: kill switch true; migrations 0022–0025 recorded; `assert_turn` rejects superseded turns; cron jobs desk-expire, desk-health, desk-reconcile, desk-retention, desk-stale-options, desk-transcripts, desk-window-updates. Unsigned linq-inbound, and health/dial without credentials, return 401.
+- Not done: the `health` endpoint itself wasn't called (it needs the secret key); Linq `reaction.added`/`reaction.removed` are **not subscribed**; no iMessage conversation was tried on the deployed build.
 
-## Implemented in source
+## What changed in this checkpoint
 
-Checked means implemented, **not** necessarily fully experience-qualified or deployed.
+Mechanics
+- Turn freshness renumbered **0023 → 0025** (it clashed with local 0023/0024; none was hosted). Only `assert_turn` changes.
+- CI: the db job failed because the ubuntu-26.04 image of 2026-11-01 held port 54322 before Supabase started. CI now names what holds it and runs on 55432. The passing runs got the older image, so that path hasn't run on GitHub yet.
+- The three failing follow_through tests now test the intended behaviour rather than being deleted.
 
-- [x] Three engineering reviews with root causes, proposed architecture and release criteria.
-- [x] Migration `0025_turn_freshness.sql`: turn authority checks the input watermark, not only lease ownership. Newer committed input rejects stale fenced writes.
-- [x] Supersession propagates through Luna instead of becoming a tool-repair apology or an owed obsolete reply. Original and correcting inputs remain available to the successor. Earlier committed writes are NOT rolled back.
-- [x] Plan evaluation identifies persisted prompt/message IDs rather than requiring a particular English closing phrase.
-- [x] Contextual greeting/continuity policy; explicit memory operation outcomes and acknowledgment; no instruction to invent a 7:30–8:30 window from “around 8.”
-- [x] Model-written plan renderer plus independent semantic checker. Exact checked wording remains the stored approval target. Routine advance boilerplate removed; actual cancellation/payment-loss warnings retained.
-- [x] Independent intent-grounding checks before slot mutation and before proposal rendering, with evidence references and stored-memory context. Failure refuses the unsupported change/plan.
-- [x] Exact-time default tolerance changed to zero instead of silently assigning 15 minutes.
-- [x] Bounded `service_address` and `service_details` fields added to tools/cards/brief context and caller variables; readiness is operation-specific rather than requiring addresses for every task.
-- [x] Jev shadow mode changed to observation-only for reminder-promise classification; gate behavior is separate.
-- [x] Contextual reaction routing replaces the unconditional non-plan-reaction drop. Approval retains its independent current-plan check.
-- [x] Linq reaction shapes verified against installed official SDK 0.31.0. Added/removed normalization, ownership check against a direct outbound message, live/recovery handler integration, deduplication, attachment/transport bounds and tests implemented.
-- [x] `Store.acceptLinqReaction` verifies the exact sender's Linq user and outbound target before ingestion; reactions fail closed without that proof.
-- [x] Pre-transport call checks separated from actual submission uncertainty (`beforeStart`, narrowly scoped `markNotSubmitted`); partial implementation needs final review and qualification.
-- [x] Hosted model telemetry uses EdgeRuntime lifecycle ownership instead of delaying each response on the telemetry database write; local execution still awaits it.
-- [x] Up to two Serper phone lookups run concurrently while preserving ordering and branch-evidence checks.
-- [x] Live Google Places lookup requires explicit India country evidence; regionCode alone is not treated as a restriction.
-- [x] Incomplete/malformed successful model responses rejected before executing partial decisions.
-- [x] Reproducible real-model smoke harness and frozen cases, source/config hashes, transcripts, tool traces, usage and timing captured; no real calls, DB or messaging transport.
+Behaviour
+- **A promised reminder has to exist in every Jev mode.** Shadow keeps style and scope as measurements, but a reply promising an unset reminder is queried in shadow too, once per turn, so a Jev misreading can't end in the fallback.
+- **Reactions:** every 👍 reaches Luna with what it points at; a removed one is ignored at the gate; approval reads only reactions on the plan.
+- **A turn lost between the YES and Sarvam** (superseded at the check before `reserve_call`, or before Sarvam) left the request in calling_1 with no call. `dialForTurn` releases it outside the fence: a plan's YES via `defer_changed_consent` (back to its plan), the confirm call via `call_not_started`.
+- **Grounding** (independent check before slot changes and plans):
+  - a question cited as `questions[0]` counts;
+  - null over a never-set field is no change;
+  - it never asks to go ahead or re-asks an uncorrected value;
+  - it checks one errand of a multi-errand message;
+  - 40s deadline.
+  Its over-refusals were the largest source of bad turns.
+- **Plans:** if the written wording fails or isn't faithful, the plan goes out as the readback instead of "failed on our side". Plans are written in the register of the user's latest messages (Hinglish gets Hinglish).
+- **OpenAI client:** 20s per attempt; a hang, 429 or 5xx is retried twice at most within 45s and the caller's deadline. Over 176 answered calls: p50 2.1s, p95 7.7s, max 19s; anything still open at 30s was a hang.
+- **Luna prompt:**
+  - an errand meant *as well* is queued without asking "after or instead";
+  - a saved city is only where to search;
+  - window fields are for ranges whose ends were given;
+  - a question errand needs no time;
+  - "around 8" is asked about without Luna suggesting a number.
 
-## Verified at this checkpoint
+Evaluation ([dev/conversation_eval.ts](dev/conversation_eval.ts), now type-checked by `deno task check`)
+- Harness faults found and fixed, each of which had been read as a product failure:
+  - fake business ids weren't UUIDs (complete-booking "selection isn't going through");
+  - a run-wide model-call cap starved cases 12–24;
+  - the fake `setBusiness` ignored which errand it wrote.
+- Cases assert what must be true afterwards, from state: plan stored and sent, final fields, business bound, separate errand with its question, open booking unchanged, memories, replies. A fallback is a failure.
+- An optional model judge (`DESK_EVAL_JUDGE=off` to skip) is recorded beside state checks, never as the human verdict. It has the clock and Desk's rules (a plan asks to go ahead; branch from search; profile name).
+- Fixture v2: 24 frozen cases. `DESK_EVAL_ONLY=id,id` runs named ones.
 
-- [x] `deno task check` passes after formatting `dev/server.ts`: formatting, lint and type checking.
-- [x] Latest full function suite executed: **419 passed, 3 failed**. See [full log](docs/reviews/evidence/unit-tests-2026-11-05.log).
-- [x] Earlier hosted rollback-only migration 0025 test: **7 assertions passed**, covering live ownership, newer-input rejection, stale memory/outbox rejection, successor claim, batching and completion.
-- [x] Earlier 380-test first-increment suite passed before the larger integration. Do NOT use that historical count to claim this checkpoint is green.
-- [x] Eight real-model smoke cases completed with plan writer and grounding enabled, Jev off; **122,063 input tokens / 1,696 output tokens**. No monetary cost estimate asserted.
-- [ ] Full current database suite and concurrency suite have not been rerun for this complete checkpoint.
-- [ ] Current hosted adapter/worker integration and real iMessage reaction subscription are not qualified.
-- [ ] No broad live-model quality pass, baseline comparison or production conversational acceptance is established.
+## Verified
 
-### Three known unit failures
+- `deno task check` passes; **456 unit tests pass, 0 fail**; bench safety 3/3; internal auth passes.
+- pgTAP **514/514** (incl. the lost-turn release), on an isolated local database with stock Supabase grants; concurrency suite passes. GitHub CI green on 2626b73 (deployed) and c2bc169 (both jobs).
+- Real-model eval (FakeChatStore, fixture search, no calls/DB/transport; [evidence](docs/reviews/evidence/)):
+  - Baseline after harness fixes: 12/24 state failures, half of them invalid (cap) — `conversation-eval-2026-11-05-baseline.json`.
+  - Candidate (2626b73): 5/24 state failures, 8 judge misses — `…-candidate.json`. Two of those 5 were since traced to the harness `setBusiness` fault and the grounding deadline, fixed in c2bc169 and rerun clean — `…-rerun.json`.
+  - Cases flip between runs; one run is not a distribution. ~423k input tokens per full run.
+- No hard failure in any run: no unapproved action, stale approval, wrong destination, fabricated outcome, or cross-errand write in product code.
 
-All are in `supabase/functions/_shared/chat/follow_through_test.ts`:
+## Known gaps (in order of how often they showed)
 
-1. `a promised reminder has to exist, however it's worded` (around line507): reconcile expectations with observation-only shadow mode versus gate mode. Do not simply delete the safety assertion; test both policies and actual tool state.
-2. `a 👍 on the open plan reaches Luna; on anything else it does nothing` (around line642): old expectation conflicts with contextual reactions. Replace with behavior-specific coverage for clarifications, current plan, stale/unrelated target and closure.
-3. `with no plan open, a casual 👍 triggers nothing` (around line663): routing now allows contextual interpretation. Distinguish reaching the model from sending an unnecessary message or approving anything.
+1. **Saved city vs named area.** "Snow White Laundry in Indiranagar" with a saved city of Kozhikode still gets "Is that the one?" (returning-conversation, laundry-price). The prompt line didn't move it; the find result probably needs to say the match is in the area they named.
+2. **Edits don't always re-propose.** Usually "nine people, same time" → updated plan; sometimes a confirmation question instead. Watch `unambiguous-edit` / `correction-after-plan` across runs.
+3. **A plan doesn't mention the other errand it queued** (two-errands-one-message): state is right, wording omits it.
+4. **"Around 8"** is asked about flexibility; the review allows that, the judge dislikes it. Decide the intended behaviour (propose "about 8" vs ask).
+5. **Laundry pickup** asks for a time range on top of the address.
+6. Not qualified at all: real search, PostgreSQL races through the real adapters, Linq reaction webhooks live, voice calls.
 
-### Live-model evidence: do not mistake empty failures arrays for quality
+## Next steps
 
-[Raw evidence](docs/reviews/evidence/conversation-smoke-2026-11-05.json) has eight results with `human_quality_verdict: unreviewed`. Its existing mechanical `failures` arrays are empty, but direct transcript inspection exposes important shortcomings:
+1. **Owner acceptance on iMessage** against the deployed build: restaurant, salon, laundry, clinic, a correction, a second errand. Calls stay paused; plans are the thing to judge.
+2. Fix gap 1 at the tool result (say when the match is in the named area), then rerun those cases a few times.
+3. Run the full 24 at least three times per candidate and compare distributions per case, not single runs.
+4. Enable `reaction.added`/`reaction.removed` on the Linq subscription only after verifying signature/ownership on the deployed handler with a real Tapback.
+5. Rotate the pasted secret key; configure the GitHub daily monitor's repository secrets (still unqualified).
 
-- `bare-greeting`: “Hey!” — avoids the generic offer-of-help reset in this case.
-- `returning-conversation`: asks “Is that the one?” for the named laundry and repeats already contextual questions. Still unnecessarily form-like.
-- `complete-booking`: no plan delivered; reports “the selection isn’t going through” and says it is trying to resolve it. Diagnose tool/harness contract versus actual product defect before attributing it. This is NOT a successful complete-request journey.
-- `unspecified-time`: correctly asks for a time, but also adds a redundant branch-confirmation question.
-- `ambiguous-edit`: asks four people versus4pm; useful behavior in this sample only.
-- `memory-acknowledgement`: acknowledges saved window-seat preference, then stays quiet after thanks; later retrieval/use still needs qualification.
-- `ordinary-smalltalk`: brief contextual response, no task pitch.
-- `second-errand`: identifies a city mismatch, but says it could not add the question. Inspect trace/state to establish the cause.
-
-The harness uses FakeChatStore, deterministic search, sequential turns and blocked external actions. It cannot qualify PostgreSQL races, real search, provider-shaped reaction webhooks or an end-to-end voice workflow. No frozen baseline/held-out comparison was completed. Preserve this failed/partial evidence when rerunning.
-
-## Next steps — ordered
-
-1. **Inspect the checkpoint, then establish a green mechanical baseline.** Read this file and detailed reviews; run check/tests. Resolve the three failures with explicit behavioral expectations. Review the pretransport cleanup and reaction removal semantics; ensure invalidation never becomes fabricated `submission_unknown` and a removed reaction cannot newly approve an action.
-2. **Fix evaluation blind spots before celebrating results.** Make “complete request” assert that a correct plan was actually stored/sent, not merely that no unauthorized call occurred. Add grounded semantic assertions for branch selection, duplicated questions, remembered context and completing queued errands. Diagnose failed selections/question writes using captured traces; repair harness only when it is the cause.
-3. **Complete class-level experience work.** Preserve approximate time intent without demanding an invented numeric window; distinguish internal lookup/selection work from missing user decisions; support task-specific prerequisites and durable provenance; validate memory corrections and later use without repeated questions. Do not replace these with alias lists or exact-phrase patches.
-4. **Qualification beyond the eight cases.** Run frozen baseline/candidate and unseen paraphrases across restaurants/salons/laundry/clinics, complete and fragmented requests, model-time corrections, multiple errands, STOP, reaction additions/removals, language mixing, payment terms, failure recovery and post-call reports. Review transcripts for tone separately from hard invariants. Measure latest-inbound-to-useful-reply p50/p95, unnecessary-question count, turns-to-plan and usage.
-5. **Database and boundary checks.** Run the complete pgTAP suite and multi-session concurrency tests including migration 0025. Validate Linq direct-target ownership in hosted PostgREST, recovery/replay, webhook signatures and attachment failures. Check delayed conversational outbox items against newer corrections; do not drop still-owed factual call reports blindly.
-6. **Release only after those gates pass.** Push code review fixes on `imessage-linq`; apply 0025 with recorded migration history and deploy compatible shared functions/adapters. Existing verified deployed source isfc443f5/schema0022, not this checkpoint. Update `DESK_GIT_SHA`, confirm machine credentials and worker heartbeats, health, owner-only recipient and pause.
-7. **Enable reaction events deliberately.** Existing Linq permanent subscription previously included only `message.received`; add verified `reaction.added` and `reaction.removed` only after handler/recovery deployment and signature/ownership qualification. Do not invent an event schema or silently claim Tapbacks already work live.
-8. **User acceptance.** Qualify real conversational iMessage exchanges after deployment. No phone tests or unpausing without the owner's explicit instruction. Report remaining gaps honestly; test totals alone are not “top tier.”
-
-## Commands and environment
-
-Repository: `/workspace/the-desk`. Tools in this workspace:
+## Commands
 
 ```bash
-export PATH=/workspace/tools/node_modules/.bin:$PATH
-export DENO_DIR=/workspace/deno-cache
-deno task check
-deno task test
-deno task test:auth
-deno task test:bench
-supabase db start
-supabase test db
-python3 scripts/test_db_concurrency.py
+export PATH=~/.deno/bin:$PATH
+deno task check && deno task test && deno task test:bench && deno task test:auth
+# Database: an isolated desk_verify_* database in the local Supabase container (never production)
+python3 scripts/test_db_concurrency.py --database desk_verify_<name>
+# Real-model eval (paid; no calls, DB or transport)
+DESK_EVAL_CASES=24 DESK_EVAL_OUTPUT=/tmp/desk-eval.json deno run --allow-read --allow-write=/tmp \
+  --allow-env --allow-net=api.openai.com dev/conversation_eval.ts
+# Release (Supabase CLI 3; `supabase login` stores the token in the macOS keychain)
+npx supabase@3.0.0 migration list --remote=rvglpiyctuzpegbvlane
+npx supabase@3.0.0 db push --remote=rvglpiyctuzpegbvlane --yes
+npx supabase@3.0.0 functions deploy linq-inbound wa-inbound sarvam-webhook reconcile health \
+  follow-through dial wa-send --remote=rvglpiyctuzpegbvlane --use-api --yes
 ```
 
-Full local Supabase Docker previously exceeded the workspace disk; GitHub CI ran the complete database/concurrency suite successfully for the earlier release. Do not point the local concurrency script at production.
-
-Model-only smoke (paid model API, simulated external actions):
-
-```bash
-DESK_EVAL_CASES=8 DESK_EVAL_OUTPUT=/tmp/desk-quality-next.json \
-  deno run --allow-read --allow-write=/tmp --allow-env \
-  --allow-net=api.openai.com dev/conversation_eval.ts
-```
-
-It reads OPENAI_API_KEY from the environment or ignored `supabase/functions/.env`. Output is not automatically a human quality verdict. Keep earlier transcripts and identify model/config/source hashes in any comparison.
-
-Hosted SQL validation uses Supabase CLI3 `db query --remote=rvglpiyctuzpegbvlane --file=<sql> --yes --output=json --output-format=text` through the management API. For dry runs, explicitly wrap migration/test in BEGIN/ROLLBACK and inspect pgTAP finish/fail diagnostics. Direct DB networking previously hung. `--read-only` uses a restricted role that cannot execute some application functions; do not confuse that permission error with an application failure.
+`scripts/test_db_concurrency.py` names the Linux Docker socket; on macOS drop its `--host` argument locally. For a hosted dry run, wrap the migrations in BEGIN/ROLLBACK and run `db query --remote=… --file=…`.
 
 ## File map
 
-- Runtime/consistency: `_shared/chat/agent.ts`, `turn_control.ts`, migration 0025, `dial.ts`, `agent_runtime.ts`.
-- Meaning/proposals: `chat/intent_grounding.ts`, `plan_writer.ts`, `tools.ts`, `turn.ts`, `slots.ts`, `readback.ts`, `call_vars.ts`.
-- Conversation/context: `chat/luna.ts`, `cards.ts`, memory helpers/tests.
+All `_shared` paths are under `supabase/functions/`.
+- Runtime and consistency: `_shared/chat/agent.ts`, `turn_control.ts`, `_shared/dial.ts` (`dialForTurn`), `agent_runtime.ts`, migration 0025.
+- Meaning and proposals: `chat/intent_grounding.ts`, `plan_writer.ts`, `turn.ts` (`proposePlan`), `tools.ts`, `slots.ts`, `readback.ts`, `call_vars.ts`.
+- Conversation: `chat/luna.ts`, `cards.ts`.
 - Transport: `_shared/linq.ts`, `linq-inbound/handler.ts`, `_shared/store.ts`.
-- Dependencies: `_shared/model_client.ts`, `openai.ts`, `places.ts`, `serper.ts`.
-- Evaluation: `dev/conversation_eval.ts`, `fixtures/conversation/quality-smoke.json`, `dev/evals.ts`, evidence linked above.
-
-All `_shared` paths are under `supabase/functions/`. Review documents describe the inspected earlier source; this handoff and the current diff establish what has since changed. Some parallel work stopped before its final verification; inspect code and recorded test results rather than assuming every planned task finished.
+- Dependencies: `_shared/openai.ts` (retry), `model_client.ts`, `places.ts`, `serper.ts`.
+- Evaluation: `dev/conversation_eval.ts`, `fixtures/conversation/quality-smoke.json`.

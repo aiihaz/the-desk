@@ -1,6 +1,6 @@
 # The Desk on iMessage (Linq)
 
-> Current conversation-quality work is unfinished and not deployed. Start with [HANDOFF.md](HANDOFF.md) for the checkpoint, failing tests, evidence, and next steps.
+> Conversation-quality work is deployed (2626b73, schema 0025; c2bc169 awaits redeploy) but not yet owner-accepted. Start with [HANDOFF.md](HANDOFF.md) for what changed, evidence, known gaps and next steps.
 
 Alternate branch: `imessage-linq`. Both channels use the **same Supabase project**.
 Linq provides iMessage with RCS/SMS fallback. The existing Luna conversation,
@@ -10,7 +10,7 @@ and follow-through jobs are shared.
 Hosted project: `rvglpiyctuzpegbvlane` (`thedesk`). The Linq webhook is deployed at
 `https://rvglpiyctuzpegbvlane.supabase.co/functions/v1/linq-inbound?version=2026-02-03`.
 The branch includes main `c658630` and Codex reliability/memory `dd60d98`.
-All 22 migrations are applied. Migrations 0019–0022 integrate their schema changes
+All 25 migrations are applied. Migrations 0019–0025 integrate their schema changes
 after the original 18 Linq migrations, preserving the existing project and history.
 
 ## Owner-only calling, paused
@@ -165,6 +165,14 @@ API reference: https://docs.linqapp.com/channel/imessage/llms.txt
 
 
 ## Hosted verification record
+
+Release of 2026-11-05 (runtime 2626b73, schema 0025; c2bc169's grounding deadline awaits a functions redeploy):
+- 0023–0025 applied in a hosted transaction ending in rollback first, then pushed.
+- CI green on the deployed commit and on c2bc169: 456 function tests, 514 pgTAP assertions, concurrency, bench safety, endpoint authorization.
+- After deploy: kill switch true, `DESK_CALLS_PAUSED` set, `assert_turn` rejects superseded turns, desk-transcripts cron scheduled; unsigned linq-inbound and uncredentialed health/dial return 401.
+- Not checked: the health endpoint body (needs the secret key), a live iMessage exchange, Linq reaction events (still not subscribed).
+
+Earlier release:
 
 - Runtime source deployed: `fc443f5`, merging main `c658630` and Codex `dd60d98`.
 - [Combined CI](https://github.com/aiihaz/the-desk/actions/runs/41788303987) passed:
