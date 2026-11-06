@@ -42,6 +42,7 @@ type Case = {
     request?: boolean; // an errand was started, or none was
     profileName?: string | null; // the profile name afterwards
     addresses?: number; // saved addresses afterwards
+    searches?: number; // Places searches run, at most
   };
 };
 const raw = await Deno.readTextFile("fixtures/conversation/quality-smoke.json");
@@ -363,6 +364,13 @@ for (
     failures.push(
       `profile name: ${JSON.stringify(state.profileName)}, expected ${JSON.stringify(want.profileName)}`,
     );
+  }
+  const searches = traces.filter((t) =>
+    t.event === "luna_tool" && (t.data as { tool?: string }).tool === "find_business"
+  )
+    .length;
+  if (want.searches !== undefined && searches > want.searches) {
+    failures.push(`searches: ${searches}, expected at most ${want.searches}`);
   }
   if (want.addresses !== undefined && state.savedAddresses.length !== want.addresses) {
     failures.push(`addresses: ${state.savedAddresses.length}, expected ${want.addresses}`);

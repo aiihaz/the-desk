@@ -73,7 +73,7 @@ export function profileCard(p: Profile): string {
     "PROFILE",
     `name: ${p.name ?? "unknown"}`,
     `language: ${p.language}`,
-    `city: ${p.city ?? "unknown"}`,
+    `home city: ${p.city ?? "unknown"}`,
     `phone: ${p.phone ? maskPhone(p.phone) : "unknown"}`,
     `book_on_first_call: ${p.bookOnFirstCall ? "yes" : "no"}`,
     `saved places: ${p.placeLabels.length ? p.placeLabels.join(", ") : "none"}`,
@@ -152,7 +152,7 @@ export function taskCard(t: TaskView | null, now: Date, waiting: TaskView[] = []
     ...(t.cancelRequested ? ["cancel requested during the call; it ends when the result comes"] : []),
     ...followUpLines(t),
     `known: ${describeFields(t.fields, now).join("; ") || "nothing yet"}`,
-    `still needed for a plan: ${need.length ? need.join(", ") : "nothing"}`,
+    `missing_for_plan: ${need.length ? need.join(", ") : "nothing"}`,
     `business: ${t.place ? placeName(t.place) : "not picked"}`,
     ...(!t.place && t.fields.place_query
       ? [
@@ -179,13 +179,13 @@ function followUpLines(t: TaskView): string[] {
   ];
 }
 
-// "r-1a2b3c4d question at Test Dental: known: ...; still needed: which business".
+// "r-1a2b3c4d question at Test Dental: known: ...; missing_for_plan: which business".
 function errandLine(t: TaskView, now: Date): string {
   const need = missing(t.task, t.fields, { business: !!t.place, booking: t.hasBooking, ...t.has });
   return [
     `${t.ref} ${t.task}${t.place ? ` at ${t.place.name}` : ""}`,
     `known: ${describeFields(t.fields, now).join("; ") || "nothing yet"}`,
-    `still needed: ${need.join(", ") || "nothing"}`,
+    `missing_for_plan: ${need.join(", ") || "nothing"}`,
     ...followUpLines(t),
   ].join("; ");
 }

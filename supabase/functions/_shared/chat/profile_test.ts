@@ -3,8 +3,9 @@
 import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import type { User } from "../store.ts";
 import type { CreateResponse } from "../openai.ts";
+import type { ChatStore } from "./store.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
-import { pauseActive, saveAddress, setName, type ToolDeps } from "./tools.ts";
+import { chooseBusiness, pauseActive, saveAddress, setHomeCity, setName, type ToolDeps } from "./tools.ts";
 
 const user: User = { id: "u1", waId: "919812345678", blocked: false };
 const now = new Date("2026-11-06T14:40:00+05:30");
@@ -116,4 +117,36 @@ Deno.test("pausing a plan they've seen says the plan is on hold, not that nothin
   const d: ToolDeps = { store, send: async () => "wamid.out", now: () => now };
   const res = await pauseActive(d, user);
   assertEquals(res.ok && String(res.paused).startsWith("the plan you sent them is on hold"), true);
+});
+
+Deno.test("their home city comes from their words, never from a place they picked", async () => {
+  const store = new FakeChatStore();
+  store.city = null;
+  chat(store, ["user", "I'm Ihaz, based in Bengaluru"]);
+  assertEquals((await setHomeCity(deps(store, "no", null).d, user, "Bengaluru")).ok, false);
+  assertEquals(store.city, null);
+  const { d, asked } = deps(store, "yes", 1);
+  assertEquals((await setHomeCity(d, user, "Bengaluru")).ok, true);
+  assertEquals(store.city, "Bengaluru");
+  assertEquals(asked[0], "CITY: Bengaluru\n\nMESSAGES:\n1. user: I'm Ihaz, based in Bengaluru");
+
+  // Picking a business elsewhere leaves it alone, and so does picking one with no city saved.
+  store.req = {
+    id: "r1",
+    task: "booking",
+    state: "choosing_place",
+    version: 1,
+    fields: {},
+    businessId: null,
+    bookingId: null,
+    createdAt: now,
+    pausedAt: null,
+  };
+  store.city = null;
+  // As the eval does: the fake has no setBusiness of its own.
+  const picking = Object.assign(store, {
+    setBusiness: async () => ({ ok: true as const, changed: true, state: "confirming" as const, version: 2 }),
+  }) as unknown as ChatStore;
+  await chooseBusiness({ ...d, store: picking }, user, "b0000000-0000-4000-8000-000000000001");
+  assertEquals(store.city, null);
 });

@@ -13,7 +13,7 @@ Deno.test("profile card", () => {
       bookOnFirstCall: true,
       placeLabels: ["paragon"],
     }),
-    "PROFILE\nname: Ihaz\nlanguage: en-IN\ncity: Kozhikode\nphone: +91 98…\nbook_on_first_call: yes\nsaved places: paragon\nsaved addresses: none",
+    "PROFILE\nname: Ihaz\nlanguage: en-IN\nhome city: Kozhikode\nphone: +91 98…\nbook_on_first_call: yes\nsaved places: paragon\nsaved addresses: none",
   );
 });
 
@@ -35,16 +35,16 @@ Deno.test("task card: the errand ref, what is known, what a plan still needs, an
       "task: booking",
       "state: collecting (collecting details)",
       "known: party_size=4; place_query=paragon",
-      "still needed for a plan: when (exact_time, or window_start and window_end), which business",
+      "missing_for_plan: when (exact_time, or window_start and window_end), which business",
       "business: not picked",
       "business lookup: resolve the named place internally; ask only for genuine ambiguity, mismatch, or competing branches",
       "tools: reply, set_slots, find_business, choose_business, my_places, find_booking, propose_plan, pause_request, " +
-      "cancel_request, start_new_request, stay_quiet, set_follow_up, recall_errands, show_transcript, remember, forget, set_name, save_address",
+      "cancel_request, start_new_request, stay_quiet, set_follow_up, recall_errands, show_transcript, remember, forget, set_name, set_home_city, save_address",
     ].join("\n"),
   );
   assertEquals(
     taskCard(null, now),
-    "TASK\nnone active\ntools: reply, start_new_request, set_slots, find_business, choose_business, my_places, find_booking, stay_quiet, recall_errands, show_transcript, remember, forget, set_name, save_address",
+    "TASK\nnone active\ntools: reply, start_new_request, set_slots, find_business, choose_business, my_places, find_booking, stay_quiet, recall_errands, show_transcript, remember, forget, set_name, set_home_city, save_address",
   );
 });
 

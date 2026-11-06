@@ -13,6 +13,9 @@ export type FindDeps = ToolDeps & { searchPlaces: SearchPlaces };
 export type FindArgs = { query: string; area: string | null; city: string | null; byKind: boolean };
 
 const MAX_MATCHES = 5;
+// A search by kind is a list for them to choose from, so it stays short: a name search keeps
+// every branch, which are what Luna tells apart.
+const MAX_BY_KIND = 3;
 
 // Where to search: the city Luna names for this search, else the user's saved city, else
 // all of India (the results then show where each place is). The first city named is
@@ -47,7 +50,7 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
     };
   }
   const callable = found.filter((p) => p.phone && !p.closed && (!p.countryCode || p.countryCode === "IN"))
-    .slice(0, MAX_MATCHES);
+    .slice(0, a.byKind ? MAX_BY_KIND : MAX_MATCHES);
   deps.trace?.("find_business", {
     searched: text,
     city_from: named ? "chat" : info.city ? "saved" : "none, all India",

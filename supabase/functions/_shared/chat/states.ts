@@ -69,6 +69,7 @@ export type Tool =
   | "remember"
   | "forget"
   | "set_name"
+  | "set_home_city"
   | "save_address";
 
 // Reschedule and cancel a Desk booking (E4 design 2.7, 2.9). Off: Luna says once that it
@@ -138,6 +139,7 @@ export function toolsFor(state: State | null, paused = false, open: Open = {}): 
     "remember",
     "forget",
     "set_name",
+    "set_home_city",
     "save_address",
   ];
 }

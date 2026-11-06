@@ -23,7 +23,17 @@ Built from the 6 Nov issues card (50-scenario eval plus the live plumber chat). 
 
 Verification: `deno task check` passes; 478 unit tests pass; pgTAP passes on an isolated `desk_verify_0026` database including the new [supabase/tests/profile_test.sql](supabase/tests/profile_test.sql) (18); the concurrency suite passes. A freshly created database lacks Supabase's stock `service_role` grants, so `limits_test` #31 and the concurrency suite fail there until those grants are added; they fail identically on 0025 alone. Fixture v3 adds 13 cases (home visits, names, first contact, scope, pause, small-hours date, place naming). Real-model eval (FakeChatStore, fixture search, no calls): the first run of the 13 new cases exposed an introduction to known users with an empty chat, `set_name` not being called, and "in your name (Priya)" for someone else's booking (an older readback bug). All three are fixed, and the eval now enables by-kind search as production does (0007). Final full run, judge off: **0/37 state failures**. One run is not a distribution. Seen but not fixed: plan wording sometimes uses the wrong language or script (an English edit answered in Hinglish; Roman Hinglish answered in Devanagari), and known gap 1 (saved city vs named area) still shows on laundry-pickup.
 
-Still to do: apply 0026 (hosted dry run in BEGIN/ROLLBACK first), redeploy, and the owner's acceptance of the new wording. The visit/day_part/name/address behaviour has been tried only through the fake store and the eval, never on a live chat.
+Deployed 6 Nov 16:22 IST: 0026 applied (dry run in BEGIN/ROLLBACK first), all eight functions redeployed from eaa0574, kill switch still true. The owner's test user was erased for an onboarding test; the first-contact flow then saved the name and city as intended. At 16:4x IST the Linq subscription `b5f4c1e9…` gained `reaction.added` and `reaction.removed` (same URL and signing secret); a live Tapback has not been checked yet. Still to do: the owner's acceptance of the new wording. The visit/day_part/name/address behaviour has been tried only through the fake store and the eval, never on a live chat.
+
+### Later on 6 Nov: prompt ticket and decisions D1-D4 (uncommitted, not deployed)
+
+From Instinct's "Desk chat prompt: fix ticket" and Ihaz's answers to its four decisions. Eval not run (the ticket leaves testing to Ihaz); `deno task check` and 482 unit tests pass.
+- Plans: the plan writer gets the action without the readback's closing question (`Prompt.spec`) and asks for the go-ahead itself; the fixed question survives only in the fallback readback. TASK card label `still needed for a plan` is now `missing_for_plan`.
+- Prompt: trigger lists, prescribed lines, banned-phrase lists and the city alias list replaced by the meaning they stood for; examples that teach a distinction kept. Each duplicated rule stated once. 18 quoted fragments remain, from 68.
+- D1: one judgment rule for when to search (search when it helps; ask only what would materially change a useful search); finding options vs arranging a visit kept apart.
+- D2: ask how flexible "around 8" is; never ask again once they've said.
+- D3: onboarding asks name and city (area optional); `set_home_city` keeps it, checked by a reading; `chooseBusiness` no longer copies a picked place's city onto the profile. PROFILE says `home city`.
+- D4: recommendations kept: Luna compares on what's known and says what it rests on; a recommendation is never permission.
 
 ## Read this first
 

@@ -73,6 +73,7 @@ Deno.test("Luna sees the clock and the cards, and only this state's tools", asyn
     "remember",
     "forget",
     "set_name",
+    "set_home_city",
     "save_address",
   ]);
 });

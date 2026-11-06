@@ -30,6 +30,9 @@ export type Prompt = {
   optionIds: string[];
   confirmWord: "yes" | "cancel";
   text: string;
+  // The action without the closing question: what the plan writer words, asking for the
+  // go-ahead itself. text keeps the question for when the readback goes out as it is.
+  spec?: string;
   message: Outbound;
 };
 
@@ -153,11 +156,20 @@ function rs(n: number): string {
   return `Rs ${n.toLocaleString("en-IN")}`;
 }
 
+// Every readback ends with its question in a paragraph of its own.
 function ask(text: string, word: "yes" | "cancel" = "yes"): Prompt {
-  return { kind: "ask", optionIds: [], confirmWord: word, text, message: { kind: "text", body: text } };
+  const cut = text.lastIndexOf("\n\n");
+  return {
+    kind: "ask",
+    optionIds: [],
+    confirmWord: word,
+    text,
+    spec: cut > 0 ? text.slice(0, cut) : text,
+    message: { kind: "text", body: text },
+  };
 }
 
-// A short line from Luna before the plan ("Found it."), when there is one.
+// A short line of Luna's own before the plan, when there is one.
 function withNote(note: string | null | undefined, text: string): string {
   return note?.trim() ? `${note.trim()}\n\n${text}` : text;
 }

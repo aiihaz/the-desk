@@ -271,3 +271,18 @@ Deno.test("a booking under someone else's name says theirs, not 'your name'", ()
   });
   assertEquals(own.text.includes("in your name (ihaz)"), true);
 });
+
+Deno.test("the plan writer gets the action without the readback's closing question", () => {
+  const f = { ...tonight, may_book: true };
+  const plans = [
+    bookingReadback({ place: paragon, f, customerPhone: null, now }),
+    bookingReadback({ place: paragon, f: { ...f, may_book: false }, customerPhone: null, now }),
+    questionReadback({ place: paragon, f: { questions: ["Open Sunday?"] } }),
+  ];
+  for (const p of plans) {
+    const question = p.text.slice(p.text.lastIndexOf("\n\n") + 2);
+    assertEquals(question.endsWith("?"), true);
+    assertEquals(p.spec, p.text.slice(0, p.text.lastIndexOf("\n\n")));
+    assertEquals(p.spec!.includes(question), false);
+  }
+});

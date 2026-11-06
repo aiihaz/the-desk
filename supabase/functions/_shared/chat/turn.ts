@@ -253,7 +253,7 @@ export async function proposePlan(
       text = await deps.renderPlan({
         task: r.task,
         fields: r.fields,
-        reference: p.text,
+        reference: p.spec ?? p.text,
         ...(place ? { place: { name: place.name, area: place.area ?? null, city: place.city } } : {}),
         chat: chat.map(({ from, text }) => ({ from, text })),
         language: info.language,

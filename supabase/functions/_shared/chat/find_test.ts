@@ -113,3 +113,28 @@ Deno.test("a match whose number reached someone else before is marked, not hidde
   ) => [m.name, "number_reached_someone_else_before" in m]);
   assertEquals(marked, [["Navu Bar & Kitchen", false], ["Navu", true], ["Toit Brewpub", false]]);
 });
+
+Deno.test("a search by kind is a short list to choose from; a name search keeps every branch", async () => {
+  const hit = (n: number): PlaceHit => ({
+    placeId: `p${n}`,
+    name: `Place ${n}`,
+    address: null,
+    area: `Area ${n}`,
+    city: "Bengaluru",
+    phone: `+9199999999${String(n).padStart(2, "0")}`,
+    openingHours: null,
+    closed: false,
+  });
+  const five = [1, 2, 3, 4, 5].map(hit);
+  const { store, deps } = setup(five);
+  store.limits.place_search_by_kind = true;
+  const byKind = await findBusiness(deps, user, {
+    query: "restaurant",
+    area: "Indiranagar",
+    city: null,
+    byKind: true,
+  });
+  assertEquals(matches(byKind).length, 3);
+  const byName = await findBusiness(deps, user, { query: "place", area: null, city: null, byKind: false });
+  assertEquals(matches(byName).length, 5);
+});
