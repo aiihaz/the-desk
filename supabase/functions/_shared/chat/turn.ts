@@ -9,6 +9,8 @@ import { classify, type Route } from "./gate.ts";
 import {
   bookingReadback,
   cancelReadback,
+  istIso,
+  type Place,
   type Prompt,
   questionReadback,
   rescheduleReadback,
@@ -123,6 +125,11 @@ export async function sendPrompt(
   return { ok: true, promptId };
 }
 
+// The plan check gave no usable answer: the Desk's trouble, not a detail of theirs.
+const UNCHECKED_PLAN = "the plan couldn't be checked on our side just now. Don't say it's ready and don't " +
+  "ask them to repeat anything: say in a few words that you hit a snag putting it together and will try " +
+  "again when they reply";
+
 // Luna asked to propose the plan (propose_plan). Refused while anything is missing or the
 // request is paused. First writes the code-only fields the consent must cover (may_book,
 // tolerance, the profile name to book under), so a later change to a limit can't change
@@ -157,9 +164,10 @@ export async function proposePlan(
     return { ok: false, reason: "no number on file to share" };
   }
   if (deps.checkIntent) {
-    const [messages, memories] = await Promise.all([
+    const [messages, memories, addresses] = await Promise.all([
       store.history(user.id, new Date(now.getTime() - 24 * 3_600_000), 40),
       store.memories(user.id),
+      store.addresses(user.id),
     ]);
     const grounded = await deps.checkIntent({
       phase: "plan",
@@ -169,7 +177,7 @@ export async function proposePlan(
       messages,
       memories,
       now,
-      profile: { name: info.name, phone: info.phone },
+      profile: { name: info.name, phone: info.phone, addresses },
     });
     deps.trace?.("plan_grounding", grounded);
     await store.assertTurn?.();
@@ -177,9 +185,7 @@ export async function proposePlan(
       return {
         ok: false,
         reason: grounded.reason,
-        missing: grounded.clarification
-          ? [grounded.clarification]
-          : ["Could not verify the calling brief; do not claim it is ready."],
+        missing: grounded.clarification ? [grounded.clarification] : [UNCHECKED_PLAN],
       };
     }
   }
@@ -208,19 +214,23 @@ export async function proposePlan(
   }
 
   let p: Prompt;
+  const place: Place | null = r.businessId && (r.task === "booking" || r.task === "question")
+    ? await store.place(r.businessId)
+    : null;
   switch (r.task) {
     case "booking":
       p = bookingReadback({
-        place: await store.place(r.businessId!),
+        place: place!,
         f: r.fields,
         customerPhone: info.phone,
         now,
         note,
+        profileName: info.name,
       });
       break;
     case "question":
       p = questionReadback({
-        place: await store.place(r.businessId!),
+        place: place!,
         f: r.fields,
         customerPhone: info.phone,
         note,
@@ -244,9 +254,10 @@ export async function proposePlan(
         task: r.task,
         fields: r.fields,
         reference: p.text,
+        ...(place ? { place: { name: place.name, area: place.area ?? null, city: place.city } } : {}),
         chat: chat.map(({ from, text }) => ({ from, text })),
         language: info.language,
-        now: new Date(now.getTime() + 330 * 60_000).toISOString().slice(0, 16) + "+05:30",
+        now: istIso(now),
         timezone: "Asia/Kolkata",
       });
     } catch (e) {

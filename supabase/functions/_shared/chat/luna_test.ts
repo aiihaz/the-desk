@@ -72,6 +72,8 @@ Deno.test("Luna sees the clock and the cards, and only this state's tools", asyn
     "show_transcript",
     "remember",
     "forget",
+    "set_name",
+    "save_address",
   ]);
 });
 
@@ -550,4 +552,22 @@ Deno.test("gate mode still repairs a reminder promise with no scheduled follow-u
   await runLuna(deps, user, now);
   assertEquals(sent, [{ kind: "text", body: "Message me when you've decided." }]);
   assertEquals(inputs.length, 2);
+});
+
+Deno.test("on first contact Luna is told so, and is never told again once the Desk has written", async () => {
+  const first = setup([[call("reply", { text: "Hi, I'm Desk." })]]);
+  first.store.isFirstContact = true;
+  await runLuna(first.deps, user, now);
+  assertEquals((first.inputs[0][0].content as string).includes("FIRST_CONTACT"), true);
+  assertEquals(first.store.firstContactLookups, 1);
+  const known = setup([[call("reply", { text: "Sure." })]]);
+  await runLuna(known.deps, user, now);
+  assertEquals((known.inputs[0][0].content as string).includes("FIRST_CONTACT"), false);
+  // A Desk line in the recent chat settles it without asking the database.
+  const talking = setup([[call("reply", { text: "Sure." })]]);
+  talking.store.isFirstContact = true;
+  talking.store.lines = [{ from: "desk", text: "Booked.", at: now }];
+  await runLuna(talking.deps, user, now);
+  assertEquals(talking.store.firstContactLookups, 0);
+  assertEquals((talking.inputs[0][0].content as string).includes("FIRST_CONTACT"), false);
 });

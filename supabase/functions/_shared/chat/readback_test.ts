@@ -7,6 +7,7 @@ import {
   fmtWhen,
   questionReadback,
   rescheduleReadback,
+  spokenPlace,
 } from "./readback.ts";
 
 const now = new Date("2026-10-23T12:00:00+05:30"); // Friday
@@ -53,7 +54,8 @@ Deno.test("booking plan: what will happen, what is shared, what isn't agreed, th
   assertEquals(
     p.text,
     "I'll call Paragon, Kannur Rd, Kozhikode and book a table for 4, tonight (Fri 23 Oct), 7:30–9:00 pm, " +
-      "in your name (Ihaz, +91 98…).\n\nShall I go ahead?",
+      "in your name (Ihaz). I'll give them your number (+91 98…) in case they need to reach you." +
+      "\n\nShall I go ahead?",
   );
   assertEquals(p.kind, "ask");
   noButtonsNoYes(p);
@@ -185,8 +187,8 @@ Deno.test("they don't want their number given: the plan says so, and shows no nu
   assertEquals(
     p.text,
     "I'll call Paragon, Kannur Rd, Kozhikode and book a table for 4, tonight (Fri 23 Oct), 7:30–9:00 pm, " +
-      "in your name (Ihaz). I won't give them your number; if they need it to book, I'll come back to you " +
-      "first.\n\nShall I go ahead?",
+      "in your name (Ihaz). I won't give them your number, so they can't call you back; if they need it to " +
+      "book, I'll come back to you first.\n\nShall I go ahead?",
   );
 });
 
@@ -211,4 +213,61 @@ Deno.test("approved service location and requirements remain in the plan specifi
     assertEquals(plan.text.includes(f.service_address), true);
     assertEquals(plan.text.includes(f.service_details), true);
   }
+});
+
+Deno.test("a plan names the place by its area, not the Maps listing", () => {
+  const manis = {
+    name: "Mani's Dum Biryani",
+    address: "Marathahalli - Sarjapur Outer Ring Rd, Bellandur, Bengaluru",
+    area: "Bellandur",
+    city: "Bengaluru",
+  };
+  const p = bookingReadback({ place: manis, f: { ...tonight, may_book: true }, customerPhone: null, now });
+  assertEquals(p.text.startsWith("I'll call Mani's Dum Biryani in Bellandur and book"), true);
+  assertEquals(
+    spokenPlace({ ...manis, name: "Mani's Dum Biryani - Bellandur" }),
+    "Mani's Dum Biryani - Bellandur",
+  );
+  // Saved before areas were kept: the listing is all there is, and it stays exact.
+  assertEquals(spokenPlace(paragon), "Paragon, Kannur Rd, Kozhikode");
+});
+
+Deno.test("a visit says where and the job; a part of day keeps its span and who picks the time", () => {
+  const p = bookingReadback({
+    place: { name: "Jagan Plumber", address: null, area: "HSR Layout", city: "Bengaluru" },
+    f: {
+      service: "plumber visit",
+      visit: true,
+      service_address: "Flat 302, Prestige Lakeside, HSR Layout",
+      service_details: "kitchen tap leaking",
+      window_start: "2026-10-24T12:00:00+05:30",
+      window_end: "2026-10-24T16:00:00+05:30",
+      day_part: "afternoon",
+      customer_name: "Ihaz",
+      may_book: true,
+    },
+    customerPhone: "+919812345678",
+    now,
+  });
+  assertEquals(
+    p.text,
+    "I'll call Jagan Plumber in HSR Layout and book a plumber visit, tomorrow (Sat 24 Oct) afternoon, " +
+      "12:00–4:00 pm, at whatever time they can do in that window, in your name (Ihaz). I'll give them " +
+      "your number (+91 98…) in case they need to reach you. They'd come to Flat 302, Prestige Lakeside, " +
+      "HSR Layout. The job: kitchen tap leaking.\n\nShall I go ahead?",
+  );
+});
+
+Deno.test("a booking under someone else's name says theirs, not 'your name'", () => {
+  const f = { ...tonight, customer_name: "Priya", may_book: true };
+  const p = bookingReadback({ place: paragon, f, customerPhone: null, now, profileName: "Ihaz" });
+  assertEquals(p.text.includes("under the name Priya") && !p.text.includes("your name"), true);
+  const own = bookingReadback({
+    place: paragon,
+    f: { ...f, customer_name: "ihaz" },
+    customerPhone: null,
+    now,
+    profileName: "Ihaz",
+  });
+  assertEquals(own.text.includes("in your name (ihaz)"), true);
 });

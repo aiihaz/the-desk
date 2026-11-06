@@ -235,3 +235,29 @@ Deno.test("approved service context reaches the caller in its existing resolved 
   assertEquals(String(q.decided).includes(details), false);
   assertEquals("customer_phone" in q, false);
 });
+
+Deno.test("a visit in a part of day: the caller knows where, the job, and that the time is theirs to agree", () => {
+  const v = callVariables(
+    "first",
+    {
+      ...base,
+      fields: {
+        service: "plumber visit",
+        visit: true,
+        service_address: "Flat 302, Prestige Lakeside, HSR Layout",
+        service_details: "kitchen tap leaking",
+        window_start: "2026-10-24T12:00:00+05:30",
+        window_end: "2026-10-24T16:00:00+05:30",
+        day_part: "afternoon",
+        customer_name: "Ihaz",
+        may_book: true,
+      },
+    },
+    false,
+    new Date("2026-10-23T12:00:00+05:30"),
+  );
+  assertEquals(String(v.resolved_when).includes("(afternoon)"), true);
+  assertEquals(String(v.decided).includes("they come to the customer's place"), true);
+  assertEquals(String(v.decided).includes("service location: Flat 302"), true);
+  assertEquals(String(v.flexible).startsWith("Any time inside the window: they asked for afternoon"), true);
+});

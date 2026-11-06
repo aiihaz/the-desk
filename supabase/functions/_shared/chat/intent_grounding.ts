@@ -1,7 +1,9 @@
 // A separate reading of the actual conversation, not of the planner's reasoning.
 // This checks meaning before state changes and before a proposal is shown. It does
 // not grant action authority; approval and database reservation still do that.
-import type { CreateResponse } from "../openai.ts";
+import type { CreateResponse, Item } from "../openai.ts";
+import type { SavedAddress } from "./cards.ts";
+import { fmtFull, istIso } from "./readback.ts";
 import type { ChatLine, Memory } from "./store.ts";
 import type { Fields } from "./slots.ts";
 import type { Task } from "./states.ts";
@@ -15,7 +17,7 @@ export type GroundingInput = {
   messages: ChatLine[];
   memories?: Memory[];
   now: Date;
-  profile: { name: string | null; phone: string | null };
+  profile: { name: string | null; phone: string | null; addresses?: SavedAddress[] };
 };
 export type GroundingResult =
   | {
@@ -31,6 +33,8 @@ export type GroundingResult =
     ok: false;
     reason: "intent_unclear" | "brief_incomplete" | "grounding_unavailable";
     clarification: string;
+    // grounding_unavailable: why no usable verdict came back, for the logs. Never shown.
+    detail?: string;
   };
 export type CheckIntent = (input: GroundingInput) => Promise<GroundingResult>;
 
@@ -39,15 +43,17 @@ export const GROUNDING =
 
 Read all the messages together, their quoted targets and corrections, in any language. Desk statements are context, never evidence that the user requested or accepted a fact. A clear answer to a specific Desk question may establish its value. If a short answer could materially change either time, people, quantity, place, date, price, or a different open errand, do not choose arbitrarily. A newer correction wins.
 
+NOW is the user's local time in India. Every day you reason about ("today", "tomorrow", "Saturday") is their local day at NOW, never a UTC date.
+
 One message can ask for several errands. You check one: the task given, for PATCH. What the user asked of another errand (another business, another task) belongs to that errand; it is neither missing here nor a reason for unclear.
 
-For phase edit, check every changed field in PATCH. Unchanged CURRENT values are context, not new claims. Every material changed value needs user evidence; cite the message number. A profile name can supply customer_name unless the user says otherwise. Profile information never supplies a new permission, preference, time or budget. Retrieved MEMORIES can support a relevant proposed preference or known fact, including a reference such as my usual, without making the user repeat it. Cite its exact memory_id and use source memory. A current correction overrides memory. Memory never establishes permission to act, spend, share personal details, or silently add a numerical booking tolerance. Never invent a remembered fact or cite a memory absent from MEMORIES. The later current-plan approval remains mandatory. Questions added, removed or reworded must preserve what the user actually asked. Clearing a field also needs a correction or valid conflict resolution, not arbitrary forgetting.
+For phase edit, check every changed field in PATCH. Unchanged CURRENT values are context, not new claims. Every material changed value needs user evidence; cite the message number. A profile name can supply customer_name unless the user says otherwise; "for me", "my name" or "under me" means the profile name. A saved address in PROFILE can supply service_address (cite source profile) when the conversation makes clear which one: they named its label or place, or it is their only saved address and nothing points elsewhere. Never pick one of several saved addresses without a clue. Profile information never supplies a new permission, preference, time or budget. Retrieved MEMORIES can support a relevant proposed preference or known fact, including a reference such as my usual, without making the user repeat it. Cite its exact memory_id and use source memory. A current correction overrides memory. Memory never establishes permission to act, spend, share personal details, or silently add a numerical booking tolerance. Never invent a remembered fact or cite a memory absent from MEMORIES. The later current-plan approval remains mandatory. Questions added, removed or reworded must preserve what the user actually asked. Clearing a field also needs a correction or valid conflict resolution, not arbitrary forgetting.
 
-Never manufacture precision: 'tonight' or 'evening' supplies no clock bounds. A stated clock time ('8 pm', 'tomorrow 8pm', '8 baje') is exact as given; do not question its exactness. 'Around 8' is approximate intent, not an authorized 7:30–8:30 window, and not an exact 8pm booking. A window or numeric tolerance needs support for its boundaries. Resolve explicit relative dates using NOW and Asia/Kolkata. Do not demand that users spell ISO dates. No invented spending allowance, phone-sharing exception, name, quantity or service requirement.
+Never manufacture precision: 'tonight' or 'evening' supplies no clock bounds. A stated clock time ('8 pm', 'tomorrow 8pm', '8 baje') is exact as given; do not question its exactness. 'Around 8' is approximate intent, not an authorized 7:30–8:30 window, and not an exact 8pm booking. A window or numeric tolerance needs support for its boundaries. One exception: when the user leaves the time within a part of day to the business ("Saturday afternoon, whatever they have", "you can ask them for a time in the afternoon"), a window over the usual span of that part of day with day_part set to their words is grounded; the plan shows that span for their approval. Without that hand-off, a part of day still needs a time. Resolve explicit relative dates using NOW and Asia/Kolkata. Do not demand that users spell ISO dates. No invented spending allowance, phone-sharing exception, name, quantity or service requirement.
 
 You never ask whether to go ahead or whether the plan is right: the user answers the plan itself after this check, so 'do you want me to book…' is never a clarification. A value given earlier in the conversation and not corrected since still stands, including after a correction of another field.
 
-For phase plan, additionally check that the complete candidate brief is grounded and sufficient for the particular action. A pickup booking needs an agreed pickup location if the call will arrange collection; a call merely asking whether collection is available does not. Determine necessary information from the actual operation, not a generic questionnaire or a list of service names. Do not require information only the business can provide. Do not declare a brief ready if the user's required details cannot be represented in its fields: request that missing context before promising the action. Do not silently drop a requirement or squeeze it into an unrelated value.
+For phase plan, additionally check that the complete candidate brief is grounded and sufficient for the particular action. A pickup booking needs an agreed pickup location if the call will arrange collection; a call merely asking whether collection is available does not. When the business comes to the user (a plumber, electrician, cleaner or repair at their place), the brief needs where (service_address) and what needs doing (service_details) before it is ready; without them return incomplete and ask for what's missing. Determine necessary information from the actual operation, not a generic questionnaire or a list of service names. Do not require information only the business can provide. Do not declare a brief ready if the user's required details cannot be represented in its fields: request that missing context before promising the action. Do not silently drop a requirement or squeeze it into an unrelated value.
 
 If grounded and ready for this phase, return decision yes and evidence for each changed field. For a material ambiguity or unsupported value return unclear. For genuinely missing task-specific context at plan time return incomplete. clarification is one short, directly useful question, not a generic 'please clarify', a form, or multiple questions. It must not invent any detail or promise action. Return a short issue explanation separately. No fixed wording is required.`;
 
@@ -80,11 +86,22 @@ const TOOL = {
   },
 };
 
-const unavailable = (): GroundingResult => ({
+const unavailable = (detail: string): GroundingResult => ({
   ok: false,
   reason: "grounding_unavailable",
   clarification: "",
+  detail,
 });
+
+type Evidence = {
+  field: string;
+  message: number | null;
+  source: "user" | "profile" | "memory";
+  memory_id?: string | null;
+};
+// A verdict to return, or why it can't be used. A reading that can't be used says nothing
+// about the user, so it is read again; one that disagrees with them is final.
+type Verdict = { result: GroundingResult } | { unusable: string };
 
 export function createIntentGrounding(
   create: CreateResponse,
@@ -98,82 +115,106 @@ export function createIntentGrounding(
         JSON.stringify((input.current as Record<string, unknown>)[key] ?? null)
     );
     if (input.phase === "edit" && !changed.length) return { ok: true, evidence: [] };
-    try {
-      const res = await create({
-        model,
-        reasoningEffort: effort,
-        maxOutputTokens: 1200,
-        // Room for one hung attempt (20s) to be sent again.
-        deadlineAt: Date.now() + 40_000,
-        instructions: GROUNDING,
-        tools: [TOOL],
-        input: [{
-          role: "user",
-          content: JSON.stringify({
-            phase: input.phase,
-            task: input.task,
-            NOW: input.now.toISOString(),
-            CURRENT: input.current,
-            PATCH: input.patch,
-            PROFILE: input.profile,
-            MEMORIES: input.memories ?? [],
-            MESSAGES: input.messages.map((m, i) => ({ number: i + 1, ...m })),
-          }),
-        }],
-      });
-      const calls = res.output.filter((x) => x.type === "function_call" && x.name === TOOL.name);
-      if (calls.length !== 1) return unavailable();
-      const verdict = JSON.parse(calls[0].arguments);
-      if (verdict.decision === "unclear" || verdict.decision === "incomplete") {
-        if (typeof verdict.clarification !== "string" || !verdict.clarification.trim()) return unavailable();
-        return {
-          ok: false,
-          reason: verdict.decision === "incomplete" ? "brief_incomplete" : "intent_unclear",
-          clarification: verdict.clarification.trim(),
-        };
+    // Room for one hung attempt (20s) to be sent again, shared by both readings.
+    const deadlineAt = Date.now() + 40_000;
+    const content = JSON.stringify({
+      phase: input.phase,
+      task: input.task,
+      NOW: `${istIso(input.now)} (${fmtFull(input.now)}, Asia/Kolkata)`,
+      CURRENT: input.current,
+      PATCH: input.patch,
+      PROFILE: input.profile,
+      MEMORIES: input.memories ?? [],
+      MESSAGES: input.messages.map((m, i) => ({ number: i + 1, ...m, at: istIso(m.at) })),
+    });
+    let why = "";
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      let verdict: Verdict;
+      try {
+        const res = await create({
+          model,
+          reasoningEffort: effort,
+          maxOutputTokens: 1200,
+          deadlineAt,
+          instructions: GROUNDING,
+          tools: [TOOL],
+          input: [{ role: "user", content }],
+        });
+        verdict = read(res.output, input, changed);
+      } catch (error) {
+        if (isTurnInvalidated(error)) throw error;
+        // The client has already sent a hung or failed call again within the deadline.
+        why = `model call failed: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
+        break;
       }
-      if (verdict.decision !== "yes" || !Array.isArray(verdict.evidence)) return unavailable();
-      const evidence = verdict.evidence as {
-        field: string;
-        message: number | null;
-        source: "user" | "profile" | "memory";
-        memory_id?: string | null;
-      }[];
-      for (const field of changed) {
-        // "questions[0]" supports questions: the model may cite an item of a list.
-        const cited = evidence.filter((e) =>
-          typeof e?.field === "string" && e.field.replace(/[[.].*$/, "") === field
-        );
-        if (
-          !cited.length || cited.some((e) => {
-            if (e.source === "profile") {
-              return field !== "customer_name" || input.patch[field] !== input.profile.name ||
-                e.message !== null;
-            }
-            if (e.source === "memory") {
-              const proposalFields = new Set([
-                "service",
-                "service_details",
-                "service_address",
-                "customer_name",
-                "place_query",
-                "party_size",
-                "exact_time",
-                "window_start",
-                "window_end",
-              ]);
-              return !proposalFields.has(field) || e.message !== null || typeof e.memory_id !== "string" ||
-                !input.memories?.some((m) => m.id === e.memory_id);
-            }
-            return e.source !== "user" || !Number.isInteger(e.message) ||
-              input.messages[(e.message as number) - 1]?.from !== "user";
-          })
-        ) return unavailable();
-      }
-      return { ok: true, evidence };
-    } catch (error) {
-      if (isTurnInvalidated(error)) throw error;
-      return unavailable();
+      if ("result" in verdict) return verdict.result;
+      why = verdict.unusable;
+      if (Date.now() >= deadlineAt) break;
     }
+    console.warn("intent_grounding unavailable", { phase: input.phase, task: input.task, why });
+    return unavailable(why);
   };
+}
+
+function read(output: Item[], input: GroundingInput, changed: string[]): Verdict {
+  const calls = output.filter((x) => x.type === "function_call" && x.name === TOOL.name);
+  if (calls.length !== 1) return { unusable: `${calls.length} verdict calls` };
+  let verdict;
+  try {
+    verdict = JSON.parse(calls[0].arguments);
+  } catch {
+    return { unusable: "verdict is not JSON" };
+  }
+  if (verdict.decision === "unclear" || verdict.decision === "incomplete") {
+    if (typeof verdict.clarification !== "string" || !verdict.clarification.trim()) {
+      return { unusable: `${verdict.decision} without a clarification` };
+    }
+    return {
+      result: {
+        ok: false,
+        reason: verdict.decision === "incomplete" ? "brief_incomplete" : "intent_unclear",
+        clarification: verdict.clarification.trim(),
+      },
+    };
+  }
+  if (verdict.decision !== "yes" || !Array.isArray(verdict.evidence)) {
+    return { unusable: `decision ${JSON.stringify(verdict.decision)} without evidence` };
+  }
+  const evidence = verdict.evidence as Evidence[];
+  for (const field of changed) {
+    // "questions[0]" supports questions: the model may cite an item of a list.
+    const cited = evidence.filter((e) =>
+      typeof e?.field === "string" && e.field.replace(/[[.].*$/, "") === field
+    );
+    if (!cited.length) return { unusable: `no evidence for ${field}` };
+    const bad = cited.find((e) => {
+      if (e.source === "profile") {
+        if (e.message !== null) return true;
+        if (field === "customer_name") return input.patch[field] !== input.profile.name;
+        if (field === "service_address") {
+          return !input.profile.addresses?.some((a) => a.address === input.patch[field]);
+        }
+        return true;
+      }
+      if (e.source === "memory") {
+        const proposalFields = new Set([
+          "service",
+          "service_details",
+          "service_address",
+          "customer_name",
+          "place_query",
+          "party_size",
+          "exact_time",
+          "window_start",
+          "window_end",
+        ]);
+        return !proposalFields.has(field) || e.message !== null || typeof e.memory_id !== "string" ||
+          !input.memories?.some((m) => m.id === e.memory_id);
+      }
+      return e.source !== "user" || !Number.isInteger(e.message) ||
+        input.messages[(e.message as number) - 1]?.from !== "user";
+    });
+    if (bad) return { unusable: `evidence for ${field} doesn't hold (${bad.source} ${bad.message})` };
+  }
+  return { result: { ok: true, evidence } };
 }

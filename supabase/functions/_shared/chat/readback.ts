@@ -10,12 +10,19 @@ import { currentQuestions, type Fields } from "./slots.ts";
 const TZ = "Asia/Kolkata";
 
 // webNumber: the phone came from a web search, not Google Maps (eng plan 3.3).
-export type Place = { name: string; address: string | null; city: string | null; webNumber?: boolean };
+// area: the neighbourhood from Maps (0026), which tells two outlets apart.
+export type Place = {
+  name: string;
+  address: string | null;
+  city: string | null;
+  area?: string | null;
+  webNumber?: boolean;
+};
 
-// Who a plan will call. A number found on the web is said, so the user can stop a call
-// to the wrong number.
+// Who a plan will call, as a person would say it. A number found on the web is said, so
+// the user can stop a call to the wrong number.
 function callee(p: Place): string {
-  return placeName(p) + (p.webNumber ? " (on a number I found on the web, not on Google Maps)" : "");
+  return spokenPlace(p) + (p.webNumber ? " (on a number I found on the web, not on Google Maps)" : "");
 }
 
 export type Prompt = {
@@ -29,6 +36,20 @@ export type Prompt = {
 export function placeName(p: Place): string {
   const where = p.address ?? p.city;
   return where ? `${p.name}, ${where}` : p.name;
+}
+
+// "Mani's Dum Biryani in Bellandur": the name and area, which is enough to say which
+// outlet. The business row keeps the exact listing, and the consent binds that row. A
+// place saved before areas were kept has only its listing, which is still exact.
+export function spokenPlace(p: Place): string {
+  if (!p.area) return placeName(p);
+  return p.name.toLowerCase().includes(p.area.toLowerCase()) ? p.name : `${p.name} in ${p.area}`;
+}
+
+// "2026-11-07T00:05+05:30": a moment as the clock in India shows it, for model inputs,
+// so a check never reads the day from UTC.
+export function istIso(d: Date): string {
+  return new Date(d.getTime() + 330 * 60_000).toISOString().slice(0, 16) + "+05:30";
 }
 
 // "+91 98…": enough for the user to recognise their own number.
@@ -110,7 +131,8 @@ export function fmtWhen(f: Fields, now: Date, full = false): string {
     const ta = fmtTime(a);
     const tb = fmtTime(b);
     const range = ta.slice(-2) === tb.slice(-2) ? `${ta.slice(0, -3)}–${tb}` : `${ta}–${tb}`;
-    return `${day(a, now)}, ${range}`;
+    // "tomorrow afternoon, 12:00–4:00 pm": their words, then the span the plan stands for.
+    return f.day_part ? `${day(a, now)} ${f.day_part}, ${range}` : `${day(a, now)}, ${range}`;
   }
   if (f.exact_time) {
     const t = new Date(f.exact_time);
@@ -141,22 +163,48 @@ function withNote(note: string | null | undefined, text: string): string {
 }
 
 function serviceContext(f: Fields): string {
+  if (f.visit) {
+    return [
+      f.service_address ? `They'd come to ${f.service_address}.` : "",
+      f.service_details ? `The job: ${f.service_details}.` : "",
+    ].filter(Boolean).map((text) => ` ${text}`).join("");
+  }
   return [
     f.service_address ? `Service location: ${f.service_address}.` : "",
     f.service_details ? `Details: ${f.service_details}.` : "",
   ].filter(Boolean).map((text) => ` ${text}`).join("");
 }
 
+// "in your name (Ihaz)", or "under the name Priya" for a booking that isn't in theirs.
+function whose(name: string | undefined, profileName: string | null | undefined): string {
+  const theirs = profileName === undefined || !name ||
+    name.trim().toLowerCase() === (profileName ?? "").trim().toLowerCase();
+  return theirs ? `in your name (${name})` : `under the name ${name}`;
+}
+
+// A time left to the business inside a part of day: the call agrees one within the span.
+function dayPartNote(f: Fields): string {
+  return f.day_part && f.window_start && f.window_end ? ", at whatever time they can do in that window" : "";
+}
+
 // Plans lead with what will happen (place, what, when), then what will be shared, then
 // one plain question. No call agrees an advance, so a plan doesn't mention one: if the
 // business wants one, its terms come back to the user. f.may_book must already be set from
 // limits, so the consent covers it.
+// profileName: theirs, so a booking under someone else's name isn't read back as "your name".
 export function bookingReadback(
-  x: { place: Place; f: Fields; customerPhone: string | null; now: Date; note?: string | null },
+  x: {
+    place: Place;
+    f: Fields;
+    customerPhone: string | null;
+    now: Date;
+    note?: string | null;
+    profileName?: string | null;
+  },
 ): Prompt {
   const { place, f, now } = x;
   const price = f.max_price_rs !== undefined ? `, for up to ${rs(f.max_price_rs)}` : "";
-  const what_ = `${what(f)}, ${fmtWhen(f, now, true)}${price}`;
+  const what_ = `${what(f)}, ${fmtWhen(f, now, true)}${dayPartNote(f)}${price}`;
   const also = (f.also_ask ? ` I'll also ask: "${f.also_ask}".` : "") + serviceContext(f);
   if (!f.may_book) {
     return ask(withNote(
@@ -165,18 +213,18 @@ export function bookingReadback(
         `your name or number yet; I'll come back to you with what they say.${also}\n\nShall I call them?`,
     ));
   }
-  const withheld = f.share_phone === false;
-  const who = x.customerPhone && !withheld
-    ? `${f.customer_name}, ${maskPhone(x.customerPhone)}`
-    : f.customer_name;
-  const phone = withheld
-    ? "I won't give them your number; if they need it to book, I'll come back to you first. "
+  // The Desk can't take calls, so the number the plan gives is how the business reaches
+  // them back. Whether it goes is said every time: their yes covers it for this call.
+  const phone = f.share_phone === false
+    ? "I won't give them your number, so they can't call you back; if they need it to book, I'll come back to you first."
+    : x.customerPhone
+    ? `I'll give them your number (${maskPhone(x.customerPhone)}) in case they need to reach you.`
     : "";
   return ask(withNote(
     x.note,
-    `I'll call ${callee(place)} and book ${what_}, in your name (${who}).${phone ? ` ${phone.trim()}` : ""}${
-      also ? " " : ""
-    }` +
+    `I'll call ${callee(place)} and book ${what_}, ${whose(f.customer_name, x.profileName)}.${
+      phone ? ` ${phone}` : ""
+    }${also ? " " : ""}` +
       `${also.trimStart()}` +
       "\n\nShall I go ahead?",
   ));

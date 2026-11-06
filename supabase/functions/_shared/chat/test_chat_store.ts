@@ -46,9 +46,10 @@ export class FakeChatStore implements ChatStore {
   slotWrites: Record<string, unknown>[] = [];
 
   stoppedAt: Date | null = null;
+  profileName: string | null = "Ihaz";
   async user() {
     return {
-      name: "Ihaz",
+      name: this.profileName,
       phone: "+919812345678",
       language: "en-IN",
       city: this.city,
@@ -143,6 +144,43 @@ export class FakeChatStore implements ChatStore {
   }
   async setCity(_u: string, city: string) {
     this.city = city;
+  }
+  // As set_profile_name (0026): the evidence must be a user line holding the name. The
+  // last-day window is the database's (profile_test.sql); tests here run on fixed clocks.
+  async setProfileName(_u: string, name: string, evidence: string) {
+    const said = this.lines.find((l) =>
+      l.from === "user" && l.text.toLowerCase().includes(evidence.trim().toLowerCase())
+    );
+    if (!said) return { ok: false as const, reason: "evidence_not_said" };
+    if (!said.text.toLowerCase().includes(name.trim().toLowerCase())) {
+      return { ok: false as const, reason: "name_not_in_evidence" };
+    }
+    const previous = this.profileName;
+    this.profileName = name.trim();
+    return { ok: true as const, name: this.profileName, previous };
+  }
+  savedAddresses: { label: string; address: string }[] = [];
+  async addresses() {
+    return this.savedAddresses;
+  }
+  async saveAddress(_u: string, label: string, address: string | null) {
+    const i = this.savedAddresses.findIndex((a) => a.label.toLowerCase() === label.trim().toLowerCase());
+    if (address === null) {
+      if (i < 0) return { ok: false as const, reason: "no_such_label" };
+      const [gone] = this.savedAddresses.splice(i, 1);
+      return { ok: true as const, removed: gone.label };
+    }
+    const kept = { label: label.trim(), address: address.trim() };
+    if (i < 0) this.savedAddresses.push(kept);
+    else this.savedAddresses[i] = kept;
+    return { ok: true as const, ...kept };
+  }
+  // Tests and the eval treat the user as known unless a case says otherwise.
+  isFirstContact = false;
+  firstContactLookups = 0;
+  async firstContact() {
+    this.firstContactLookups++;
+    return this.isFirstContact;
   }
   routes: RouteLog[] = [];
   redirects = 0;

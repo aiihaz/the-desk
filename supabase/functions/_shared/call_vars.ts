@@ -122,7 +122,8 @@ function resolvedWhen(f: Record<string, unknown>, o: CallInputs["option"]): stri
     : null;
   if (t) return `${fullDay(t)}, ${clock(t)} IST`;
   if (typeof f.window_start === "string" && typeof f.window_end === "string") {
-    return `${fullDay(f.window_start)}, ${clock(f.window_start)} to ${clock(f.window_end)} IST`;
+    const part = typeof f.day_part === "string" ? ` (${f.day_part})` : "";
+    return `${fullDay(f.window_start)}${part}, ${clock(f.window_start)} to ${clock(f.window_end)} IST`;
   }
   return null;
 }
@@ -164,6 +165,7 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
   // decided variable so the deployed caller receives them without a new SDK contract.
   const serviceContext = ["first", "question", "booking", "reschedule"].includes(kind)
     ? [
+      f.visit === true ? "they come to the customer's place" : null,
       typeof f.service_address === "string" ? `service location: ${f.service_address}` : null,
       typeof f.service_details === "string" ? `service requirements: ${f.service_details}` : null,
     ].filter(Boolean)
@@ -176,6 +178,9 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
     ? (f.tolerance_min
       ? `Up to ${f.tolerance_min} minutes either way of the time.`
       : "Nothing: that exact time.")
+    : typeof f.day_part === "string"
+    ? `Any time inside the window: they asked for ${f.day_part} and left the time to the business. Agree one ` +
+      "time they offer inside it, and say it back."
     : "Any time inside the window.";
 
   const accept = kind === "question"

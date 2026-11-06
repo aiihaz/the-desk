@@ -23,6 +23,12 @@ type Case = {
   noApproval?: boolean;
   noTime?: boolean;
   noSlotChanges?: boolean;
+  // The case's own clock, when the fixture's isn't the point (around midnight).
+  clock?: string;
+  // Who the user is before the case: the fake's defaults are a known user named Ihaz.
+  profile?: { name?: string | null; city?: string | null; addresses?: { label: string; address: string }[] };
+  // The Desk has never written to them.
+  firstContact?: boolean;
   // What must be true afterwards, read from state, not from wording.
   expect?: {
     plan?: boolean; // a plan was stored and sent (plan_sent), or none was
@@ -33,6 +39,9 @@ type Case = {
     bookingUnchanged?: boolean; // the open booking kept its fields and business
     memories?: number; // memories kept
     replies?: number; // messages the Desk sent
+    request?: boolean; // an errand was started, or none was
+    profileName?: string | null; // the profile name afterwards
+    addresses?: number; // saved addresses afterwards
   };
 };
 const raw = await Deno.readTextFile("fixtures/conversation/quality-smoke.json");
@@ -113,9 +122,15 @@ const only = Deno.env.get("DESK_EVAL_ONLY")?.split(",").map((s) => s.trim());
 for (
   const scenario of only ? fixture.cases.filter((c) => only.includes(c.id)) : fixture.cases.slice(0, count)
 ) {
-  const now = new Date(fixture.clock);
+  const now = new Date(scenario.clock ?? fixture.clock);
   const state = new FakeChatStore();
   state.promptAt = now;
+  if (scenario.profile?.name !== undefined) state.profileName = scenario.profile.name;
+  if (scenario.profile?.city !== undefined) state.city = scenario.profile.city;
+  if (scenario.profile?.addresses) state.savedAddresses = structuredClone(scenario.profile.addresses);
+  state.isFirstContact = scenario.firstContact === true;
+  // As production (0007): a kind of place ("a plumber") can be searched for.
+  state.limits.place_search_by_kind = true;
   const places = new Map<string, PlaceHit>();
   const request = (task: Task): ActiveRequest => ({
     id: "a4000000-0000-4000-8000-000000000001",
@@ -341,6 +356,16 @@ for (
   }
   if (want.replies !== undefined && sent !== want.replies) {
     failures.push(`replies: ${sent}, expected ${want.replies}`);
+  }
+  if (want.request === false && (state.req || state.waiting.length)) failures.push("an errand was started");
+  if (want.request === true && !state.req) failures.push("no errand was started");
+  if (want.profileName !== undefined && state.profileName !== want.profileName) {
+    failures.push(
+      `profile name: ${JSON.stringify(state.profileName)}, expected ${JSON.stringify(want.profileName)}`,
+    );
+  }
+  if (want.addresses !== undefined && state.savedAddresses.length !== want.addresses) {
+    failures.push(`addresses: ${state.savedAddresses.length}, expected ${want.addresses}`);
   }
   let judgment: unknown = null;
   if (judging) {

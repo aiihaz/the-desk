@@ -6,7 +6,7 @@ import type { SupabaseClient } from "npm:@supabase/supabase-js@2.45.4";
 import type { PlaceHit } from "../places.ts";
 import { serviceClient } from "../store.ts";
 import type { Outbound } from "../whatsapp.ts";
-import type { RecentRequest } from "./cards.ts";
+import type { RecentRequest, SavedAddress } from "./cards.ts";
 import type { Delivery, DueFollowUp } from "./followup.ts";
 import type { Facts } from "./tell.ts";
 import { mediaMarker, type OpenPrompt } from "./gate.ts";
@@ -246,6 +246,23 @@ export interface ChatStore {
   // Upserts a search result by place_id (fresh phone and hours each search) and returns its id.
   savePlace(p: PlaceHit): Promise<string>;
   setCity(userId: string, city: string): Promise<void>;
+  // Their own name on the profile (set_profile_name, 0026): refused unless evidence is the
+  // words of one of their messages from the last day, and holds the name.
+  setProfileName(
+    userId: string,
+    name: string,
+    evidence: string,
+  ): Promise<{ ok: true; name: string; previous: string | null } | Refused>;
+  // Their saved addresses, by label, oldest first; and one saved, replaced or (null) removed.
+  addresses(userId: string): Promise<SavedAddress[]>;
+  saveAddress(
+    userId: string,
+    label: string,
+    address: string | null,
+    waMessageId: string | null,
+  ): Promise<{ ok: true; label?: string; address?: string; removed?: string } | Refused>;
+  // The Desk has never sent them anything: this is their first conversation.
+  firstContact(userId: string): Promise<boolean>;
   logRoute(log: RouteLog): Promise<void>;
   // One turn per user at a time, and a burst of messages is one turn (0006).
   claimTurn(userId: string, waMessageId: string, ttlS: number): Promise<TurnClaim>;
@@ -614,9 +631,15 @@ export class DbChatStore implements ChatStore {
 
   async place(businessId: string): Promise<Place> {
     const { data, error } = await this.db.from("businesses")
-      .select("name, address, city, source").eq("id", businessId).single();
+      .select("name, address, area, city, source").eq("id", businessId).single();
     if (error) throw error;
-    return { name: data.name, address: data.address, city: data.city, webNumber: data.source === "serper" };
+    return {
+      name: data.name,
+      address: data.address,
+      area: data.area,
+      city: data.city,
+      webNumber: data.source === "serper",
+    };
   }
 
   async booking(bookingId: string): Promise<BookingSummary> {
@@ -843,6 +866,7 @@ export class DbChatStore implements ChatStore {
       place_id: p.placeId,
       name: p.name,
       address: p.address,
+      area: p.area,
       city: p.city,
       state: p.state ?? null,
       phone_e164: p.phone,
@@ -857,6 +881,35 @@ export class DbChatStore implements ChatStore {
   async setCity(userId: string, city: string): Promise<void> {
     const { error } = await this.db.from("users").update({ city }).eq("id", userId);
     if (error) throw error;
+  }
+
+  setProfileName(userId: string, name: string, evidence: string) {
+    return this.rpc<{ ok: true; name: string; previous: string | null } | Refused>("set_profile_name", {
+      p_user_id: userId,
+      p_name: name,
+      p_evidence: evidence,
+    });
+  }
+
+  async addresses(userId: string): Promise<SavedAddress[]> {
+    const { data, error } = await this.db.from("user_addresses").select("label, address")
+      .eq("user_id", userId).order("created_at");
+    if (error) throw error;
+    return data;
+  }
+
+  saveAddress(userId: string, label: string, address: string | null, waMessageId: string | null) {
+    return this.rpc<{ ok: true; label?: string; address?: string; removed?: string } | Refused>(
+      "save_address",
+      { p_user_id: userId, p_label: label, p_address: address, p_message_id: waMessageId },
+    );
+  }
+
+  async firstContact(userId: string): Promise<boolean> {
+    const { data, error } = await this.db.from("messages").select("id")
+      .eq("user_id", userId).eq("direction", "out").limit(1);
+    if (error) throw error;
+    return data.length === 0;
   }
 
   async touch(requestId: string, at: Date): Promise<void> {

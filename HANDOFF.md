@@ -3,6 +3,28 @@
 Checkpoint date: 5 November 2026 (India). Branch: **`imessage-linq`**.
 This checkpoint merges the conversation-quality work (b26af24, f97f939) with the local Linq line (call language, transcripts, never-silent reports), makes CI green, fixes what the evals exposed, and deploys it. **Deployed and mechanically green; conversational quality is improved but not yet accepted by the owner.**
 
+## 6 November: fix-directions card (uncommitted, not deployed)
+
+Built from the 6 Nov issues card (50-scenario eval plus the live plumber chat). The working tree on `imessage-linq` holds it; **nothing is committed, migrated on the hosted project, or deployed**. Migration **0026** is new.
+
+| # | Issue | What changed |
+|---|---|---|
+| 1 | Visits never asked address or job | New `visit` slot (Luna's reading: the business comes to them). With it, `missing()` requires `service_address` and `service_details`, and the plan-phase grounding returns incomplete without them. Saved addresses live in `user_addresses` (0026) under the user's labels; PROFILE lists them; `save_address` keeps one only after a reading finds they agreed; grounding accepts a saved address (source profile) only when it is the one the chat points at. |
+| 2 | How a business calls back | No inbound path (none exists). Every booking plan now states whether the number goes to the business ("in case they need to reach you" / "so they can't call you back"), and the plan checker rejects a draft that drops that. Luna answers "how will they call back" from those facts. |
+| 3 | "Saturday afternoon" forced a clock time | New `day_part` slot: when the user leaves the time to the business, the window is the part of day's usual span (afternoon 12–4 pm), the plan shows that span, and the caller is told to agree one time inside it. Without the hand-off a part of day still asks for a time. |
+| 4 | Name re-asked after "book for me" | `set_name` tool writes the profile name once: a reading checks it's their own (not "book under Priya"), and `set_profile_name` (0026) refuses evidence that isn't one of their messages from the last day holding the name. Prompt: "for me" resolves to PROFILE or MEMORY before any question. |
+| 5 | Plans pasted Maps listings | Businesses keep `area` (0026); plans name the place as `name in area` (`spokenPlace`). Rows saved before 0026 have no area and keep the exact listing until their next search. |
+| 6 | Midnight date re-questioning | Grounding gets NOW and message times in IST with the weekday (it got UTC). |
+| 7 | "Couldn't save" | An unusable grounding verdict is read once more within the same deadline; the reason is logged (`intent_grounding unavailable`, no message content). Luna is told it's the Desk's trouble and never to ask the user to repeat. |
+| 8 | Scope drift | One scope paragraph: only phoning businesses; flights/online tickets, messaging or calling people they know, orders, payments are refused in one line, no errand, never an offer to call a person. |
+| 9 | "Nothing's been proposed" | `pause_request` now says the plan they saw is on hold, and Luna is told a plan on hold was still proposed. |
+| 10 | "I'm calling them now" while paused | **Deferred** (owner's 5 Nov decision). Untouched. |
+| 11 | Onboarding | `FIRST_CONTACT` in Luna's context when the Desk has never written to them: a one-line introduction, name and city asked, not a gate ("in a hurry? tell me now"), no promise of when a call happens. Existing users never see it. "Never written to" is looked up once per turn, only when the last day's chat has no Desk line, on a partial index (0026). |
+
+Verification: `deno task check` passes; 478 unit tests pass; pgTAP passes on an isolated `desk_verify_0026` database including the new [supabase/tests/profile_test.sql](supabase/tests/profile_test.sql) (18); the concurrency suite passes. A freshly created database lacks Supabase's stock `service_role` grants, so `limits_test` #31 and the concurrency suite fail there until those grants are added; they fail identically on 0025 alone. Fixture v3 adds 13 cases (home visits, names, first contact, scope, pause, small-hours date, place naming). Real-model eval (FakeChatStore, fixture search, no calls): the first run of the 13 new cases exposed an introduction to known users with an empty chat, `set_name` not being called, and "in your name (Priya)" for someone else's booking (an older readback bug). All three are fixed, and the eval now enables by-kind search as production does (0007). Final full run, judge off: **0/37 state failures**. One run is not a distribution. Seen but not fixed: plan wording sometimes uses the wrong language or script (an English edit answered in Hinglish; Roman Hinglish answered in Devanagari), and known gap 1 (saved city vs named area) still shows on laundry-pickup.
+
+Still to do: apply 0026 (hosted dry run in BEGIN/ROLLBACK first), redeploy, and the owner's acceptance of the new wording. The visit/day_part/name/address behaviour has been tried only through the fake store and the eval, never on a live chat.
+
 ## Read this first
 
 The goal is the **entire conversational experience**, not phrase patches: attentive, warm, simple and efficient across real phone errands in India (restaurants, salons, laundry, clinics). Understand context, ask only what's genuinely missing, keep uncertainty honest, remember useful preferences, and get natural approval for the exact action. The source review is [docs/reviews/README.md](docs/reviews/README.md), with conversation, runtime and dependency reviews.

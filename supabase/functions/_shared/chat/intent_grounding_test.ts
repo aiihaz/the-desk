@@ -28,11 +28,9 @@ const yes = (message: number | null, source = "user", field = "party_size") => (
 Deno.test("grounding accepts a supported change with user evidence, not a Desk assertion", async () => {
   equal((await createIntentGrounding(answer(yes(2)), "test")(base)).ok, true);
   for (const message of [1, 0, 3, null, 1.5]) {
-    equal(await createIntentGrounding(answer(yes(message)), "test")(base), {
-      ok: false,
-      reason: "grounding_unavailable",
-      clarification: "",
-    });
+    const r = await createIntentGrounding(answer(yes(message)), "test")(base);
+    equal(r.ok ? "ok" : r.reason, "grounding_unavailable");
+    equal(!r.ok && r.detail?.startsWith("evidence for party_size"), true);
   }
 });
 Deno.test("every changed field requires evidence, including operational service context", async () => {
@@ -124,7 +122,12 @@ Deno.test("malformed or failed checker output fails closed; an unchanged edit ne
   const down = createIntentGrounding(async () => {
     throw new Error("timeout");
   }, "test");
-  equal(await down(base), { ok: false, reason: "grounding_unavailable", clarification: "" });
+  equal(await down(base), {
+    ok: false,
+    reason: "grounding_unavailable",
+    clarification: "",
+    detail: "model call failed: timeout",
+  });
   equal(await down({ ...base, patch: { party_size: 2 } }), { ok: true, evidence: [] });
 });
 
@@ -190,4 +193,48 @@ Deno.test("null over a field never set is no change: nothing to ground, no model
   const input = { ...base, current: { party_size: 4 }, patch: { party_size: 4, service: null } };
   equal(await createIntentGrounding(create, "test")(input), { ok: true, evidence: [] });
   equal(asked, 0);
+});
+
+Deno.test("the checker reads the user's local day: NOW and message times are India time", async () => {
+  let content = "";
+  const create: CreateResponse = async (req) => {
+    content = String((req.input[0] as { content: string }).content);
+    return answer(yes(2))(req);
+  };
+  // 00:05 on Sat 7 Nov in India is still 6 Nov in UTC.
+  const late = new Date("2026-11-06T18:35:00Z");
+  await createIntentGrounding(create, "test")({ ...base, now: late });
+  const data = JSON.parse(content);
+  equal(data.NOW, "2026-11-07T00:05+05:30 (Sat 7 Nov 2026, 12:05 am, Asia/Kolkata)");
+  equal(data.MESSAGES[1].at, "2026-11-04T15:30+05:30");
+});
+
+Deno.test("an unusable verdict is read once more; a usable one is final", async () => {
+  const replies = [{ decision: "yes", evidence: [] }, yes(2)];
+  let asked = 0;
+  const create: CreateResponse = async (req) => {
+    asked++;
+    return answer(replies.shift())(req);
+  };
+  equal((await createIntentGrounding(create, "test")(base)).ok, true);
+  equal(asked, 2);
+  let unclear = 0;
+  const refuses: CreateResponse = async (req) => {
+    unclear++;
+    return answer({ decision: "unclear", clarification: "Four or two?", issue: "", evidence: [] })(req);
+  };
+  equal((await createIntentGrounding(refuses, "test")(base)).ok, false);
+  equal(unclear, 1);
+});
+
+Deno.test("a saved address can come from the profile; an address they never saved can't", async () => {
+  const addresses = [{ label: "home", address: "Flat 302, Prestige Lakeside, HSR Layout" }];
+  const fromProfile = (value: string) => ({
+    ...base,
+    patch: { service_address: value },
+    profile: { ...base.profile, addresses },
+  });
+  const verdict = yes(null, "profile", "service_address");
+  equal((await createIntentGrounding(answer(verdict), "test")(fromProfile(addresses[0].address))).ok, true);
+  equal((await createIntentGrounding(answer(verdict), "test")(fromProfile("12 MG Road"))).ok, false);
 });

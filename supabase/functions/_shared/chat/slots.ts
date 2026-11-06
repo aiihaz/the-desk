@@ -8,6 +8,10 @@ import type { State, Task } from "./states.ts";
 export type Fields = {
   window_start?: string;
   window_end?: string;
+  // The part of day they left to the business ("afternoon"), in their words, when the
+  // window is that part of day's usual span. The plan shows the span; the call settles a
+  // time inside it.
+  day_part?: string;
   exact_time?: string;
   tolerance_min?: number;
   party_size?: number;
@@ -16,6 +20,9 @@ export type Fields = {
   // Optional unless the grounded requested action needs them; never inferred defaults.
   service_address?: string;
   service_details?: string;
+  // Booking: the business comes to them (a plumber, a cleaner). Luna's reading of the
+  // request; it makes the address and the job part of what the plan needs.
+  visit?: boolean;
   customer_name?: string;
   max_price_rs?: number;
   // Set by code from limits when the plan is built, so the consent hash covers it.
@@ -43,12 +50,14 @@ const ALLOWED: Record<Task, (keyof Fields)[]> = {
   booking: [
     "window_start",
     "window_end",
+    "day_part",
     "exact_time",
     "tolerance_min",
     "party_size",
     "service",
     "service_address",
     "service_details",
+    "visit",
     "customer_name",
     "max_price_rs",
     "also_ask",
@@ -66,6 +75,7 @@ const ALLOWED: Record<Task, (keyof Fields)[]> = {
   reschedule: [
     "window_start",
     "window_end",
+    "day_part",
     "exact_time",
     "tolerance_min",
     "service_address",
@@ -145,6 +155,13 @@ export function checkSlots(
   } else if (typeof out.window_start === "string" && typeof out.window_end === "string") {
     if (current.exact_time !== undefined && !("exact_time" in out)) out.exact_time = null;
   }
+  // A new time without a part of day ("make it 3 pm", "between 2 and 3") replaces the
+  // old "afternoon" with it.
+  if (
+    ("window_start" in out || "window_end" in out) && !("day_part" in out) && current.day_part !== undefined
+  ) {
+    out.day_part = null;
+  }
 
   // A narrow window is usually one time, written wrong, but it can be what they asked for.
   // Nothing is rewritten: it's refused unless a reading of the chat finds it's their range.
@@ -173,6 +190,9 @@ export function checkSlots(
     errors.push(
       "service: the party size goes in party_size only; service is what's booked, or null for a table",
     );
+  }
+  if (m.day_part && !(m.window_start && m.window_end)) {
+    errors.push("day_part: only with window_start and window_end spanning that part of day");
   }
   if (m.window_start && m.window_end && Date.parse(m.window_start) >= Date.parse(m.window_end)) {
     errors.push("window_start: must be before window_end");
@@ -246,6 +266,7 @@ function checkValue(key: keyof Fields, v: unknown, now: Date): string | null {
     case "max_price_rs":
       return int(v, 0, 1_000_000);
     case "may_book":
+    case "visit":
     case "share_name":
     case "share_phone":
       return typeof v === "boolean" ? null : "true or false";
@@ -257,6 +278,8 @@ function checkValue(key: keyof Fields, v: unknown, now: Date): string | null {
       return text(v, 1000);
     case "customer_name":
       return text(v, 60);
+    case "day_part":
+      return text(v, 30);
     case "question":
     case "questions":
       return "set through the question edits";
@@ -299,6 +322,8 @@ export function missing(task: Task, f: Fields, has: Has): string[] {
       if (!f.party_size && !f.service) out.push("what to book (party_size or service)");
       if (!when) out.push("when (exact_time, or window_start and window_end)");
       if (has.mayBook !== false && !f.customer_name && !has.profileName) out.push("the name to book under");
+      if (f.visit && !f.service_address) out.push("where they want the visit (service_address)");
+      if (f.visit && !f.service_details) out.push("what the job is (service_details)");
       if (!has.business) out.push("which business");
       break;
     case "question":

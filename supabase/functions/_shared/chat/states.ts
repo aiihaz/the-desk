@@ -67,7 +67,9 @@ export type Tool =
   | "recall_errands"
   | "show_transcript"
   | "remember"
-  | "forget";
+  | "forget"
+  | "set_name"
+  | "save_address";
 
 // Reschedule and cancel a Desk booking (E4 design 2.7, 2.9). Off: Luna says once that it
 // can't change bookings, instead of collecting details for a request that can't finish.
@@ -135,5 +137,7 @@ export function toolsFor(state: State | null, paused = false, open: Open = {}): 
     "show_transcript",
     "remember",
     "forget",
+    "set_name",
+    "save_address",
   ];
 }

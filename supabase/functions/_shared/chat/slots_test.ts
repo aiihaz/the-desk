@@ -211,3 +211,54 @@ Deno.test("service context has its own bounded fields rather than overwriting th
   assertEquals(checkSlots("booking", {}, { service_details: "x".repeat(1001) }, now).ok, false);
   assertEquals(checkSlots("booking", {}, { service_address: "" }, now).ok, false);
 });
+
+Deno.test("a visit needs where and what before a plan; a booking that isn't one doesn't", () => {
+  const f = { service: "plumber visit", exact_time: "2026-10-24T15:00:00+05:30", customer_name: "Ihaz" };
+  const has = { business: true, booking: false };
+  assertEquals(missing("booking", f, has), []);
+  assertEquals(missing("booking", { ...f, visit: true }, has), [
+    "where they want the visit (service_address)",
+    "what the job is (service_details)",
+  ]);
+  assertEquals(
+    missing(
+      "booking",
+      { ...f, visit: true, service_address: "HSR Layout", service_details: "leaking tap" },
+      has,
+    ),
+    [],
+  );
+  assertEquals(checkSlots("booking", {}, { visit: "yes" }, now).ok, false);
+  assertEquals(checkSlots("question", {}, { visit: true }, now).ok, false);
+});
+
+Deno.test("a part of day left to the business rides on its window, and a later time replaces it", () => {
+  const afternoon = {
+    window_start: "2026-10-24T12:00:00+05:30",
+    window_end: "2026-10-24T16:00:00+05:30",
+    day_part: "afternoon",
+  };
+  assertEquals(checkSlots("booking", {}, afternoon, now), { ok: true, patch: afternoon });
+  // Never without the span it names.
+  assertEquals(checkSlots("booking", {}, { day_part: "afternoon" }, now).ok, false);
+  // "3 pm then": the exact time replaces the window and the part of day with it.
+  assertEquals(checkSlots("booking", afternoon, { exact_time: "2026-10-24T15:00:00+05:30" }, now), {
+    ok: true,
+    patch: { exact_time: "2026-10-24T15:00:00+05:30", window_start: null, window_end: null, day_part: null },
+  });
+  // A range they give is theirs, not "afternoon" any more.
+  assertEquals(
+    checkSlots("booking", afternoon, {
+      window_start: "2026-10-24T14:00:00+05:30",
+      window_end: "2026-10-24T15:00:00+05:30",
+    }, now),
+    {
+      ok: true,
+      patch: {
+        window_start: "2026-10-24T14:00:00+05:30",
+        window_end: "2026-10-24T15:00:00+05:30",
+        day_part: null,
+      },
+    },
+  );
+});

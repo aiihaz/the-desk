@@ -12,7 +12,11 @@ export type Profile = {
   phone: string | null;
   bookOnFirstCall: boolean;
   placeLabels: string[];
+  // Saved under their own labels (0026). A visit uses one only when the chat says which.
+  addresses?: SavedAddress[];
 };
+
+export type SavedAddress = { label: string; address: string };
 
 export type TaskView = {
   // Short id Luna names this errand by when there is more than one.
@@ -73,6 +77,9 @@ export function profileCard(p: Profile): string {
     `phone: ${p.phone ? maskPhone(p.phone) : "unknown"}`,
     `book_on_first_call: ${p.bookOnFirstCall ? "yes" : "no"}`,
     `saved places: ${p.placeLabels.length ? p.placeLabels.join(", ") : "none"}`,
+    `saved addresses: ${
+      p.addresses?.length ? p.addresses.map((a) => `${a.label}: ${a.address}`).join("; ") : "none"
+    }`,
   ].join("\n");
 }
 
@@ -233,6 +240,7 @@ function describeFields(f: Fields, now: Date): string[] {
   if (when) out.push(`time=${when}`);
   if (f.party_size) out.push(`party_size=${f.party_size}`);
   if (f.service) out.push(`service=${f.service}`);
+  if (f.visit) out.push("visit: the business comes to them");
   if (f.service_address) out.push(`service_address=${f.service_address}`);
   if (f.service_details) out.push(`service_details=${f.service_details}`);
   if (f.customer_name) out.push(`customer_name=${f.customer_name}`);
