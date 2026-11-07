@@ -29,7 +29,7 @@ insert into user_limits (user_id, key, value, updated_by) values
 select record_checks('c0000000-0000-0000-0000-000000000001',
   '[{"check":"report_check","outcome":"reject","category":"fidelity","reason":"unfaithful","detail":["a","b","c","d","e","f","g","h","i","j","k","l"]}]',
   'd6abcf8');
-select is((select cardinality(detail) from check_details d join check_events e on e.id = d.event_id
+select is((select cardinality(d.detail) from check_details d join check_events e on e.id = d.event_id
   where e.check_name = 'report_check'), 10, 'detail capped at 10 items');
 select is((select detail from check_events where check_name = 'report_check'), 'kept', 'event says the words are kept');
 select record_checks('c0000000-0000-0000-0000-000000000002',
