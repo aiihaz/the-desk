@@ -1,9 +1,9 @@
-import { type CheckLog, errorKind } from "./checks.ts";
+import type { CheckLog } from "./checks.ts";
 import type { CheckIntent, GroundingResult } from "./intent_grounding.ts";
 // One inbound turn through the deterministic part of the chat agent: code gate (L0),
 // then the daily cap, then Luna (L1-L3). Nothing here reads approval: Luna proposes
 // plans and reads the user's answer, approval.ts checks it, the database binds it.
-import type { PlanRenderer } from "./plan_writer.ts";
+import type { PlanChecker } from "./plan_writer.ts";
 import type { User } from "../store.ts";
 import type { Inbound, Outbound } from "../whatsapp.ts";
 import { classify, type Route } from "./gate.ts";
@@ -19,7 +19,6 @@ import {
 import { missing } from "./slots.ts";
 import type { ChatStore, Refused } from "./store.ts";
 import { WRONG_NUMBER } from "./tools.ts";
-import { isTurnInvalidated } from "./turn_control.ts";
 
 export type TurnDeps = {
   store: ChatStore;
@@ -106,7 +105,10 @@ export async function sendTemplate(deps: PromptDeps, user: User, key: string): P
 }
 
 export type PromptDeps = Pick<TurnDeps, "store" | "send" | "now" | "trace"> & {
-  renderPlan?: PlanRenderer;
+  // Checks the plan Luna wrote against the stored action before it can be approved.
+  checkPlan?: PlanChecker;
+  // Luna's plan drafts refused so far this turn: after two, the readback goes instead.
+  planRejections?: { count: number };
   checkIntent?: CheckIntent;
   // Where check results are recorded for diagnostics (checks.ts). Recording only.
   checks?: CheckLog;
@@ -170,14 +172,18 @@ const UNCHECKED_PLAN = "the plan couldn't be checked on our side just now. Don't
 // Luna asked to propose the plan (propose_plan). Refused while anything is missing or the
 // request is paused. First writes the code-only fields the consent must cover (may_book,
 // tolerance, the profile name to book under), so a later change to a limit can't change
-// what the user approved. note: Luna's own short line before the plan.
+// what the user approved. note: a short line before the readback, when the readback is
+// what goes out. text: the plan as Luna wrote it, which goes out once the check agrees.
 export async function proposePlan(
   deps: PromptDeps,
   user: User,
   requestId: string,
   note: string | null = null,
+  text: string | null = null,
 ): Promise<
-  { ok: true; promptId: string; text: string } | Refused | { ok: false; reason: string; missing: string[] }
+  | { ok: true; promptId: string; text: string }
+  | Refused
+  | { ok: false; reason: string; missing?: string[]; must_cover?: string }
 > {
   const { store } = deps;
   const now = deps.now?.() ?? new Date();
@@ -281,43 +287,62 @@ export async function proposePlan(
       p = cancelReadback({ booking: await store.booking(r.bookingId!), now });
       break;
   }
-  // Which words go out, and why: the writer's, or the readback and the reason (diagnostics).
+  // Which words go out, and why: Luna's, or the readback and the reason (diagnostics).
   const runId = crypto.randomUUID();
   let source: { outcome: "writer" | "readback"; reason: string } = {
     outcome: "readback",
-    reason: "no_writer",
+    reason: "no_checker",
   };
-  if (deps.renderPlan) {
-    const chat = await store.history(user.id, new Date(now.getTime() - 24 * 3_600_000), 24);
-    // The written wording, once checked, is what they approve. If it can't be written or
-    // isn't faithful in time, the plan goes out as the readback (the reference) instead of
-    // not at all: that wording is exact by construction.
-    let text: string | null = null;
-    try {
-      text = await deps.renderPlan(
-        {
-          task: r.task,
-          fields: r.fields,
-          reference: p.spec ?? p.text,
-          ...(place ? { place: { name: place.name, area: place.area ?? null, city: place.city } } : {}),
-          chat: chat.map(({ from, text }) => ({ from, text })),
-          language: info.language,
-          now: istIso(now),
-          timezone: "Asia/Kolkata",
-        },
-        deps.checks,
-        runId,
-      );
-      source = text
-        ? { outcome: "writer", reason: "checked" }
-        : { outcome: "readback", reason: "attempts_failed" };
-    } catch (e) {
-      if (isTurnInvalidated(e)) throw e;
-      deps.trace?.("plan_writer_failed", { error: String((e as Error)?.message ?? e) });
-      source = { outcome: "readback", reason: `writer_error:${errorKind(e)}` };
+  if (deps.checkPlan) {
+    const draft = text?.trim() ?? "";
+    if (!draft) {
+      return {
+        ok: false,
+        reason: "text: write the plan yourself, in this conversation's words, and propose_plan again",
+        must_cover: p.spec ?? p.text,
+      };
     }
-    if (!text) deps.trace?.("plan_readback_used", { request_id: requestId });
+    const chat = await store.history(user.id, new Date(now.getTime() - 24 * 3_600_000), 24);
+    const tried = deps.planRejections?.count ?? 0;
+    const v = await deps.checkPlan(
+      {
+        task: r.task,
+        fields: r.fields,
+        reference: p.spec ?? p.text,
+        ...(place ? { place: { name: place.name, area: place.area ?? null, city: place.city } } : {}),
+        chat: chat.map(({ from, text }) => ({ from, text })),
+        language: info.language,
+        now: istIso(now),
+        timezone: "Asia/Kolkata",
+      },
+      draft,
+      deps.checks,
+      runId,
+      tried + 1,
+    );
     await store.assertTurn?.();
+    if (v.ok) {
+      p = { ...p, text: draft, message: { kind: "text", body: draft } };
+      source = { outcome: "writer", reason: "checked" };
+    } else if ("problems" in v) {
+      if (deps.planRejections) deps.planRejections.count = tried + 1;
+      // Luna fixes its own words; a second refusal this turn sends the exact readback.
+      if (tried + 1 < 2) {
+        return {
+          ok: false,
+          reason: `the plan doesn't match what the call will do: ${
+            v.problems.join("; ")
+          }. Fix it and propose_plan again`,
+          must_cover: p.spec ?? p.text,
+        };
+      }
+      source = { outcome: "readback", reason: "rejected_twice" };
+    } else {
+      source = { outcome: "readback", reason: `checker_${v.unusable}` };
+    }
+    if (source.outcome === "readback") {
+      deps.trace?.("plan_readback_used", { request_id: requestId, why: source.reason });
+    }
     const current = await store.request(requestId);
     if (current.version !== r.version || current.pausedAt) {
       deps.checks?.record({
@@ -327,9 +352,8 @@ export async function proposePlan(
         run_id: runId,
         request_id: requestId,
       });
-      return { ok: false, reason: "the plan changed while writing; read the current request again" };
+      return { ok: false, reason: "the plan changed while it was checked; read the current request again" };
     }
-    if (text) p = { ...p, text, message: { kind: "text", body: text } };
   }
   const sent = await sendPrompt(deps, user, requestId, p);
   deps.checks?.record({

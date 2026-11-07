@@ -1,4 +1,4 @@
-import { createPlanWriter } from "./chat/plan_writer.ts";
+import { createPlanChecker } from "./chat/plan_writer.ts";
 import { createIntentGrounding } from "./chat/intent_grounding.ts";
 // Shared production runtime: both channels use the same recovered, fenced chat agent.
 import { DbCallStore } from "./call_store.ts";
@@ -107,7 +107,7 @@ export function createAgentRuntime(channel: MessagingChannel = "whatsapp") {
         return runLuna(
           {
             ...luna,
-            renderPlan: createPlanWriter(
+            checkPlan: createPlanChecker(
               luna.create,
               (await scoped.limitText("luna_model", user.id)) ?? "gpt-6-luna",
             ),

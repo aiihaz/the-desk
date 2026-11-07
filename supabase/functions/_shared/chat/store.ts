@@ -44,6 +44,15 @@ export type Memory = {
 };
 
 export type BookedCity = { city: string; at: Date };
+// A call the Desk made to a business for this user, as code recorded it: when, what kind,
+// how the call itself ended, how its errand ended, and any booking it made.
+export type PastCall = {
+  at: Date;
+  kind: string;
+  call: string;
+  errand: string | null;
+  booking: string | null;
+};
 // How far back past bookings count as where someone has been lately.
 export const BOOKED_DAYS = 90;
 
@@ -258,6 +267,8 @@ export interface ChatStore {
     version: string,
     waMessageId: string | null,
   ): Promise<void>;
+  // Their past calls to each of these businesses, newest first, up to three each.
+  pastCalls(userId: string, businessIds: string[]): Promise<Map<string, PastCall[]>>;
   // Where their Desk bookings of the last BOOKED_DAYS days were, newest first (up to 20;
   // bookings at a place with no city left out).
   bookedCities(userId: string, now: Date): Promise<BookedCity[]>;
@@ -906,6 +917,33 @@ export class DbChatStore implements ChatStore {
       p_wa_message_id: waMessageId,
     });
     if (error) throw error;
+  }
+
+  async pastCalls(userId: string, businessIds: string[]): Promise<Map<string, PastCall[]>> {
+    const out = new Map<string, PastCall[]>();
+    if (!businessIds.length) return out;
+    const { data, error } = await this.db.from("calls")
+      .select(
+        "business_id, created_at, kind, status, requests!calls_request_id_fkey(state, end_reason), " +
+          "bookings!bookings_call_id_fkey(status)",
+      )
+      .eq("user_id", userId).in("business_id", businessIds)
+      .order("created_at", { ascending: false }).limit(30);
+    if (error) throw error;
+    for (const c of data as Row[]) {
+      const list = out.get(c.business_id) ?? [];
+      if (list.length >= 3) continue;
+      const r = c.requests;
+      list.push({
+        at: new Date(c.created_at),
+        kind: c.kind,
+        call: c.status,
+        errand: r ? [r.state, r.end_reason].filter(Boolean).join(": ") : null,
+        booking: Array.isArray(c.bookings) ? c.bookings[0]?.status ?? null : c.bookings?.status ?? null,
+      });
+      out.set(c.business_id, list);
+    }
+    return out;
   }
 
   async bookedCities(userId: string, now: Date): Promise<BookedCity[]> {

@@ -125,6 +125,19 @@ export function fmtDayFull(d: Date, now: Date): string {
 // With full, the day carries its date: "tomorrow (Sun 25 Oct), 7:30–8:30 pm".
 export function fmtWhen(f: Fields, now: Date, full = false): string {
   const day = full ? fmtDayFull : fmtDay;
+  // Left to the business: the day, and only the limits they gave.
+  if (f.time_open && f.window_start && f.window_end) {
+    const a = new Date(f.window_start);
+    const b = new Date(f.window_end);
+    const limit = f.time_given === "both"
+      ? ` between ${fmtTime(a)} and ${fmtTime(b)}`
+      : f.time_given === "start"
+      ? ` from ${fmtTime(a)}`
+      : f.time_given === "end"
+      ? ` until ${fmtTime(b)}`
+      : "";
+    return `${day(a, now)}, at a time that suits them${limit}`;
+  }
   if (f.window_start && f.window_end) {
     const a = new Date(f.window_start);
     const b = new Date(f.window_end);

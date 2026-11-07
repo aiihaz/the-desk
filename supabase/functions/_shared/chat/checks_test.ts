@@ -6,7 +6,7 @@ import type { User } from "../store.ts";
 import type { Outbound } from "../whatsapp.ts";
 import { CheckLog, code, errorKind, replyRule } from "./checks.ts";
 import { type LunaDeps, runLuna } from "./luna.ts";
-import { createPlanWriter } from "./plan_writer.ts";
+import { createPlanChecker } from "./plan_writer.ts";
 import { FakeChatStore } from "./test_chat_store.ts";
 
 const user: User = { id: "u1", waId: "919812345678", blocked: false };
@@ -64,14 +64,11 @@ const call = (name: string, args: unknown, id = name): Item => ({
 });
 const out = (items: Item[]): ResponseOut => ({ output: items, usage: { input_tokens: 0, output_tokens: 0 } });
 
-Deno.test("the plan writer records each check attempt; the words it returns are unchanged", async () => {
-  const steps = [
-    out([call("plan", { text: "I'll call Paragon for 4 at 8 pm tonight. Go ahead?" })]),
-    out([call("plan_verdict", { faithful: false, problems: ["drops the table size"] })]),
-    out([call("plan", { text: "I'll call Paragon for a table for 4 at 8 pm tonight. Go ahead?" })]),
-    out([call("plan_verdict", { faithful: true, problems: [] })]),
-  ];
-  const write = createPlanWriter(async () => steps.shift()!, "m");
+Deno.test("the plan check records its verdict; what it decides is unchanged", async () => {
+  const check = createPlanChecker(
+    async () => out([call("plan_verdict", { faithful: false, problems: ["drops the table size"] })]),
+    "m",
+  );
   const log = new CheckLog();
   const input = {
     task: "booking",
@@ -82,18 +79,19 @@ Deno.test("the plan writer records each check attempt; the words it returns are 
     now: "",
     timezone: "",
   };
-  const text = await write(input, log, "00000000-0000-4000-8000-000000000001");
-  assertEquals(text, "I'll call Paragon for a table for 4 at 8 pm tonight. Go ahead?");
+  const v = await check(
+    input,
+    "I'll call Paragon at 8 pm tonight. Go ahead?",
+    log,
+    "00000000-0000-4000-8000-000000000001",
+    1,
+  );
+  assertEquals(v, { ok: false, problems: ["drops the table size"] });
   assertEquals(log.drain().map((e) => [e.check, e.attempt, e.outcome, e.reason, e.detail]), [
     ["plan_check", 1, "reject", "unfaithful", ["drops the table size"]],
-    ["plan_check", 2, "pass", undefined, undefined],
   ]);
-  // Without a log it behaves exactly as before.
-  steps.push(
-    out([call("plan", { text: "Go ahead?" })]),
-    out([call("plan_verdict", { faithful: true, problems: [] })]),
-  );
-  assertEquals(await write(input), "Go ahead?");
+  // Without a log it decides the same.
+  assertEquals(await check(input, "I'll call Paragon at 8 pm tonight. Go ahead?"), v);
 });
 
 function luna(steps: Item[][]) {

@@ -1,4 +1,4 @@
-import { createPlanWriter } from "../supabase/functions/_shared/chat/plan_writer.ts";
+import { createPlanChecker } from "../supabase/functions/_shared/chat/plan_writer.ts";
 import { createIntentGrounding } from "../supabase/functions/_shared/chat/intent_grounding.ts";
 // Local chat and workflow bench. WhatsApp is simulated; phone calls are opt-in.
 // Runs the real chat code (gate, state machine, read-backs) against the local
@@ -234,7 +234,7 @@ const toolDeps = {
   create: responsesClient(openaiKey ?? ""),
   ...(openaiKey
     ? {
-      renderPlan: createPlanWriter(responsesClient(openaiKey)),
+      checkPlan: createPlanChecker(responsesClient(openaiKey)),
       checkIntent: createIntentGrounding(responsesClient(openaiKey), "gpt-6-luna"),
     }
     : {}),
@@ -330,7 +330,7 @@ const turnDeps: AgentDeps = {
     await runLuna(
       {
         ...lunaDeps,
-        renderPlan: createPlanWriter(
+        checkPlan: createPlanChecker(
           lunaDeps.create,
           (await scoped.limitText("luna_model", user.id)) ?? "gpt-6-luna",
         ),

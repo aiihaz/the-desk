@@ -180,6 +180,8 @@ export function approvedText(c: BookingCheck): string {
     );
   } else if (typeof f.exact_time === "string") {
     lines.push(`Time: ${f.exact_time}`);
+  } else if (f.time_open === true) {
+    lines.push(`Time: any time the business offered, between ${f.window_start} and ${f.window_end}`);
   } else {
     lines.push(`Time: between ${f.window_start} and ${f.window_end}`);
   }

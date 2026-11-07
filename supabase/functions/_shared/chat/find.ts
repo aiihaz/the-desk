@@ -64,13 +64,32 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
     hits: callable.map((p) => [p.name, p.area, p.city].filter(Boolean).join(", ")),
   });
 
+  const ids: string[] = [];
+  for (const p of callable) ids.push(await deps.store.savePlace(p));
+  // What happened when the Desk called each before, for Luna to weigh. Nothing is left out
+  // for it: a call that went wrong is context, not a verdict on the place.
+  const history = await deps.store.pastCalls(user.id, ids);
+  const day = (d: Date) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", day: "numeric", month: "short" }).format(d);
   const matches = [];
-  for (const p of callable) {
-    const id = await deps.store.savePlace(p);
+  for (const [i, p] of callable.entries()) {
+    const id = ids[i];
+    const past = history.get(id) ?? [];
     matches.push({
       business_id: id,
       ...(await deps.store.wrongNumberFor(user.id, id)
         ? { number_reached_someone_else_before: "the Desk won't call it; not one to offer" }
+        : {}),
+      ...(past.length
+        ? {
+          past_calls: past.map((c) => ({
+            on: day(c.at),
+            kind: c.kind,
+            call: c.call,
+            ...(c.errand ? { errand: c.errand } : {}),
+            ...(c.booking ? { booking: c.booking } : {}),
+          })),
+        }
         : {}),
       name: cleanField(p.name, 80),
       area: cleanField(p.area, 60),

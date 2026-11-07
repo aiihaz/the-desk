@@ -121,11 +121,27 @@ function resolvedWhen(f: Record<string, unknown>, o: CallInputs["option"]): stri
     ? f.exact_time
     : null;
   if (t) return `${fullDay(t)}, ${clock(t)} IST`;
+  if (f.time_open === true && typeof f.window_start === "string" && typeof f.window_end === "string") {
+    return `${fullDay(f.window_start)}, any time that suits the business${openLimit(f)}`;
+  }
   if (typeof f.window_start === "string" && typeof f.window_end === "string") {
     const part = typeof f.day_part === "string" ? ` (${f.day_part})` : "";
     return `${fullDay(f.window_start)}${part}, ${clock(f.window_start)} to ${clock(f.window_end)} IST`;
   }
   return null;
+}
+
+// The limits the customer gave on a time left to the business, and nothing they didn't.
+function openLimit(f: Record<string, unknown>): string {
+  const a = typeof f.window_start === "string" ? `${clock(f.window_start)} IST` : "";
+  const b = typeof f.window_end === "string" ? `${clock(f.window_end)} IST` : "";
+  return f.time_given === "both"
+    ? `, between ${a} and ${b}`
+    : f.time_given === "start"
+    ? `, at or after ${a}`
+    : f.time_given === "end"
+    ? `, by ${b}`
+    : "";
 }
 
 // Never agreed on a call. The customer decides, with everything the business said.
@@ -178,6 +194,9 @@ function resolvedErrand(kind: CallKind, x: CallInputs, v: Vars, now: Date): Vars
     ? (f.tolerance_min
       ? `Up to ${f.tolerance_min} minutes either way of the time.`
       : "Nothing: that exact time.")
+    : f.time_open === true
+    ? `They left the time to the business: ask what time suits them that day${openLimit(f)}. Agree one ` +
+      "time they offer, and say it back."
     : typeof f.day_part === "string"
     ? `Any time inside the window: they asked for ${f.day_part} and left the time to the business. Agree one ` +
       "time they offer inside it, and say it back."

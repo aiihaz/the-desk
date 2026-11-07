@@ -386,20 +386,20 @@ Deno.test("a second errand can wait behind the current one; both are kept", asyn
   assertEquals(sent.length, 1);
 });
 
-Deno.test("propose_plan sends the code-built plan, and a reply in the same step is dropped", async () => {
+Deno.test("propose_plan sends Luna's own checked plan, and a reply in the same step is dropped", async () => {
+  const words = "Found it. I'll call Paragon for a table for 4 tonight at 8 pm, in your name. Go ahead?";
   const { store, sent, deps } = setup([[
-    call("propose_plan", { note: "Found it." }),
+    call("propose_plan", { text: words }),
     call("reply", { text: "Shall I book it?" }),
   ]]);
+  deps.checkPlan = async () => ({ ok: true });
   store.req = {
     ...awaitingYes({ party_size: 4, exact_time: "2026-10-23T20:00:00+05:30" }),
     state: "confirming",
   };
   await runLuna(deps, user, now);
-  assertEquals(sent.length, 1);
-  const body = (sent[0] as { body: string }).body;
-  assertEquals(body.startsWith("Found it.\n\nI'll call Paragon"), true);
-  assertEquals(body.endsWith("Shall I go ahead?"), true);
+  assertEquals(sent, [{ kind: "text", body: words }]);
+  assertEquals(store.prompt?.text, words);
 });
 
 Deno.test("pause: the plan closes, and the tools offer resume", async () => {

@@ -228,36 +228,59 @@ Deno.test("an incomplete grounded brief never opens or sends an approval plan", 
   assertEquals(store.slotWrites, []);
 });
 
-Deno.test("checked wording is what they approve; a writer that fails or isn't faithful leaves the readback", async () => {
+Deno.test("Luna's checked words are what they approve; refused words go back; the readback only as a fallback", async () => {
   const readback = setup();
   readback.store.req = { ...tonight };
   await proposePlan(readback.deps, user, "r1");
   const reference = readback.store.prompt!.text;
+  const words = "Paragon for 4 tonight at 8, in your name. Want me to go ahead?";
 
-  const written = setup();
-  written.store.req = { ...tonight };
-  await proposePlan(
-    { ...written.deps, renderPlan: async () => "Paragon, 4 people tonight? Shall I?" },
+  const passed = setup();
+  passed.store.req = { ...tonight };
+  await proposePlan({ ...passed.deps, checkPlan: async () => ({ ok: true }) }, user, "r1", null, words);
+  assertEquals(passed.store.prompt!.text, words);
+  assertEquals((passed.sent[0] as { body: string }).body, words);
+
+  // Refused once: nothing goes out, and Luna gets the problems and what the plan must cover.
+  const refused = setup();
+  refused.store.req = { ...tonight };
+  const rejections = { count: 0 };
+  const no = async () => ({ ok: false as const, problems: ["drops the time"] });
+  const res = await proposePlan(
+    { ...refused.deps, checkPlan: no, planRejections: rejections },
     user,
     "r1",
+    null,
+    words,
   );
-  assertEquals(written.store.prompt!.text, "Paragon, 4 people tonight? Shall I?");
+  assertEquals(res.ok, false);
+  assertEquals("must_cover" in res && res.must_cover?.length ? true : false, true);
+  assertEquals(refused.sent, []);
+  // A second refusal in the same turn sends the readback, exact by construction.
+  await proposePlan({ ...refused.deps, checkPlan: no, planRejections: rejections }, user, "r1", null, words);
+  assertEquals(refused.store.prompt!.text, reference);
 
-  for (
-    const renderPlan of [async () => null, async () => {
-      throw new Error("The operation was aborted due to timeout");
-    }]
-  ) {
-    const t = setup();
-    t.store.req = { ...tonight };
-    const res = await proposePlan({ ...t.deps, renderPlan }, user, "r1");
-    assertEquals(res.ok, true);
-    assertEquals(t.store.prompt!.text, reference);
-    assertEquals((t.sent[0] as { body: string }).body, reference);
-  }
+  // A check that can't be read sends the readback, never the unchecked words.
+  const unread = setup();
+  unread.store.req = { ...tonight };
+  await proposePlan(
+    { ...unread.deps, checkPlan: async () => ({ ok: false as const, unusable: "no_verdict" }) },
+    user,
+    "r1",
+    null,
+    words,
+  );
+  assertEquals(unread.store.prompt!.text, reference);
+
+  // With a check in place, a plan with no words of Luna's isn't sent.
+  const empty = setup();
+  empty.store.req = { ...tonight };
+  const none = await proposePlan({ ...empty.deps, checkPlan: async () => ({ ok: true }) }, user, "r1");
+  assertEquals(none.ok, false);
+  assertEquals(empty.sent, []);
 });
 
-Deno.test("a turn lost while the plan is written sends nothing", async () => {
+Deno.test("a turn lost while the plan is checked sends nothing", async () => {
   const t = setup();
   t.store.req = { ...tonight };
   let thrown: unknown;
@@ -265,12 +288,14 @@ Deno.test("a turn lost while the plan is written sends nothing", async () => {
     await proposePlan(
       {
         ...t.deps,
-        renderPlan: async () => {
+        checkPlan: async () => {
           throw new Error("turn superseded");
         },
       },
       user,
       "r1",
+      null,
+      "Paragon for 4 tonight at 8. Go ahead?",
     );
   } catch (e) {
     thrown = e;

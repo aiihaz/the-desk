@@ -2,7 +2,7 @@
 // deno run --allow-read --allow-write=/tmp --allow-env --allow-net=api.openai.com dev/conversation_eval.ts
 // Key: OPENAI_API_KEY or ignored supabase/functions/.env. Output defaults to /tmp.
 // These transcripts support human review; they are not production qualification.
-import { createPlanWriter } from "../supabase/functions/_shared/chat/plan_writer.ts";
+import { createPlanChecker } from "../supabase/functions/_shared/chat/plan_writer.ts";
 import { createIntentGrounding } from "../supabase/functions/_shared/chat/intent_grounding.ts";
 import { FakeChatStore } from "../supabase/functions/_shared/chat/test_chat_store.ts";
 import { runLuna, SYSTEM } from "../supabase/functions/_shared/chat/luna.ts";
@@ -280,7 +280,7 @@ for (
           store,
           now: () => now,
           create: wrapped,
-          renderPlan: createPlanWriter(wrapped, Deno.env.get("DESK_EVAL_MODEL") ?? "gpt-6-luna"),
+          checkPlan: createPlanChecker(wrapped, Deno.env.get("DESK_EVAL_MODEL") ?? "gpt-6-luna"),
           checkIntent: createIntentGrounding(wrapped, Deno.env.get("DESK_EVAL_MODEL") ?? "gpt-6-luna"),
           send: async (_u, message: Outbound) => {
             const id = `output-${++sent}`;

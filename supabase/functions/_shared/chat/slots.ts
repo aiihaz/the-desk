@@ -13,6 +13,12 @@ export type Fields = {
   // time inside it.
   day_part?: string;
   exact_time?: string;
+  // They left the time to the business ("anything works", "any time after 2"): the call asks
+  // what suits them. The window still holds both ends, so every later step reads one shape:
+  // an end they didn't give is that day's own bound, and time_given (set by code) says which
+  // ends are theirs, so the plan and the call never present a day bound as their limit.
+  time_open?: boolean;
+  time_given?: "start" | "end" | "both" | "none";
   tolerance_min?: number;
   party_size?: number;
   service?: string;
@@ -52,6 +58,7 @@ const ALLOWED: Record<Task, (keyof Fields)[]> = {
     "window_end",
     "day_part",
     "exact_time",
+    "time_open",
     "tolerance_min",
     "party_size",
     "service",
@@ -77,6 +84,7 @@ const ALLOWED: Record<Task, (keyof Fields)[]> = {
     "window_end",
     "day_part",
     "exact_time",
+    "time_open",
     "tolerance_min",
     "service_address",
     "service_details",
@@ -115,6 +123,14 @@ export function checkSlots(
   const errors: string[] = [];
   const allowed = ALLOWED[task];
   const out: Record<string, unknown> = {};
+  // day: the date a time left to the business is on. Read here, never stored on its own.
+  const { day, ...rest } = patch;
+  patch = rest;
+  if (day !== undefined && (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day))) {
+    errors.push("day: the date as YYYY-MM-DD");
+  }
+  if ("time_given" in patch) errors.push("time_given: set by code from the ends they gave");
+  delete patch.time_given;
 
   for (const [key, value] of Object.entries(patch)) {
     if (!allowed.includes(key as keyof Fields)) {
@@ -146,6 +162,39 @@ export function checkSlots(
   }
   if (errors.length) return { ok: false, errors };
 
+  // A time left to the business: the ends they gave, and the day's own bounds for the rest.
+  if (out.time_open === true) {
+    const given = (k: "window_start" | "window_end") => typeof out[k] === "string" ? out[k] as string : null;
+    const start = given("window_start");
+    const end = given("window_end");
+    const on = typeof day === "string" ? day : istDate(start ?? end);
+    if (!on) errors.push("day: the date they mean, as YYYY-MM-DD, when they gave no time");
+    else if ((start && istDate(start) !== on) || (end && istDate(end) !== on)) {
+      errors.push("window_start/window_end: on the day given");
+    } else if (out.day_part !== undefined && out.day_part !== null) {
+      errors.push("day_part: not with time_open; a part of day has its own window");
+    } else if (out.exact_time !== undefined && out.exact_time !== null) {
+      errors.push("exact_time: not with time_open");
+    } else {
+      out.window_start = start ?? `${on}T00:00:00+05:30`;
+      out.window_end = end ?? `${on}T23:59:00+05:30`;
+      out.time_given = start && end ? "both" : start ? "start" : end ? "end" : "none";
+      if (Date.parse(out.window_end as string) <= now.getTime()) errors.push("day: must be today or later");
+      if (current.exact_time !== undefined) out.exact_time = null;
+      if (current.day_part !== undefined) out.day_part = null;
+      if (current.tolerance_min !== undefined) out.tolerance_min = null;
+    }
+    if (errors.length) return { ok: false, errors };
+  } else if (
+    out.time_open === null || (current.time_open && ("window_start" in out || "exact_time" in out))
+  ) {
+    // A time they gave, or a range with both ends, replaces "anything works".
+    out.time_open = null;
+    out.time_given = null;
+  } else if (day !== undefined) {
+    return { ok: false, errors: ["day: only with time_open"] };
+  }
+
   // A new exact time replaces a window, and a new window an exact time: "make it 9pm"
   // moves the booking, it doesn't have to fit inside the old "around 8".
   if (typeof out.exact_time === "string" && !("window_start" in out) && !("window_end" in out)) {
@@ -166,7 +215,7 @@ export function checkSlots(
   // A narrow window is usually one time, written wrong, but it can be what they asked for.
   // Nothing is rewritten: it's refused unless a reading of the chat finds it's their range.
   let narrow = false;
-  if (("window_start" in out || "window_end" in out) && !ops.windowConfirmed) {
+  if (("window_start" in out || "window_end" in out) && !ops.windowConfirmed && out.time_open !== true) {
     const start = (out.window_start ?? current.window_start) as string | null | undefined;
     const end = (out.window_end ?? current.window_end) as string | null | undefined;
     const span = start && end ? Date.parse(end) - Date.parse(start) : 0;
@@ -206,6 +255,12 @@ export function checkSlots(
   return errors.length
     ? { ok: false, errors, narrow: narrow && errors.length === 1 }
     : { ok: true, patch: out };
+}
+
+// The date in India of an ISO time, as YYYY-MM-DD.
+function istDate(iso: string | null): string | null {
+  if (!iso || Number.isNaN(Date.parse(iso))) return null;
+  return new Date(Date.parse(iso) + 330 * 60_000).toISOString().slice(0, 10);
 }
 
 export function currentQuestions(f: Fields): string[] {
@@ -265,6 +320,10 @@ function checkValue(key: keyof Fields, v: unknown, now: Date): string | null {
       return int(v, 0, 120);
     case "max_price_rs":
       return int(v, 0, 1_000_000);
+    case "time_open":
+      return v === true ? null : "true, or null to clear";
+    case "time_given":
+      return "set by code";
     case "may_book":
     case "visit":
     case "share_name":
