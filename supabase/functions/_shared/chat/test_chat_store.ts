@@ -145,6 +145,10 @@ export class FakeChatStore implements ChatStore {
   async setCity(_u: string, city: string) {
     this.city = city;
   }
+  bookedIn: { city: string; at: Date }[] = [];
+  async bookedCities() {
+    return this.bookedIn;
+  }
   // As set_profile_name (0026): the evidence must be a user line holding the name. The
   // last-day window is the database's (profile_test.sql); tests here run on fixed clocks.
   async setProfileName(_u: string, name: string, evidence: string) {

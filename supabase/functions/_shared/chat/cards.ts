@@ -3,7 +3,7 @@
 import { fmtFull, fmtWhen, maskPhone, type Place, placeName } from "./readback.ts";
 import { currentQuestions, type Fields, type Has, missing } from "./slots.ts";
 import { type Open, type State, type Task, toolsFor } from "./states.ts";
-import type { HeldBooking, Memory, OpenDecision } from "./store.ts";
+import { BOOKED_DAYS, type BookedCity, type HeldBooking, type Memory, type OpenDecision } from "./store.ts";
 
 export type Profile = {
   name: string | null;
@@ -14,9 +14,29 @@ export type Profile = {
   placeLabels: string[];
   // Saved under their own labels (0026). A visit uses one only when the chat says which.
   addresses?: SavedAddress[];
+  // Where their recent Desk bookings were, newest first: facts Luna weighs, never a saved city.
+  bookedIn?: BookedCity[];
 };
 
 export type SavedAddress = { label: string; address: string };
+
+// "Bengaluru ×5 (latest 2 Nov), Kochi ×1 (latest 20 Oct)": counts and the latest date per
+// city, most booked first. What it says about where they are now is Luna's to read.
+export function bookedLine(booked: BookedCity[]): string {
+  const by = new Map<string, { city: string; n: number; latest: Date }>();
+  for (const b of booked) {
+    const key = b.city.trim().toLowerCase();
+    const c = by.get(key);
+    if (c) {
+      c.n++;
+      if (b.at > c.latest) c.latest = b.at;
+    } else by.set(key, { city: b.city.trim(), n: 1, latest: b.at });
+  }
+  const day = (d: Date) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", day: "numeric", month: "short" }).format(d);
+  return [...by.values()].sort((a, b) => b.n - a.n || +b.latest - +a.latest)
+    .map((c) => `${c.city} ×${c.n} (latest ${day(c.latest)})`).join(", ");
+}
 
 export type TaskView = {
   // Short id Luna names this errand by when there is more than one.
@@ -74,6 +94,7 @@ export function profileCard(p: Profile): string {
     `name: ${p.name ?? "unknown"}`,
     `language: ${p.language}`,
     `home city: ${p.city ?? "unknown"}`,
+    `bookings, last ${BOOKED_DAYS} days: ${p.bookedIn?.length ? bookedLine(p.bookedIn) : "none"}`,
     `phone: ${p.phone ? maskPhone(p.phone) : "unknown"}`,
     `book_on_first_call: ${p.bookOnFirstCall ? "yes" : "no"}`,
     `saved places: ${p.placeLabels.length ? p.placeLabels.join(", ") : "none"}`,

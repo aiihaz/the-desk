@@ -13,7 +13,7 @@ Deno.test("profile card", () => {
       bookOnFirstCall: true,
       placeLabels: ["paragon"],
     }),
-    "PROFILE\nname: Ihaz\nlanguage: en-IN\nhome city: Kozhikode\nphone: +91 98…\nbook_on_first_call: yes\nsaved places: paragon\nsaved addresses: none",
+    "PROFILE\nname: Ihaz\nlanguage: en-IN\nhome city: Kozhikode\nbookings, last 90 days: none\nphone: +91 98…\nbook_on_first_call: yes\nsaved places: paragon\nsaved addresses: none",
   );
 });
 
@@ -129,4 +129,31 @@ Deno.test("saved service context remains visible on later turns", () => {
   }, now);
   assertEquals(card.includes("service_address=Flat 4, Cedar House"), true);
   assertEquals(card.includes("service_details=Two blazers; needed by Friday"), true);
+});
+
+Deno.test("recent bookings are shown as facts per city, most booked first, never as a home city", () => {
+  const base = {
+    name: "Ihaz",
+    language: "en-IN",
+    city: null,
+    phone: null,
+    bookOnFirstCall: false,
+    placeLabels: [],
+  };
+  const at = (d: string) => new Date(`2026-${d}T13:00:00+05:30`);
+  const lines = (bookedIn: { city: string; at: Date }[], city: string | null = null) =>
+    profileCard({ ...base, city, bookedIn }).split("\n").slice(3, 5);
+  assertEquals(lines([]), ["home city: unknown", "bookings, last 90 days: none"]);
+  // Five in Bengaluru and one in Kochi is a pattern for Luna to read, not a tie code drops.
+  const six = [
+    { city: "Kochi", at: at("11-03") },
+    ...["11-02", "10-28", "10-20", "10-11", "10-02"].map((d) => ({ city: "bengaluru", at: at(d) })),
+  ];
+  six[1].city = "Bengaluru";
+  assertEquals(lines(six)[1], "bookings, last 90 days: Bengaluru ×5 (latest 2 Nov), Kochi ×1 (latest 3 Nov)");
+  // A saved city that the bookings don't match is shown beside them, for Luna to notice.
+  assertEquals(lines(six, "Chennai"), [
+    "home city: Chennai",
+    "bookings, last 90 days: Bengaluru ×5 (latest 2 Nov), Kochi ×1 (latest 3 Nov)",
+  ]);
 });

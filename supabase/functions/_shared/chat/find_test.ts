@@ -58,15 +58,15 @@ Deno.test("the city is passed as Luna names it; the saved city fills in, and isn
   assertEquals(queries[1], "Navu, Kozhikode");
 });
 
-Deno.test("no city known: all of India; the first city named is saved", async () => {
+Deno.test("no city known: nothing is searched, and a city named for one search isn't saved", async () => {
   const { store, queries, deps } = setup();
   store.city = null;
   const r = await findBusiness(deps, user, { query: "navu", area: null, city: null, byKind: false });
-  assertEquals(queries, ["navu"]);
-  assertEquals(String(r.searched_in).startsWith("all of India"), true);
-  assertEquals(store.city, null);
+  assertEquals(r.ok, false);
+  assertEquals(queries, []);
   await findBusiness(deps, user, { query: "navu", area: null, city: "Bengaluru", byKind: false });
-  assertEquals(store.city, "Bengaluru");
+  assertEquals(queries, ["navu, Bengaluru"]);
+  assertEquals(store.city, null);
 });
 
 Deno.test("search by kind: allowed by the limit, listed unranked; refused when it is off (P12)", async () => {

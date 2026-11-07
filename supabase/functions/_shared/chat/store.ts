@@ -42,6 +42,10 @@ export type Memory = {
   source: "said" | "learned";
 };
 
+export type BookedCity = { city: string; at: Date };
+// How far back past bookings count as where someone has been lately.
+export const BOOKED_DAYS = 90;
+
 export type UserInfo = {
   name: string | null;
   phone: string | null;
@@ -246,6 +250,9 @@ export interface ChatStore {
   // Upserts a search result by place_id (fresh phone and hours each search) and returns its id.
   savePlace(p: PlaceHit): Promise<string>;
   setCity(userId: string, city: string): Promise<void>;
+  // Where their Desk bookings of the last BOOKED_DAYS days were, newest first (up to 20;
+  // bookings at a place with no city left out).
+  bookedCities(userId: string, now: Date): Promise<BookedCity[]>;
   // Their own name on the profile (set_profile_name, 0026): refused unless evidence is the
   // words of one of their messages from the last day, and holds the name.
   setProfileName(
@@ -881,6 +888,19 @@ export class DbChatStore implements ChatStore {
   async setCity(userId: string, city: string): Promise<void> {
     const { error } = await this.db.from("users").update({ city }).eq("id", userId);
     if (error) throw error;
+  }
+
+  async bookedCities(userId: string, now: Date): Promise<BookedCity[]> {
+    const since = new Date(now.getTime() - BOOKED_DAYS * 86_400_000);
+    // bookings and requests link both ways (bookings.request_id, requests.booking_id): name
+    // the booking's own request, as every other bookings query here does.
+    const { data, error } = await this.db.from("bookings")
+      .select("created_at, requests!bookings_request_id_fkey!inner(user_id, businesses(city))")
+      .eq("requests.user_id", userId).gte("created_at", since.toISOString())
+      .order("created_at", { ascending: false }).limit(20);
+    if (error) throw error;
+    return (data as Row[]).filter((b) => b.requests?.businesses?.city)
+      .map((b) => ({ city: b.requests.businesses.city, at: new Date(b.created_at) }));
   }
 
   setProfileName(userId: string, name: string, evidence: string) {

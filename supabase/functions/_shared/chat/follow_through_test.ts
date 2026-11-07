@@ -445,7 +445,7 @@ function jevReads(t: { store: FakeChatStore; deps: LunaDeps }, intent: string, p
 
 Deno.test("nothing needs saying: stay_quiet sends nothing and no fallback", async () => {
   const t = luna([[call("stay_quiet", { why: "just thanks" })]]);
-  jevReads(t, "greeting");
+  jevReads(t, "closing");
   t.store.lines = [{ from: "desk", text: "All done.", at: now }, { from: "user", text: "shukriya", at: now }];
   await runLuna(t.deps, user, now);
   assertEquals(t.sent, []);
@@ -459,14 +459,17 @@ const refused = async (setupFn: (s: FakeChatStore) => void) => {
   return t;
 };
 
-Deno.test("stay_quiet is refused when the router reads anything but small talk, in any language", async () => {
-  const t = luna([[call("stay_quiet", {})], [call("reply", { text: "Yes, I'm here." })]]);
-  jevReads(t, "status");
-  // No question mark, and not English: the reading doesn't depend on either.
-  t.store.lines = [{ from: "user", text: "നിങ്ങൾ അവിടെ ഉണ്ടോ", at: now }];
-  await runLuna(t.deps, user, now);
-  assertEquals(t.sent.length, 1);
-  assertEquals(JSON.parse(t.inputs[1].at(-1)!.output).reason, "their message needs an answer");
+// Whether a message needs an answer is Luna's reading (a question in any language is the
+// conversation eval's to check, question-in-malayalam). Code's rule is the same whatever the
+// router reads, and with no router at all: an outage or shadow setting changes nothing.
+Deno.test("the router's reading never decides silence: with nothing owed, stay_quiet stands however it reads", async () => {
+  for (const reads of ["status", "greeting", null]) {
+    const t = luna([[call("stay_quiet", { why: "nothing needed" })]]);
+    if (reads) jevReads(t, reads);
+    t.store.lines = [{ from: "desk", text: "All done.", at: now }, { from: "user", text: "നന്ദി", at: now }];
+    await runLuna(t.deps, user, now);
+    assertEquals(t.sent, [], `router read ${reads}`);
+  }
 });
 
 Deno.test("stay_quiet is refused while a plan is open", async () => {
@@ -509,7 +512,7 @@ Deno.test("stay_quiet is refused on the first word after an update that asked so
 
   // Once they've already answered it, a later "ok" can go unanswered.
   const t = luna([[call("stay_quiet", { why: "just ok" })]]);
-  jevReads(t, "greeting");
+  jevReads(t, "closing");
   t.store.asked = before;
   t.store.lines = [
     { from: "user", text: "Yes, look", at: new Date(before.getTime() + 1000) },
@@ -722,7 +725,59 @@ Deno.test("with no plan open, a casual 👍 sends nothing and approves nothing",
   assertEquals(t.store.consents, []);
 });
 
-Deno.test("the approval check is told a plain 'ok thanks' and a 👍 on the plan count", () => {
-  assertEquals(CHECK.includes('"ok thanks"'), true);
+Deno.test("the approval check counts casual agreement and a reaction on the plan by meaning, not a list", () => {
+  assertEquals(CHECK.includes("Short and casual agreement counts"), true);
+  assertEquals(CHECK.includes("an emoji reaction on the plan itself"), true);
+  // The serialised form of a reaction stays documented; no approval phrases are listed.
   assertEquals(CHECK.includes("[reacted 👍]"), true);
+  assertEquals(/"ok( thanks)?"|haan kar do|sounds good/.test(CHECK), false);
+});
+
+Deno.test("a first message to the Desk is always answered: a stored fact refuses silence, not a reading", async () => {
+  const t = luna([[call("stay_quiet", { why: "just hi" })], [call("reply", { text: "Hi, I'm Desk." })]]);
+  jevReads(t, "greeting");
+  t.store.isFirstContact = true;
+  t.store.lines = [{ from: "user", text: "hi", at: now }];
+  await runLuna(t.deps, user, now);
+  assertEquals(t.sent.length, 1);
+  assertEquals(
+    JSON.parse(t.inputs[1].at(-1)!.output).reason,
+    "this is their first message to the Desk; answer it",
+  );
+});
+
+// The 7 Nov shape: a returning user says hello after a finished errand, with no plan open and
+// no question waiting. Code holds nothing owed, so it doesn't force a reply: answering is
+// Luna's judgment, which the conversation eval checks (returning-hi-after-failed-call).
+Deno.test("a returning user's hello has no code obligation: Luna's choice stands", async () => {
+  const t = luna([[call("stay_quiet", { why: "test" })]]);
+  const earlier = new Date(now.getTime() - 18 * 3_600_000);
+  t.store.lines = [
+    { from: "desk", text: "The call didn't start, so I haven't booked anything.", at: earlier },
+    { from: "user", text: "Sure", at: new Date(earlier.getTime() + 1000) },
+    { from: "user", text: "hi", at: now },
+  ];
+  await runLuna(t.deps, user, now);
+  assertEquals(t.sent, []);
+});
+
+Deno.test("several quick messages answering an update's question are one answer: silence stays refused", async () => {
+  const before = new Date(now.getTime() - 60_000);
+  const { sent, inputs } = await refused((s) => {
+    s.asked = before;
+    s.lines = [
+      {
+        from: "desk",
+        text: "That number reached someone else. Shall I look for another branch?",
+        at: before,
+      },
+      { from: "user", text: "Okay", at: new Date(now.getTime() - 2000) },
+      { from: "user", text: "sure", at: now },
+    ];
+  });
+  assertEquals(sent.length, 1);
+  assertEquals(
+    JSON.parse(inputs[1].at(-1)!.output).reason.startsWith("the Desk's last update asked them something"),
+    true,
+  );
 });

@@ -34,7 +34,7 @@ export const CHECK =
 
 You get the PLAN exactly as the user saw it, and every message since, in order. Messages are from "user" or "desk". Read them as a person would, in any language or mix (Hinglish, Manglish, Tamil, emoji). "[reacted 👍]" is an emoji reaction; "replying to" shows which message a reply or reaction points at, and "replying to the message above" means the PLAN itself.
 
-yes: their messages since the plan, taken together, say to go ahead with this plan as it stands. Short and casual counts ("ok", "ok thanks", "haan kar do", "👍", "[reacted 👍]" on the plan, "sounds good, go"), even if the desk said something in between, as long as nothing else was asked that their answer could be for.
+yes: their messages since the plan, taken together, say to go ahead with this plan as it stands. Short and casual agreement counts, in any language or mix, and so does an emoji reaction on the plan itself, even if the desk said something in between, as long as nothing else was asked that their answer could be for. The same few words can close some other exchange: what decides is whether they answer this plan.
 no: they asked a question, added or changed anything (time, people, place, a condition), said wait, later, stop or no, agreed to something else, or the desk asked them something else after the plan and their reply answers that instead.
 unclear: you can't tell.
 
