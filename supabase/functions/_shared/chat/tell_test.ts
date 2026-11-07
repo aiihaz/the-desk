@@ -276,3 +276,27 @@ Deno.test("a call report whose drafts keep failing is written from the record al
   assertEquals(seenEarly[0].includes("500 advance, pay tonight"), true);
   assertEquals(seenEarly[0].includes("rest_of_the_call_could_not_be_checked"), false);
 });
+
+// Diagnostics (0027): each check attempt and which words went out are recorded per report,
+// with the checker's words only as detail; a model that can't be reached is a kind, not text.
+Deno.test("a report records each check and its source, without changing what goes out", async () => {
+  const { store, sent, deps } = setup(
+    ["Booked! {{advance}} {{pay_to}}", GOOD],
+    [{ faithful: false, problems: ["it says booked"] }, { faithful: true, problems: [] }],
+  );
+  await tell(deps, user, null, "k1", facts);
+  assertEquals(sent.length, 1);
+  const events = store.checks.flatMap((c) => c.events);
+  assertEquals(events.map((e) => [e.check, e.attempt, e.outcome, e.reason]), [
+    ["report_check", 1, "reject", "unfaithful"],
+    ["report_check", 2, "pass", undefined],
+    ["report_source", undefined, "writer", "attempt_1"],
+  ]);
+  assertEquals(events[0].detail, ["it says booked"]);
+
+  const down = setup([GOOD]);
+  down.deps.create = () => Promise.reject(new Error("openai 503: the user's words"));
+  await tell(down.deps, user, null, "k2", facts);
+  const last = down.store.checks.flatMap((c) => c.events).at(-1);
+  assertEquals([last?.check, last?.outcome, last?.reason], ["report_source", "error", "threw:http_5xx"]);
+});

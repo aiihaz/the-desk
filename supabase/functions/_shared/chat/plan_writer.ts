@@ -1,5 +1,6 @@
 // Proposal wording is separate from the stored action. A fresh independent reading
 // must agree before the exact text is saved as the user's approval target.
+import { type CheckEvent, type CheckLog, replyRule } from "./checks.ts";
 import type { CreateResponse, Item } from "../openai.ts";
 import { checkReply } from "./tell.ts";
 import { VOICE } from "./voice.ts";
@@ -17,7 +18,8 @@ export type PlanInput = {
   now: string;
   timezone: string;
 };
-export type PlanRenderer = (input: PlanInput) => Promise<string | null>;
+// log: where each check attempt is recorded (checks.ts); recording changes nothing here.
+export type PlanRenderer = (input: PlanInput, log?: CheckLog, runId?: string) => Promise<string | null>;
 
 export const PLAN_WRITE =
   `Write the Desk's proposed phone action as a natural message in this ongoing conversation.
@@ -64,8 +66,10 @@ function parsed(output: Item[], name: string): Record<string, unknown> | null {
 }
 
 export function createPlanWriter(create: CreateResponse, model = "gpt-6-luna", effort = "low"): PlanRenderer {
-  return async (input) => {
+  return async (input, log, runId) => {
     const context = JSON.stringify(input);
+    const note = (attempt: number, e: Omit<CheckEvent, "check" | "attempt" | "run_id" | "model">) =>
+      log?.record({ check: "plan_check", attempt, run_id: runId, model, ...e });
     let problems: unknown = [];
     const deadlineAt = Date.now() + 35_000;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -82,6 +86,7 @@ export function createPlanWriter(create: CreateResponse, model = "gpt-6-luna", e
       const text = typeof value?.text === "string" ? value.text.trim() : "";
       const invalid = checkReply(text);
       if (invalid) {
+        note(attempt + 1, { outcome: "reject", category: "format", reason: replyRule(invalid) });
         problems = [invalid];
         continue;
       }
@@ -96,8 +101,17 @@ export function createPlanWriter(create: CreateResponse, model = "gpt-6-luna", e
       });
       const verdict = parsed(checked.output, "plan_verdict");
       if (verdict?.faithful === true && Array.isArray(verdict.problems) && verdict.problems.length === 0) {
+        note(attempt + 1, { outcome: "pass", category: "fidelity" });
         return text;
       }
+      if (verdict && verdict.faithful === false) {
+        note(attempt + 1, {
+          outcome: "reject",
+          category: "fidelity",
+          reason: "unfaithful",
+          detail: Array.isArray(verdict.problems) ? verdict.problems.map(String) : [],
+        });
+      } else note(attempt + 1, { outcome: "unusable", category: "fidelity", reason: "no_verdict" });
       problems = verdict?.problems ?? ["missing independent verdict"];
     }
     return null;

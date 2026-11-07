@@ -10,6 +10,7 @@ import { isTurnInvalidated } from "./turn_control.ts";
 //   5. the database accepts the consent (record_consent: open prompt, current version,
 //      not stopped, not paused), and reserve_call checks it again before any call.
 // Anything less is not a consent; Luna then asks the user plainly.
+import { type CheckLog, errorKind } from "./checks.ts";
 import type { CreateResponse } from "../openai.ts";
 import type { User } from "../store.ts";
 import type { OpenPrompt } from "./gate.ts";
@@ -22,6 +23,7 @@ export type ApprovalDeps = {
   // Starts the call the consent allows; false when it couldn't (the user has been told).
   onApproved: (user: User, consent: ConsentStored) => Promise<{ started: boolean }>;
   trace?: (event: string, data: unknown) => void;
+  checks?: CheckLog;
 };
 
 export type ApprovalResult =
@@ -100,9 +102,28 @@ export async function approvePlan(
   } catch (e) {
     if (isTurnInvalidated(e)) throw e;
     deps.trace?.("approval_check_error", { error: String((e as Error)?.message ?? e) });
+    deps.checks?.record({
+      check: "approval",
+      outcome: "error",
+      category: "availability",
+      reason: `model_error:${errorKind(e)}`,
+      request_id: request.id,
+      prompt_id: prompt.id,
+      model,
+    });
     return { ok: false, reason: "couldn't check their answer just now; ask them to confirm in a few words" };
   }
   deps.trace?.("approval_check", { ...v, model, effort, choice });
+  deps.checks?.record({
+    check: "approval",
+    outcome: v.decision === "yes" ? "pass" : v.decision === "no" ? "reject" : "unusable",
+    category: "consent",
+    reason: `decision_${v.decision}`,
+    request_id: request.id,
+    prompt_id: prompt.id,
+    model,
+    detail: v.why ? [v.why] : [],
+  });
   if (v.decision !== "yes") {
     return {
       ok: false,

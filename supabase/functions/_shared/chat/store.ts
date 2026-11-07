@@ -1,6 +1,7 @@
 // Database access for the chat agent. Every state change is an RPC into 0004_chat.sql,
 // so version bumps, prompt closing and voiding happen in one transaction.
 // The interface lets tests use a fake.
+import type { CheckEvent } from "./checks.ts";
 import type { CallKind } from "../sarvam.ts";
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2.45.4";
 import type { PlaceHit } from "../places.ts";
@@ -250,6 +251,13 @@ export interface ChatStore {
   // Upserts a search result by place_id (fresh phone and hours each search) and returns its id.
   savePlace(p: PlaceHit): Promise<string>;
   setCity(userId: string, city: string): Promise<void>;
+  // Diagnostics (0027): one write per turn or report. CheckLog.flush catches any failure.
+  recordChecks?(
+    userId: string,
+    events: CheckEvent[],
+    version: string,
+    waMessageId: string | null,
+  ): Promise<void>;
   // Where their Desk bookings of the last BOOKED_DAYS days were, newest first (up to 20;
   // bookings at a place with no city left out).
   bookedCities(userId: string, now: Date): Promise<BookedCity[]>;
@@ -887,6 +895,16 @@ export class DbChatStore implements ChatStore {
 
   async setCity(userId: string, city: string): Promise<void> {
     const { error } = await this.db.from("users").update({ city }).eq("id", userId);
+    if (error) throw error;
+  }
+
+  async recordChecks(userId: string, events: CheckEvent[], version: string, waMessageId: string | null) {
+    const { error } = await this.db.rpc("record_checks", {
+      p_user_id: userId,
+      p_events: events,
+      p_version: version,
+      p_wa_message_id: waMessageId,
+    });
     if (error) throw error;
   }
 

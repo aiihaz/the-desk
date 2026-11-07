@@ -1,4 +1,5 @@
-import type { CheckIntent } from "./intent_grounding.ts";
+import { type CheckLog, errorKind } from "./checks.ts";
+import type { CheckIntent, GroundingResult } from "./intent_grounding.ts";
 // One inbound turn through the deterministic part of the chat agent: code gate (L0),
 // then the daily cap, then Luna (L1-L3). Nothing here reads approval: Luna proposes
 // plans and reads the user's answer, approval.ts checks it, the database binds it.
@@ -107,7 +108,43 @@ export async function sendTemplate(deps: PromptDeps, user: User, key: string): P
 export type PromptDeps = Pick<TurnDeps, "store" | "send" | "now" | "trace"> & {
   renderPlan?: PlanRenderer;
   checkIntent?: CheckIntent;
+  // Where check results are recorded for diagnostics (checks.ts). Recording only.
+  checks?: CheckLog;
 };
+
+// A grounding result as a diagnostic: its reason code, and its clarification as detail.
+export function recordGrounding(
+  log: CheckLog | undefined,
+  g: GroundingResult,
+  ids: { request_id: string; phase: string },
+): void {
+  if (!log) return;
+  if (g.ok) {
+    // An edit that changes nothing is passed without a model call: not a check that ran.
+    const ran = g.evidence.length > 0 || ids.phase !== "edit";
+    log.record({
+      check: "grounding",
+      outcome: "pass",
+      category: "fidelity",
+      reason: ran ? ids.phase : `${ids.phase}:nothing_to_check`,
+      request_id: ids.request_id,
+    });
+    return;
+  }
+  const unavailable = g.reason === "grounding_unavailable";
+  log.record({
+    check: "grounding",
+    outcome: unavailable ? "unusable" : "reject",
+    category: unavailable ? "availability" : "fidelity",
+    reason: `${ids.phase}:${
+      unavailable
+        ? (g.detail?.startsWith("model call failed") ? "model_error" : "unusable_verdict")
+        : g.reason
+    }`,
+    request_id: ids.request_id,
+    ...(unavailable ? {} : { detail: [g.clarification] }),
+  });
+}
 
 // Opens a prompt (a plan or an option list) on the request's current version and sends it.
 export async function sendPrompt(
@@ -180,6 +217,7 @@ export async function proposePlan(
       profile: { name: info.name, phone: info.phone, addresses },
     });
     deps.trace?.("plan_grounding", grounded);
+    recordGrounding(deps.checks, grounded, { request_id: requestId, phase: "plan" });
     await store.assertTurn?.();
     if (!grounded.ok) {
       return {
@@ -243,6 +281,12 @@ export async function proposePlan(
       p = cancelReadback({ booking: await store.booking(r.bookingId!), now });
       break;
   }
+  // Which words go out, and why: the writer's, or the readback and the reason (diagnostics).
+  const runId = crypto.randomUUID();
+  let source: { outcome: "writer" | "readback"; reason: string } = {
+    outcome: "readback",
+    reason: "no_writer",
+  };
   if (deps.renderPlan) {
     const chat = await store.history(user.id, new Date(now.getTime() - 24 * 3_600_000), 24);
     // The written wording, once checked, is what they approve. If it can't be written or
@@ -250,28 +294,50 @@ export async function proposePlan(
     // not at all: that wording is exact by construction.
     let text: string | null = null;
     try {
-      text = await deps.renderPlan({
-        task: r.task,
-        fields: r.fields,
-        reference: p.spec ?? p.text,
-        ...(place ? { place: { name: place.name, area: place.area ?? null, city: place.city } } : {}),
-        chat: chat.map(({ from, text }) => ({ from, text })),
-        language: info.language,
-        now: istIso(now),
-        timezone: "Asia/Kolkata",
-      });
+      text = await deps.renderPlan(
+        {
+          task: r.task,
+          fields: r.fields,
+          reference: p.spec ?? p.text,
+          ...(place ? { place: { name: place.name, area: place.area ?? null, city: place.city } } : {}),
+          chat: chat.map(({ from, text }) => ({ from, text })),
+          language: info.language,
+          now: istIso(now),
+          timezone: "Asia/Kolkata",
+        },
+        deps.checks,
+        runId,
+      );
+      source = text
+        ? { outcome: "writer", reason: "checked" }
+        : { outcome: "readback", reason: "attempts_failed" };
     } catch (e) {
       if (isTurnInvalidated(e)) throw e;
       deps.trace?.("plan_writer_failed", { error: String((e as Error)?.message ?? e) });
+      source = { outcome: "readback", reason: `writer_error:${errorKind(e)}` };
     }
     if (!text) deps.trace?.("plan_readback_used", { request_id: requestId });
     await store.assertTurn?.();
     const current = await store.request(requestId);
     if (current.version !== r.version || current.pausedAt) {
+      deps.checks?.record({
+        check: "plan_source",
+        outcome: "error",
+        reason: "plan_changed",
+        run_id: runId,
+        request_id: requestId,
+      });
       return { ok: false, reason: "the plan changed while writing; read the current request again" };
     }
     if (text) p = { ...p, text, message: { kind: "text", body: text } };
   }
   const sent = await sendPrompt(deps, user, requestId, p);
+  deps.checks?.record({
+    check: "plan_source",
+    ...(sent.ok ? source : { outcome: "error" as const, reason: `not_sent:${sent.reason}` }),
+    run_id: runId,
+    request_id: requestId,
+    prompt_id: sent.ok ? sent.promptId : null,
+  });
   return sent.ok ? { ...sent, text: p.text } : sent;
 }

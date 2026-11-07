@@ -15,6 +15,7 @@
 // failed writes they're told the result is still being written up, and a call report whose
 // drafts keep failing their check against the call is written from what the Desk records
 // alone, saying that the rest of the call couldn't be checked.
+import { CheckLog, errorKind, replyRule } from "./checks.ts";
 import type { CreateResponse, Item } from "../openai.ts";
 import { VOICE } from "./voice.ts";
 import type { Unwritten } from "./store.ts";
@@ -196,7 +197,14 @@ async function write(
   facts: Facts,
   model: string,
   effort: string,
+  log?: CheckLog,
+  deliveryId?: string,
 ): Promise<{ text: string } | { problem: string }> {
+  const runId = crypto.randomUUID();
+  const note = (
+    attempt: number,
+    e: { outcome: "pass" | "reject"; category: "format" | "fidelity"; reason?: string; detail?: string[] },
+  ) => log?.record({ check: "report_check", attempt, run_id: runId, delivery_id: deliveryId, model, ...e });
   const { store, create } = deps;
   const { language } = await store.user(userId);
   const since = new Date((deps.now?.() ?? new Date()).getTime() - 24 * 3_600_000);
@@ -219,6 +227,13 @@ async function write(
     const { text: draft = "" } = firstCall(res.output, "message") as { text?: string };
     const filled = fill(String(draft), facts.values);
     problem = "problem" in filled ? filled.problem : checkReply(filled.text) ?? "";
+    if (problem) {
+      note(n + 1, {
+        outcome: "reject",
+        category: "format",
+        reason: "problem" in filled ? "values" : replyRule(problem),
+      });
+    }
     if (!problem && "text" in filled) {
       const check = await create({
         model,
@@ -235,8 +250,17 @@ async function write(
       });
       const v = firstCall(check.output, "verdict") as { faithful?: boolean; problems?: unknown[] };
       deps.trace?.("report_check", { userId, draft, verdict: v, usage: [res.usage, check.usage] });
-      if (v.faithful === true) return { text: filled.text };
+      if (v.faithful === true) {
+        note(n + 1, { outcome: "pass", category: "fidelity" });
+        return { text: filled.text };
+      }
       problem = (v.problems ?? []).map(String).join("; ") || "not faithful to the facts";
+      note(n + 1, {
+        outcome: "reject",
+        category: "fidelity",
+        reason: v.faithful === false ? "unfaithful" : "no_verdict",
+        detail: (v.problems ?? []).map(String),
+      });
       refused.push(`draft ${n + 1} refused: ${problem}`);
     }
     deps.trace?.("report_redraft", { attempt: n + 1, problem });
@@ -285,15 +309,32 @@ async function writeOne(deps: TellDeps, d: Unwritten): Promise<boolean> {
   const told = d.facts.call && d.attempts >= plainAfter ? plain(d.facts) : d.facts;
   const facts: Facts = waited >= lateAfter ? { ...told, late_by_minutes: waited } : told;
   if (told !== d.facts) deps.trace?.("report_plain", { delivery: d.id, attempts: d.attempts });
+  // Diagnostics for this report: each check, then which words went out (checks.ts).
+  const log = new CheckLog();
+  const source = (outcome: "writer" | "plain" | "error", reason: string) => {
+    log.summary = {
+      check: "report_source",
+      outcome,
+      reason,
+      delivery_id: d.id,
+      request_id: d.requestId,
+      model,
+    };
+  };
   try {
-    const out = await write(deps, d.userId, facts, model, effort);
+    const out = await write(deps, d.userId, facts, model, effort, log, d.id);
     if ("text" in out) {
       await store.deliveryWritten(d.id, { kind: "text", body: out.text });
+      source(told !== d.facts ? "plain" : "writer", `attempt_${d.attempts}`);
       return true;
     }
     await store.deliveryUnwritten(d.id, out.problem);
+    source("error", "attempts_failed");
   } catch (e) {
     await store.deliveryUnwritten(d.id, String((e as Error)?.message ?? e));
+    source("error", `threw:${errorKind(e)}`);
+  } finally {
+    await log.flush(store, d.userId);
   }
   return false;
 }

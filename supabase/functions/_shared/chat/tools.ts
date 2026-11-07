@@ -10,7 +10,7 @@ import { readChat, readingSettings } from "./reading.ts";
 import { checkSlots, collectingState, missing, type QuestionOps } from "./slots.ts";
 import { group, type Task, TASKS } from "./states.ts";
 import type { ActiveRequest, KeptTranscript } from "./store.ts";
-import type { PromptDeps } from "./turn.ts";
+import { type PromptDeps, recordGrounding } from "./turn.ts";
 import { AGENT_ROLES } from "./verify.ts";
 
 // create: for the second readings a tool needs. Without it they don't pass.
@@ -274,6 +274,7 @@ export async function setSlots(
       profile: { name: profile.name, phone: profile.phone, addresses },
     });
     deps.trace?.("intent_grounding", grounded);
+    recordGrounding(deps.checks, grounded, { request_id: r.id, phase: "edit" });
     await deps.store.assertTurn?.();
     if (!grounded.ok && grounded.reason === "grounding_unavailable") {
       return { ok: false, reason: UNCHECKED_EDIT };

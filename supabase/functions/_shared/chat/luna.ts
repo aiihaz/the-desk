@@ -12,6 +12,7 @@
 // confirm, or a first contact. Length is judgment, not a rule that fails a reply.
 import { isTurnInvalidated } from "./turn_control.ts";
 import { VOICE } from "./voice.ts";
+import { CheckLog, errorKind, replyRule } from "./checks.ts";
 import type { User } from "../store.ts";
 import type { AskJev } from "../jev.ts";
 import type { CreateResponse, FunctionTool, Item } from "../openai.ts";
@@ -552,11 +553,15 @@ export async function runLuna(
     lunaEffort: null,
     lunaMaxOutputTokens: null,
   };
+  // This turn's check results, written once after it ends (checks.ts). Recording only.
+  const checks = new CheckLog();
+  let threw = false;
   try {
     const deadline = Date.now() + 75_000;
     await turn(
       {
         ...deps,
+        checks,
         create: (req) => deps.create({ ...req, deadlineAt: Math.min(req.deadlineAt ?? deadline, deadline) }),
       },
       user,
@@ -566,9 +571,15 @@ export async function runLuna(
       log,
       waMessageId,
     );
+  } catch (e) {
+    threw = true;
+    throw e;
   } finally {
     // The log must never cost the user their reply.
     await deps.store.logRoute(log).catch((e) => console.warn("router_log write failed", e));
+    // A turn that ended without saying how is recorded as that, not left out.
+    checks.summary ??= { check: "luna_turn", outcome: "error", reason: threw ? "turn_threw" : "unrecorded" };
+    await checks.flush(deps.store, user.id, waMessageId);
   }
 }
 
@@ -687,6 +698,7 @@ async function turn(
     const done = await store.redirectsSince(user.id, istDayStart(now));
     if (done >= cap) {
       deps.trace?.("redirect_capped", { redirectsToday: done, cap });
+      if (deps.checks) deps.checks.summary = { check: "redirect", outcome: "template", reason: "daily_cap" };
       const tpl = await store.template("offscope_limit", info.language);
       if (tpl) await deps.send(user, { kind: "text", body: tpl });
       return;
@@ -704,6 +716,12 @@ async function turn(
   Object.assign(log, { lunaModel: model, lunaEffort: effort, lunaMaxOutputTokens: maxOutputTokens });
   let rejected = 0;
   let retried = false;
+  // Diagnostics: how this turn ended, and why a fallback went out if one did.
+  const summaryCheck = mode === "redirect" ? "redirect" as const : "luna_turn" as const;
+  let cause = "max_steps";
+  const summarize = (outcome: "pass" | "fallback", reason: string) => {
+    if (deps.checks) deps.checks.summary = { check: summaryCheck, outcome, reason, model };
+  };
   const failed = (check: string) => {
     if (!log.l3Failed.includes(check)) log.l3Failed.push(check);
   };
@@ -739,6 +757,7 @@ async function turn(
       });
     } catch (e) {
       deps.trace?.("luna_error", { step, error: String((e as Error)?.message ?? e) });
+      cause = `model_error:${errorKind(e)}`;
       break;
     }
     await store.assertTurn?.();
@@ -810,6 +829,7 @@ async function turn(
     if (ended) {
       if (reply) deps.trace?.("reply_dropped", { text: reply.text, why: ended });
       log.l3Result = "pass";
+      summarize("pass", `ended:${ended}`);
       return;
     }
     if (reply) {
@@ -819,7 +839,16 @@ async function turn(
         : memoryOperationThisStep
         ? "read the memory operation result before replying; acknowledge its actual outcome without claiming a new save for an unchanged fact"
         : checkReply(text);
-      if (problem && !actionFailed && !memoryOperationThisStep) failed("code");
+      if (problem && !actionFailed && !memoryOperationThisStep) {
+        failed("code");
+        deps.checks?.record({
+          check: "reply_code",
+          outcome: "reject",
+          category: "format",
+          reason: replyRule(problem),
+          attempt: step,
+        });
+      }
 
       // L3, Jev half: on every reply that passed the code checks, in every mode.
       if (!problem && jev.ask && jev.model) {
@@ -837,15 +866,31 @@ async function turn(
         deps.trace?.("output_check", { jev_mode: jev.mode, ...out });
         if (!out.ran) {
           failed("jev_down");
+          deps.checks?.record({
+            check: "reply_jev",
+            outcome: "error",
+            category: "availability",
+            reason: `${jev.mode}:jev_down`,
+            attempt: step,
+          });
           // Jev down: in gate mode only a task-mode reply may go out unchecked.
           if (jev.mode === "gate" && mode !== "task") {
             log.l3Result = "fallback";
+            cause = "jev_down_gate";
             break;
           }
         } else {
           l3Scores.push({ claims_action: out.claims, off_task_content: out.offtask });
           log.probabilities = { ...log.probabilities, l3: l3Scores };
           out.failed.forEach(failed);
+          // In shadow these are measurements; the mode in the reason says which.
+          deps.checks?.record({
+            check: "reply_jev",
+            outcome: out.failed.length ? "reject" : "pass",
+            category: "safety",
+            reason: `${jev.mode}:${out.failed.length ? out.failed.join(":") : "clean"}`,
+            attempt: step,
+          });
           if (jev.mode === "gate" && out.problem) problem = out.problem;
           // Shadow leaves style and scope judgments as measurements. A promised reminder
           // is a fact the Desk would be stating (0012): in every mode it has to exist. Jev
@@ -855,6 +900,13 @@ async function turn(
           ) {
             promiseQueried = true;
             failed("promised_reminder");
+            deps.checks?.record({
+              check: "reply_promise",
+              outcome: "reject",
+              category: "obligation",
+              reason: "no_reminder",
+              attempt: step,
+            });
             problem = "you promised a reminder and none is set: set_follow_up first, or don't promise it";
           }
         }
@@ -872,6 +924,7 @@ async function turn(
           await store.oweMessage(user.id, r?.id ?? null, waMessageId ?? crypto.randomUUID(), msg);
         }
         log.l3Result = retried ? "retry_pass" : "pass";
+        summarize("pass", retried ? "retry_pass" : "first_try");
         return;
       }
       deps.trace?.("reply_rejected", { text: reply.text, problem });
@@ -884,15 +937,22 @@ async function turn(
         call_id: reply.call.call_id,
         output: JSON.stringify({ ok: false, reason: problem + hint }),
       });
-      if (rejected >= 3) break;
+      if (rejected >= 3) {
+        cause = "rejected_thrice";
+        break;
+      }
     }
-    if (!calls.length) break;
+    if (!calls.length) {
+      cause = "no_calls";
+      break;
+    }
   }
   // The fallback says what the Desk already has, so the user doesn't start over.
   const r = await current(deps, user);
   const known = r ? await knownDetails(deps, r, now) : "";
   deps.trace?.("fallback", { why: "no acceptable reply", known });
   log.l3Result = "fallback";
+  summarize("fallback", cause);
   const tpl = known
     ? (await store.template("fallback_known", info.language))?.replace("{details}", known)
     : await store.template("fallback_generic", info.language);

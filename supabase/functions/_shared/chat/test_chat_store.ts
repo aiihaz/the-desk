@@ -1,4 +1,5 @@
 // In-memory ChatStore for the chat-agent tests. The real rules live in SQL (chat_test.sql).
+import type { CheckEvent } from "./checks.ts";
 import type { CallKind } from "../sarvam.ts";
 import type { Outbound } from "../whatsapp.ts";
 import type { Delivery, DueFollowUp } from "./followup.ts";
@@ -146,6 +147,13 @@ export class FakeChatStore implements ChatStore {
     this.city = city;
   }
   bookedIn: { city: string; at: Date }[] = [];
+  // Diagnostics batches as record_checks would get them; checksFail makes the write throw.
+  checks: { events: CheckEvent[]; version: string; waMessageId: string | null }[] = [];
+  checksFail = false;
+  async recordChecks(_u: string, events: CheckEvent[], version: string, waMessageId: string | null) {
+    if (this.checksFail) throw new Error("record_checks down");
+    this.checks.push({ events: structuredClone(events), version, waMessageId });
+  }
   async bookedCities() {
     return this.bookedIn;
   }
