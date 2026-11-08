@@ -83,3 +83,15 @@ Deno.test("e164", () => {
   assertThrows(() => waIdToE164("+919800000001"));
   assertThrows(() => waIdToE164("0123"));
 });
+
+Deno.test("buildPayload: a reaction is one emoji on their message", () => {
+  assertEquals(buildPayload("919800000001", { kind: "reaction", messageId: "wamid.in1", emoji: "👍" }), {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to: "919800000001",
+    type: "reaction",
+    reaction: { message_id: "wamid.in1", emoji: "👍" },
+  });
+  assertThrows(() => buildPayload("919800000001", { kind: "reaction", messageId: "", emoji: "👍" }));
+  assertThrows(() => buildPayload("919800000001", { kind: "reaction", messageId: "wamid.in1", emoji: "" }));
+});

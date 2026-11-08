@@ -259,3 +259,40 @@ Deno.test("a failing typing call never reaches the turn", async () => {
   const t = startTyping({ token: "fake" }, "chat-id", () => Promise.reject(new Error("network")));
   await t.stop();
 });
+
+Deno.test("Linq reaction: a tapback on their message, standard where iMessage has one, else custom", async () => {
+  const seen: { url: string; body: unknown }[] = [];
+  const mock: typeof fetch = async (input, init) => {
+    seen.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+    assertEquals(new Headers(init?.headers).get("authorization"), "Bearer test-token");
+    return Response.json({ message: "Reaction processed", status: "accepted", trace_id: "t" });
+  };
+  const cfg = { token: "test-token" };
+  const id = await send(cfg, "919876543210", { kind: "reaction", messageId: "m-1", emoji: "👍" }, mock);
+  await send(cfg, "919876543210", { kind: "reaction", messageId: "m-1", emoji: "🙏" }, mock);
+  assertEquals(seen, [
+    {
+      url: "https://api.linqapp.com/api/partner/v3/messages/m-1/reactions",
+      body: { operation: "add", type: "like" },
+    },
+    {
+      url: "https://api.linqapp.com/api/partner/v3/messages/m-1/reactions",
+      body: { operation: "add", type: "custom", custom_emoji: "🙏" },
+    },
+  ]);
+  // Linq returns no message id for a reaction: the Desk's line gets its own, marked as one.
+  assertEquals(id.startsWith("linq-reaction-out:"), true);
+  // Never on a reaction of theirs, and a refusal is an error, not a silent success.
+  await assertRejects(() =>
+    send(cfg, "919876543210", { kind: "reaction", messageId: "linq-reaction:e1", emoji: "👍" }, mock)
+  );
+  await assertRejects(() =>
+    send(
+      cfg,
+      "919876543210",
+      { kind: "reaction", messageId: "m-1", emoji: "👍" },
+      async () => Response.json({}, { status: 404 }),
+    )
+  );
+  assertEquals(seen.length, 2);
+});

@@ -1491,6 +1491,9 @@ function outboundText(b: Row): string {
       return `[code-built list] ${b.body}`;
     case "template":
       return `[template ${b.name}]`;
+    // The Desk acknowledged their message with an emoji, and said nothing.
+    case "reaction":
+      return `[reacted ${b.emoji} to their message]`;
     default:
       return JSON.stringify(b);
   }

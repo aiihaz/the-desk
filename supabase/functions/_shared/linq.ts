@@ -28,6 +28,8 @@ export function textContent(msg: Outbound): string {
         .join("\n");
     case "template":
       throw new Error("Linq does not support WhatsApp templates; send the original text");
+    case "reaction":
+      throw new Error("a reaction has no text; send it with sendReaction");
   }
 }
 
@@ -39,6 +41,7 @@ export async function send(
   afterSend?: (sent: LinqSentMessage) => Promise<void>,
 ): Promise<string> {
   if (!cfg.token) throw new Error("LINQ_API_TOKEN is not set");
+  if (msg.kind === "reaction") return sendReaction(cfg, msg, fetcher);
   const value = textContent(msg);
   if (!value.trim()) throw new Error("empty Linq message");
   // Let Linq select the existing healthy line and its iMessage/RCS/SMS service.
@@ -66,6 +69,43 @@ export async function send(
     }
   }
   return body.message.id;
+}
+
+// iMessage's own tapbacks, by the emoji each shows; any other emoji goes as a custom tapback.
+const TAPBACKS: Record<string, string> = {
+  "❤️": "love",
+  "👍": "like",
+  "👎": "dislike",
+  "😂": "laugh",
+  "‼️": "emphasize",
+  "❓": "question",
+};
+
+// A tapback on one of their messages (Linq: POST /v3/messages/{id}/reactions). Linq returns
+// no message id for it, so the id stored for the Desk's line is its own, marked as a reaction.
+async function sendReaction(
+  cfg: LinqConfig,
+  msg: Extract<Outbound, { kind: "reaction" }>,
+  fetcher: typeof fetch,
+): Promise<string> {
+  if (!msg.messageId || msg.messageId.startsWith("linq-reaction:")) {
+    throw new Error("a reaction needs a message of theirs to go on");
+  }
+  if (!msg.emoji) throw new Error("a reaction needs an emoji");
+  const type = TAPBACKS[msg.emoji];
+  const res = await fetcher(
+    `https://api.linqapp.com/api/partner/v3/messages/${encodeURIComponent(msg.messageId)}/reactions`,
+    {
+      method: "POST",
+      signal: AbortSignal.timeout(cfg.timeoutMs ?? TRANSPORT_TIMEOUT_MS),
+      headers: { Authorization: `Bearer ${cfg.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(
+        type ? { operation: "add", type } : { operation: "add", type: "custom", custom_emoji: msg.emoji },
+      ),
+    },
+  );
+  if (!res.ok) throw new Error(`linq reaction failed ${res.status}`);
+  return `linq-reaction-out:${crypto.randomUUID()}`;
 }
 
 // Read receipts and typing are courtesy signals: short timeouts, and a failure is

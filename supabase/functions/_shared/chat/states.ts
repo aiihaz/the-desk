@@ -63,6 +63,7 @@ export type Tool =
   | "find_booking"
   | "accept_condition"
   | "stay_quiet"
+  | "react"
   | "set_follow_up"
   | "recall_errands"
   | "show_transcript"
@@ -133,6 +134,7 @@ export function toolsFor(state: State | null, paused = false, open: Open = {}): 
     ...(open.advances && !t.includes("cancel_request") ? ["cancel_request" as Tool] : []),
     ...(open.decisions ? ["accept_condition" as Tool] : []),
     "stay_quiet",
+    "react",
     ...(state || open.advances ? ["set_follow_up" as Tool] : []),
     "recall_errands",
     "show_transcript",

@@ -32,7 +32,10 @@ export type Outbound =
     button: string;
     rows: { id: string; title: string; description?: string }[];
   }
-  | { kind: "template"; name: string; language: string; params?: string[] };
+  | { kind: "template"; name: string; language: string; params?: string[] }
+  // One emoji on a message of theirs, instead of words: a tapback on iMessage, a reaction on
+  // WhatsApp. messageId is their message's id on that channel.
+  | { kind: "reaction"; messageId: string; emoji: string };
 
 const encoder = new TextEncoder();
 
@@ -125,6 +128,10 @@ export function parseWebhook(payload: Json): { messages: Inbound[]; statuses: St
 export function buildPayload(to: string, msg: Outbound): Json {
   const base = { messaging_product: "whatsapp", recipient_type: "individual", to };
   switch (msg.kind) {
+    case "reaction":
+      check(!!msg.messageId, "a reaction needs the message it's on");
+      check(!!msg.emoji, "a reaction needs an emoji");
+      return { ...base, type: "reaction", reaction: { message_id: msg.messageId, emoji: msg.emoji } };
     case "text":
       check(msg.body.length > 0 && msg.body.length <= 4096, "text body must be 1-4096 chars");
       return { ...base, type: "text", text: { body: msg.body, preview_url: false } };

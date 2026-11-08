@@ -39,12 +39,12 @@ Deno.test("task card: the errand ref, what is known, what a plan still needs, an
       "business: not picked",
       "business lookup: resolve the named place internally; ask only for genuine ambiguity, mismatch, or competing branches",
       "tools: reply, set_slots, find_business, choose_business, my_places, find_booking, propose_plan, pause_request, " +
-      "cancel_request, start_new_request, stay_quiet, set_follow_up, recall_errands, show_transcript, remember, forget, set_name, set_home_city, save_address",
+      "cancel_request, start_new_request, stay_quiet, react, set_follow_up, recall_errands, show_transcript, remember, forget, set_name, set_home_city, save_address",
     ].join("\n"),
   );
   assertEquals(
     taskCard(null, now),
-    "TASK\nnone active\ntools: reply, start_new_request, set_slots, find_business, choose_business, my_places, find_booking, stay_quiet, recall_errands, show_transcript, remember, forget, set_name, set_home_city, save_address",
+    "TASK\nnone active\ntools: reply, start_new_request, set_slots, find_business, choose_business, my_places, find_booking, stay_quiet, react, recall_errands, show_transcript, remember, forget, set_name, set_home_city, save_address",
   );
 });
 
