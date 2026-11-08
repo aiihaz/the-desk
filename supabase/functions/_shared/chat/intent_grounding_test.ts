@@ -238,3 +238,35 @@ Deno.test("a saved address can come from the profile; an address they never save
   equal((await createIntentGrounding(answer(verdict), "test")(fromProfile(addresses[0].address))).ok, true);
   equal((await createIntentGrounding(answer(verdict), "test")(fromProfile("12 MG Road"))).ok, false);
 });
+Deno.test("grounding judges what the candidate time means, the same reading the plan and caller get", async () => {
+  const seen: string[] = [];
+  const capture: CreateResponse = async (req) => {
+    seen.push(String((req.input[0] as { content: string }).content));
+    return answer(yes(2, "user", "exact_time"))(req);
+  };
+  // A target with room either way, changed from a time left to the business.
+  await createIntentGrounding(capture, "test")({
+    ...base,
+    current: {
+      party_size: 2,
+      time_open: true,
+      time_given: "both",
+      window_start: "2026-11-04T14:00:00+05:30",
+      window_end: "2026-11-04T15:00:00+05:30",
+    },
+    patch: {
+      exact_time: "2026-11-04T14:30:00+05:30",
+      tolerance_min: 30,
+      time_open: null,
+      time_given: null,
+      window_start: null,
+      window_end: null,
+    },
+  });
+  equal(JSON.parse(seen[0]).TIME_MEANING, {
+    kind: "their time, with room either way",
+    day: "today (Wed 4 Nov)",
+    time: "2:30 pm",
+    either_way_min: 30,
+  });
+});

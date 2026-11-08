@@ -215,12 +215,47 @@ Deno.test("a refused call ends the request and owes the user why", async () => {
   );
   assertEquals(sent.length, 1);
 
+  // Every path says who stopped it and that nothing reached the business.
+  assertEquals(store.owedFacts[0].facts.happened.stopped_by, "the Desk's own checks, before dialling");
+  assertEquals(store.owedFacts[0].facts.happened.reached_business, "no: no call was placed");
+
+  // A check with no reason a user can act on: still the Desk's checks, and no made-up reason.
   const ours = consentSetup({ ok: false, error: "refused", reason: "agent_not_gated" });
   await callAfterConsent(ours.deps, user, consent);
+  assertEquals(ours.store.owedFacts[0].facts.happened, {
+    status: "the_call_did_not_start_nothing_done",
+    stopped_by: "the Desk's own checks, before dialling",
+    reached_business: "no: no call was placed",
+    why: "a check on the Desk's side; the Desk doesn't have a reason it can give them",
+  });
+});
+
+Deno.test("a call the phone provider rejects says so, and that nothing reached the business", async () => {
+  const t = consentSetup({
+    ok: false,
+    error: "dial_failed",
+    call_id: "c1",
+    detail: "sarvam outbound response 422",
+  });
+  assertEquals(await callAfterConsent(t.deps, user, consent), { started: false });
+  assertEquals(t.store.notStarted, ["r1"]);
+  const happened = t.store.owedFacts[0].facts.happened;
   assertEquals(
-    ours.store.owedFacts[0].facts.happened.why,
-    "calls aren't working on the Desk's side right now; they can try again later",
+    happened.stopped_by,
+    "the phone provider, which rejected the Desk's request to place the call",
   );
+  assertEquals(happened.reached_business, "no: no call was placed");
+  // The provider's own error text stays in the call row, never in what the user is told.
+  assertEquals(JSON.stringify(happened).includes("422"), false);
+});
+
+Deno.test("a submission that may have reached the provider is never told as not started", async () => {
+  const t = consentSetup({ ok: false, error: "submission_unknown", call_id: "c1", detail: "x" });
+  await callAfterConsent(t.deps, user, consent);
+  // Unknown outcome: the request isn't ended, and nothing claims the call didn't happen.
+  assertEquals(t.store.notStarted, []);
+  assertEquals(t.store.owedFacts[0].facts.happened.reached_business, "unknown");
+  assertEquals(t.store.owedFacts[0].facts.next_step, "check_with_business_themselves");
 });
 
 Deno.test("a refused dial for the caller contract raises an alert and tells the user it's on our side", async () => {

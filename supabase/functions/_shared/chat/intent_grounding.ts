@@ -3,7 +3,7 @@
 // not grant action authority; approval and database reservation still do that.
 import type { CreateResponse, Item } from "../openai.ts";
 import type { SavedAddress } from "./cards.ts";
-import { fmtFull, istIso } from "./readback.ts";
+import { fmtFull, istIso, timeFacts } from "./readback.ts";
 import type { ChatLine, Memory } from "./store.ts";
 import type { Fields } from "./slots.ts";
 import type { Task } from "./states.ts";
@@ -49,7 +49,7 @@ One message can ask for several errands. You check one: the task given, for PATC
 
 For phase edit, check every changed field in PATCH. Unchanged CURRENT values are context, not new claims. Every material changed value needs user evidence; cite the message number. A profile name can supply customer_name unless the user says otherwise; a booking for themselves means the profile name. A saved address in PROFILE can supply service_address (cite source profile) when the conversation makes clear which one: they named its label or place, or it is their only saved address and nothing points elsewhere. Never pick one of several saved addresses without a clue. Profile information never supplies a new permission, preference, time or budget. Retrieved MEMORIES can support a relevant proposed preference or known fact, including a reference such as my usual, without making the user repeat it. Cite its exact memory_id and use source memory. A current correction overrides memory. Memory never establishes permission to act, spend, share personal details, or silently add a numerical booking tolerance. Never invent a remembered fact or cite a memory absent from MEMORIES. The later current-plan approval remains mandatory. Questions added, removed or reworded must preserve what the user actually asked. Clearing a field also needs a correction or valid conflict resolution, not arbitrary forgetting.
 
-Never manufacture precision: a part of day supplies no clock bounds. A clock time the user stated is exact as given, in any language or form; do not question its exactness. A bare hour whose half of the day is plain from context is that time. An approximate time is approximate intent: neither an authorized window around it nor an exact booking at it. A window or numeric tolerance needs support for its boundaries; flexibility the user stated in their own words supports a tolerance or window that matches it. One exception: when the user leaves the time within a part of day to the business, a window over the usual span of that part of day with day_part set to their words is grounded; the plan shows that span for their approval. Without that hand-off, a part of day still needs a time. When time_open is set, they left the time to the business on that day: the hand-off, the day, and each end named in time_given need user evidence; an end time_given doesn't name is the day's own bound, not a claim of theirs. Resolve explicit relative dates using NOW and Asia/Kolkata. Do not demand that users spell ISO dates. No invented spending allowance, phone-sharing exception, name, quantity or service requirement.
+Never manufacture precision: a part of day supplies no clock bounds. A clock time the user stated is exact as given, in any language or form; do not question its exactness. A bare hour whose half of the day is plain from context is that time. An approximate time on its own is approximate intent: neither an authorized window around it nor an exact booking at it. A window or numeric tolerance needs support for its boundaries; flexibility the user stated in their own words supports a tolerance or window that matches it. TIME_MEANING says what the candidate's time fields mean for the plan and the call: their exact time, their time as a target with room either way, a range they gave, or a time left to the business. Judge whether their messages support that meaning, not how the fields are named. Room they gave either side of their own time makes that time their target with that room: supported, and not an exact booking. Leaving the time to the business is a different meaning and needs their own hand-off. One exception: when the user leaves the time within a part of day to the business, a window over the usual span of that part of day with day_part set to their words is grounded; the plan shows that span for their approval. Without that hand-off, a part of day still needs a time. When time_open is set, they left the time to the business on that day: the hand-off, the day, and each end named in time_given need user evidence; an end time_given doesn't name is the day's own bound, not a claim of theirs. Resolve explicit relative dates using NOW and Asia/Kolkata. Do not demand that users spell ISO dates. No invented spending allowance, phone-sharing exception, name, quantity or service requirement.
 
 You never ask whether to go ahead or whether the plan is right: the user answers the plan itself after this check, so asking whether to go ahead is never a clarification. A value given earlier in the conversation and not corrected since still stands, including after a correction of another field.
 
@@ -117,12 +117,18 @@ export function createIntentGrounding(
     if (input.phase === "edit" && !changed.length) return { ok: true, evidence: [] };
     // Room for one hung attempt (20s) to be sent again, shared by both readings.
     const deadlineAt = Date.now() + 40_000;
+    // What the time would mean if this candidate is stored: the same reading the plan, the
+    // readback and the caller get (readback.ts timeFacts), so the check judges a meaning and
+    // never a field name.
+    const candidate = { ...input.current, ...input.patch } as Record<string, unknown>;
+    for (const [k, v] of Object.entries(input.patch)) if (v === null) delete candidate[k];
     const content = JSON.stringify({
       phase: input.phase,
       task: input.task,
       NOW: `${istIso(input.now)} (${fmtFull(input.now)}, Asia/Kolkata)`,
       CURRENT: input.current,
       PATCH: input.patch,
+      TIME_MEANING: timeFacts(candidate as Fields, input.now),
       PROFILE: input.profile,
       MEMORIES: input.memories ?? [],
       MESSAGES: input.messages.map((m, i) => ({ number: i + 1, ...m, at: istIso(m.at) })),

@@ -31,7 +31,33 @@ const WHY: Record<string, string> = {
   limit_retries: "the Desk already tried them again with no answer; they could call themselves",
   retry_too_soon: "the Desk only just tried them; they can ask again in a few minutes",
 };
-const OUR_SIDE = "calls aren't working on the Desk's side right now; they can try again later";
+// What stopped a call that didn't start, as facts the message is written from: who stopped
+// it, whether anything reached the business, and the reason when one is known. Nothing here
+// claims a call was tried when it wasn't.
+export function notStarted(res: Exclude<DialResult, { ok: true }>): Record<string, unknown> {
+  if (res.error === "submission_unknown") {
+    return {
+      status: "call_submission_uncertain_may_have_started_do_not_retry",
+      stopped_by: "unknown: the phone provider may or may not have placed the call",
+      reached_business: "unknown",
+    };
+  }
+  if (res.error === "refused") {
+    const why = WHY[res.reason];
+    return {
+      status: "the_call_did_not_start_nothing_done",
+      stopped_by: "the Desk's own checks, before dialling",
+      reached_business: "no: no call was placed",
+      why: why ?? "a check on the Desk's side; the Desk doesn't have a reason it can give them",
+    };
+  }
+  return {
+    status: "the_call_did_not_start_nothing_done",
+    stopped_by: "the phone provider, which rejected the Desk's request to place the call",
+    reached_business: "no: no call was placed",
+    why: "a fault on the Desk's side, not theirs and not the business's",
+  };
+}
 
 // The call a consent allows: the pick books (or, for a reschedule, moves to) one option;
 // the screenshot allows the confirm call; a plan's YES allows the task's call.
@@ -84,12 +110,7 @@ export async function callAfterConsent(
   }
   await tell(deps, user, c.request_id, `dial:${c.consent_id}`, {
     event: "call_not_started",
-    happened: {
-      status: res.error === "submission_unknown"
-        ? "call_submission_uncertain_may_have_started_do_not_retry"
-        : "the_call_did_not_start_nothing_done",
-      why: res.error === "refused" ? WHY[res.reason] ?? OUR_SIDE : OUR_SIDE,
-    },
+    happened: notStarted(res),
     values: {},
     next_step: res.error === "submission_unknown" ? "check_with_business_themselves" : null,
   });
