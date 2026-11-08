@@ -1,6 +1,7 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1.0.8";
 import {
   buildOutbound,
+  CallRejected,
   parseWebhook,
   type SarvamConfig,
   startCall,
@@ -116,11 +117,9 @@ Deno.test("startCall: a 422 is a definite rejection", async () => {
   const real = globalThis.fetch;
   globalThis.fetch = async () => Response.json({ detail: [{ msg: "bad app_id" }] }, { status: 422 });
   try {
-    await assertRejects(
-      () => startCall(cfg, call),
-      Error,
-      "422",
-    );
+    // Sarvam's own words come with it, so the rejected field can be found.
+    const e = await assertRejects(() => startCall(cfg, call), CallRejected);
+    assertEquals(e.message, 'sarvam outbound response 422: {"detail":[{"msg":"bad app_id"}]}');
   } finally {
     globalThis.fetch = real;
   }

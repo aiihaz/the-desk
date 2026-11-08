@@ -117,9 +117,18 @@ export async function startCall(cfg: SarvamConfig, call: StartCall): Promise<str
       body: JSON.stringify(payload),
     },
   );
-  const body = await res.json().catch(() => ({}));
+  const raw = await res.text().catch(() => "");
+  let body: Json = {};
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    // Not JSON: the raw text is still kept below for the error.
+  }
   if (!res.ok || !body?.attempt_id) {
-    const message = `sarvam outbound response ${res.status}`;
+    // Sarvam's own error (which field, which value) goes in calls.outcome, so a rejection can be
+    // fixed without guessing. Short, and only what Sarvam sent back; no request headers.
+    const said = raw.replace(/\s+/g, " ").trim().slice(0, 300);
+    const message = `sarvam outbound response ${res.status}${said ? `: ${said}` : ""}`;
     if (res.status >= 400 && res.status < 500 && res.status !== 408) throw new CallRejected(message);
     throw new Error(message);
   }
