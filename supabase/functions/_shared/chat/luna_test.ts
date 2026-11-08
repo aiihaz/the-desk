@@ -574,51 +574,84 @@ Deno.test("on first contact Luna is told so, and is never told again once the De
   assertEquals((talking.inputs[0][0].content as string).includes("FIRST_CONTACT"), false);
 });
 
-Deno.test("react puts one emoji on the message this turn answers, and ends the turn", async () => {
-  const { sent, deps } = setup([[call("react", { emoji: "👍" }), call("reply", { text: "Enjoy!" })]]);
+Deno.test("a reaction acknowledges their message and the turn goes on", async () => {
+  // Luna wrote the reply first; the reaction still lands first, before the work it acknowledges.
+  const { sent, deps } = setup([[
+    call("reply", { text: "Looking for a table now." }),
+    call("react", { emoji: "👍" }),
+  ]]);
   await runLuna(deps, user, now, "wamid.in1");
-  // The reaction is the whole answer: a reply in the same step doesn't go out after it.
-  assertEquals(sent, [{ kind: "reaction", messageId: "wamid.in1", emoji: "👍" }]);
+  assertEquals(sent, [
+    { kind: "reaction", messageId: "wamid.in1", emoji: "👍" },
+    { kind: "text", body: "Looking for a table now." },
+  ]);
 });
 
-Deno.test("react is refused wherever silence is, and for anything but one emoji", async () => {
-  const first = setup([[call("react", { emoji: "👍" })], [call("reply", { text: "Hi! I'm the Desk." })]]);
+Deno.test("a reaction alone is react then stay_quiet, and only where silence is allowed", async () => {
+  const close = setup([[call("stay_quiet", {}), call("react", { emoji: "🙏" })]]);
+  await runLuna(close.deps, user, now, "wamid.in1");
+  assertEquals(close.sent, [{ kind: "reaction", messageId: "wamid.in1", emoji: "🙏" }]);
+
+  // Their first message to the Desk is owed words: the reaction goes, the silence doesn't.
+  const first = setup([
+    [call("react", { emoji: "👋" }), call("stay_quiet", {})],
+    [call("reply", { text: "Hi! I'm the Desk." })],
+  ]);
   first.store.isFirstContact = true;
   await runLuna(first.deps, user, now, "wamid.in1");
-  assertEquals(first.sent, [{ kind: "text", body: "Hi! I'm the Desk." }]);
-  assertEquals(
-    JSON.stringify(first.inputs[1]).includes("this is their first message to the Desk; answer it"),
-    true,
-  );
+  assertEquals(first.sent, [
+    { kind: "reaction", messageId: "wamid.in1", emoji: "👋" },
+    { kind: "text", body: "Hi! I'm the Desk." },
+  ]);
+});
+
+Deno.test("one reaction per turn, of exactly one emoji, on a message of theirs", async () => {
+  const twice = setup([[
+    call("react", { emoji: "👍" }, "a"),
+    call("react", { emoji: "❤️" }, "b"),
+    call("reply", { text: "On it." }),
+  ]]);
+  await runLuna(twice.deps, user, now, "wamid.in1");
+  assertEquals(twice.sent, [
+    { kind: "reaction", messageId: "wamid.in1", emoji: "👍" },
+    { kind: "text", body: "On it." },
+  ]);
 
   for (const emoji of ["thanks", "👍👍", ""]) {
-    const t = setup([[call("react", { emoji })], [call("reply", { text: "Anytime." })]]);
+    const t = setup([[call("react", { emoji }), call("reply", { text: "Anytime." })]]);
     await runLuna(t.deps, user, now, "wamid.in1");
     assertEquals(t.sent, [{ kind: "text", body: "Anytime." }], emoji);
   }
-});
-
-Deno.test("react needs a message of theirs to go on", async () => {
   for (const id of [null, "linq-reaction:e1"]) {
-    const t = setup([[call("react", { emoji: "👍" })], [call("reply", { text: "Anytime." })]]);
+    const t = setup([[call("react", { emoji: "👍" }), call("reply", { text: "Anytime." })]]);
     await runLuna(t.deps, user, now, id);
     assertEquals(t.sent, [{ kind: "text", body: "Anytime." }]);
   }
 });
 
-Deno.test("a reaction that can't be sent becomes a few words, not a reported failure", async () => {
-  const t = setup([[call("react", { emoji: "👍" })], [call("reply", { text: "You're welcome!" })]]);
-  const send = t.deps.send;
-  t.deps.send = async (u, m) => {
-    if (m.kind === "reaction") throw new Error("linq reaction failed 404");
-    return send(u, m);
+Deno.test("a reaction that can't be sent never costs the reply, and never leaves silence", async () => {
+  const failing = (t: ReturnType<typeof setup>) => {
+    const send = t.deps.send;
+    t.deps.send = async (u, m) => {
+      if (m.kind === "reaction") throw new Error("linq reaction failed 404");
+      return send(u, m);
+    };
   };
-  await runLuna(t.deps, user, now, "wamid.in1");
-  assertEquals(t.sent, [{ kind: "text", body: "You're welcome!" }]);
+  // With a reply in the same step: the reply goes as written.
+  const withReply = setup([[call("react", { emoji: "👍" }), call("reply", { text: "On it." })]]);
+  failing(withReply);
+  await runLuna(withReply.deps, user, now, "wamid.in1");
+  assertEquals(withReply.sent, [{ kind: "text", body: "On it." }]);
+
+  // Meant as the whole answer: the silence is refused, and a few words go instead.
+  const alone = setup([[call("react", { emoji: "🙏" }), call("stay_quiet", {})], [
+    call("reply", { text: "Anytime!" }),
+  ]]);
+  failing(alone);
+  await runLuna(alone.deps, user, now, "wamid.in1");
+  assertEquals(alone.sent, [{ kind: "text", body: "Anytime!" }]);
   assertEquals(
-    JSON.stringify(t.inputs[1]).includes(
-      "the reaction couldn't be sent; acknowledge them in a few words instead",
-    ),
+    JSON.stringify(alone.inputs[1]).includes("the reaction didn't go; say it in a few words"),
     true,
   );
 });
