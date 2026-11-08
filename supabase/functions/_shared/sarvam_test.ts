@@ -1,6 +1,8 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1.0.8";
+import { type CallInputs, callVariables } from "./call_vars.ts";
 import {
   buildOutbound,
+  CALLER_INPUTS,
   CallRejected,
   parseWebhook,
   type SarvamConfig,
@@ -30,8 +32,21 @@ const call = {
   agentVersion: "3",
   callerNumber: "+918041234567",
   businessPhone: "+919876543210",
-  variables: { party_size: 4, call_kind: "booking" },
+  // The declared inputs, plus internal values callVariables also returns.
+  variables: {
+    business_name: "Paragon",
+    current_day: "Friday",
+    current_date: "23 October 2026",
+    current_time: "7:00 pm",
+    task_context: "Calling to book.",
+    user_name: "Ihaz",
+    user_phone: "+919812345678",
+    party_size: 4,
+    decided: "table for 4",
+    call_kind: "booking",
+  } as Record<string, unknown>,
 };
+const declared = (v: Record<string, unknown>) => Object.fromEntries(CALLER_INPUTS.map((k) => [k, v[k]]));
 
 Deno.test("buildOutbound: version, numbers, variables, webhook", () => {
   const p = buildOutbound(cfg, { ...call, language: "Hindi" });
@@ -47,8 +62,78 @@ Deno.test("buildOutbound: version, numbers, variables, webhook", () => {
   assertEquals(new URL(p.webhook_config.url).searchParams.get("token"), "t0ken");
 });
 
-Deno.test("buildOutbound: stored fields cannot override call_kind", () => {
-  assertEquals(buildOutbound(cfg, call).app_config.agent_variables, { party_size: 4, call_kind: "first" });
+Deno.test("buildOutbound: only the caller's declared inputs go, and call_kind comes from the call", () => {
+  // Sarvam refuses any variable the app doesn't declare (422, 8 Nov 2026).
+  assertEquals(buildOutbound(cfg, call).app_config.agent_variables, {
+    ...declared(call.variables),
+    call_kind: "first",
+  });
+});
+
+Deno.test("buildOutbound: a missing declared input is caught here, before Sarvam", () => {
+  const { task_context: _, ...rest } = call.variables;
+  assertThrows(
+    () => buildOutbound(cfg, { ...call, variables: rest }),
+    Error,
+    "caller inputs missing: task_context",
+  );
+});
+
+Deno.test("the caller's instructions read only declared inputs", () => {
+  const text = Deno.readTextFileSync(new URL("../../../agent/instructions.md", import.meta.url));
+  const used = [...new Set([...text.matchAll(/{{(\w+)}}/g)].map((m) => m[1]))].sort();
+  assertEquals(used, [...CALLER_INPUTS].sort());
+});
+
+Deno.test("every call kind's variables build a request Sarvam's caller declares", () => {
+  const base: CallInputs = {
+    task: "booking",
+    fields: {
+      party_size: 2,
+      customer_name: "Ihaz",
+      exact_time: "2026-10-23T20:00:00+05:30",
+      tolerance_min: 30,
+      may_book: true,
+    },
+    businessName: "Paragon",
+    customerPhone: "+919812345678",
+    option: null,
+    prev: null,
+    booking: null,
+    payment: null,
+    approvedLossRs: 0,
+  };
+  const booking = {
+    time: "2026-10-23T20:15:00+05:30",
+    reference: null,
+    customerName: "Ihaz",
+    depositRs: 500,
+    knownFeeRs: null,
+  };
+  const inputs: [Parameters<typeof callVariables>[0], CallInputs][] = [
+    ["first", base],
+    ["question", { ...base, task: "question", fields: { questions: ["Is there parking?"] } }],
+    ["booking", {
+      ...base,
+      option: { label: "9:30 pm", value: { time: "2026-10-23T21:30:00+05:30" } },
+      prev: { at: "2026-10-23T12:00:00+05:30", contactName: null, summary: null },
+    }],
+    ["reschedule", { ...base, task: "reschedule", booking }],
+    ["cancel", { ...base, task: "cancel", booking }],
+    ["payment_confirm", {
+      ...base,
+      booking,
+      payment: { amountRs: 500, ref: "344321", paidAt: null, payee: "p@ok" },
+    }],
+  ];
+  for (const [kind, x] of inputs) {
+    const variables = callVariables(kind, x, false, new Date("2026-10-23T12:00:00+05:30"));
+    const sent = buildOutbound(cfg, { ...call, kind, variables }).app_config.agent_variables;
+    assertEquals(Object.keys(sent).sort(), [...CALLER_INPUTS, "call_kind"].sort(), kind);
+  }
+  // What the caller is told still carries the meaning: their time with room either way.
+  const first = callVariables("first", base, false, new Date("2026-10-23T12:00:00+05:30"));
+  assert(String(first.task_context).includes("Up to 30 minutes either way of the time."));
 });
 
 Deno.test("every call kind ignores the Maps destination and any supplied destination override", () => {
@@ -57,7 +142,7 @@ Deno.test("every call kind ignores the Maps destination and any supplied destina
       ...call,
       kind,
       businessPhone: "+14155551234",
-      variables: { user_phone_number: "+14155559999", business_phone: "+14155550000" },
+      variables: { ...call.variables, user_phone_number: "+14155559999", business_phone: "+14155550000" },
     });
     assertEquals(p.user_config.user_phone_number, "+918848878757");
   }

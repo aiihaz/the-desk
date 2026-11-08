@@ -71,6 +71,22 @@ export type StartCall = {
 // deno-lint-ignore no-explicit-any
 type Json = any;
 
+// The caller's input contract: the agent variables the Sarvam caller app declares and its
+// instructions read (agent/instructions.md; a test keeps the two in step). Sarvam refuses a
+// call that sends any variable the app version doesn't declare (422), so a call sends these
+// and nothing else. The errand reaches the caller whole inside task_context (call_vars.ts);
+// the other values callVariables works out stay in the Desk. A caller version that reads a
+// new variable adds it here and in the app together.
+export const CALLER_INPUTS = [
+  "business_name",
+  "current_day",
+  "current_date",
+  "current_time",
+  "task_context",
+  "user_name",
+  "user_phone",
+] as const;
+
 export function buildOutbound(cfg: SarvamConfig, call: StartCall): Json {
   const version = Number(call.agentVersion);
   check(
@@ -80,6 +96,9 @@ export function buildOutbound(cfg: SarvamConfig, call: StartCall): Json {
   check(E164.test(call.callerNumber), `caller number not E.164: ${call.callerNumber}`);
   check(E164.test(call.businessPhone), `business phone not E.164: ${call.businessPhone}`);
   check(!!cfg.webhookToken, "SARVAM_WEBHOOK_TOKEN is not set");
+  const missing = CALLER_INPUTS.filter((k) => typeof call.variables[k] !== "string" || !call.variables[k]);
+  check(!missing.length, `caller inputs missing: ${missing.join(", ")}`);
+  const inputs = Object.fromEntries(CALLER_INPUTS.map((k) => [k, call.variables[k]]));
   const url = new URL(cfg.webhookUrl);
   url.searchParams.set("token", cfg.webhookToken);
   return {
@@ -87,8 +106,8 @@ export function buildOutbound(cfg: SarvamConfig, call: StartCall): Json {
       app_id: cfg.appId,
       app_version: version,
       connection_config: { connection_id: cfg.connectionId, agent_phone_number: call.callerNumber },
-      // call_kind last, so stored fields can never override it.
-      agent_variables: { ...call.variables, call_kind: call.kind },
+      // Only the declared inputs, and call_kind from the call itself.
+      agent_variables: { ...inputs, call_kind: call.kind },
       ...(call.language ? { app_overrides: { initial_language_name: call.language } } : {}),
     },
     user_config: { user_phone_number: TEST_CALL_RECIPIENT },
