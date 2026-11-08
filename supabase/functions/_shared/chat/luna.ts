@@ -28,7 +28,7 @@ import {
 } from "./cards.ts";
 import type { OpenPrompt } from "./gate.ts";
 import { fmtWhen, istIso } from "./readback.ts";
-import { currentQuestions } from "./slots.ts";
+import { currentQuestions, incoherentTime, missing } from "./slots.ts";
 import { BOOKING_CHANGES, type Open, type Task, TASKS, type Tool, toolsFor } from "./states.ts";
 import type { ActiveRequest, ChatLine, ConsentStored } from "./store.ts";
 import {
@@ -43,7 +43,7 @@ import {
   type RouteLog,
   type Thresholds,
 } from "./router.ts";
-import { istDayStart, proposePlan } from "./turn.ts";
+import { istDayStart, proposePlan, refusalKey } from "./turn.ts";
 import { findBusiness, type FindDeps } from "./find.ts";
 import { checkReply } from "./tell.ts";
 import {
@@ -113,6 +113,10 @@ Doing an errand
 5. approve_plan says whether the call started. If it started, tell them in one short line that you're calling and will message when it's done. If it says the call didn't start, the user has already been told why: say nothing more.
 6. After the call, code tells them the result. If the business offered other options, they pick in their own words: approve_plan with that option's number when the pick is clear; ask if it isn't.
 
+When a check refuses
+- set_slots and propose_plan are checked against their messages by a separate reading. A refusal with a clarification means that reading didn't find your interpretation in what they said; nothing was stored or sent. Reread their messages with its point in mind. If they do settle it, store what they actually said, which is a different reading from the one refused. Never send the refused change or plan again unchanged: it will be refused again. If their messages genuinely leave it open, ask them the one question it raises, in your words, and nothing they've already answered.
+- A refusal of the plan's words (propose_plan) lists what didn't match the stored errand and gives you its facts. Fix those points in your own words; the facts are what the plan must say, not wording to copy.
+
 Changing course
 - They want you to wait before going on: pause_request, and say you'll wait. Nothing is proposed, approved or called while paused. When they want to go on, resume_request and propose the plan again.
 - They no longer want the errand: cancel_request. If another errand was waiting, the result says it is now current: mention it. During a call it can't be stopped; tell them what the result says, plainly.
@@ -155,7 +159,7 @@ Facts
 - Times are ISO 8601 with +05:30, resolved from NOW. The day and the time can come from anywhere in the chat: a day made clear earlier still stands when a later message gives only the time. Ask for the day or the time only when the chat doesn't give it; never invent one.
 - A clock time they gave is exact_time, never a short window; read whether a bare hour is morning or evening from context. A window needs both ends from them, unless they leave the time to the business (below); a range of a few minutes is kept only when they really gave one.
 - A part of day gives no clock time: ask what time, unless they leave the time within it to the business for an errand where the business can offer a slot. Then set window_start and window_end to the span people usually mean by that part of day, and day_part to their words; the plan shows the span, and the call settles a time inside it.
-- An approximate time ("around 8") is not permission to invent a range or a tolerance: ask how flexible they are, once, without suggesting a number. Record what they say as they said it, and don't ask again. When they leave the time to the business, on a day or within limits they gave ("after 8", "any time before lunch is over"), that is an answer, not a gap: set time_open true with the day, and window_start or window_end only for the limits they actually gave. The plan shows it back and the call asks the business for a time that suits them. Never ask for a limit they didn't give just to complete a window.
+- An approximate time is not permission to invent a range or a tolerance: ask how flexible they are, once, without suggesting a number, and never again once they've said. Two different things can come back, and they are stored differently. Room either side of a time they chose keeps that time as the target: exact_time, with tolerance_min for the room they gave; the call asks for that time first. Leaving the choice of time to the business, on a day or within limits they set, has no target of theirs: time_open true with the day, and window_start or window_end only for the limits they actually gave; the call asks what suits the business. A target with room either side is not a hand-off, even when the two cover the same hours. When they leave it to the business, that is an answer, not a gap: never ask for a limit they didn't give just to complete a window.
 - party_size for tables; service for anything else ("haircut", "dentist checkup"), never with the party size in it.
 - A booking gives their name and number unless they say otherwise. If they don't want their number given, set share_phone false: the plan says so and the call won't give it. Never tell them a booking needs something (a number, an advance, a card) before the business has said so: the call finds out, and comes back to them. also_ask: one extra thing to ask on a booking call. Questions for a question errand: add_questions in their terms, keeping every limit they gave (a price, a deadline); reword_questions or remove_questions only when they change one. A follow-up question is added, not swapped in.
 - A question errand needs no time unless they asked for one: it calls when the business is open.
@@ -196,8 +200,8 @@ const SLOT_PROPS = {
   },
   time_open: {
     type: ["boolean", "null"],
-    description:
-      "true when they leave the time to the business, on a day or within limits they gave; with day",
+    description: "true when they leave the choice of time to the business, on a day or within limits they " +
+      "gave; with day. Not for room around a time they chose (tolerance_min)",
   },
   day: { type: ["string", "null"], description: "YYYY-MM-DD: the day, with time_open" },
   exact_time: {
@@ -209,7 +213,11 @@ const SLOT_PROPS = {
     description: "their words for a part of day they left to the business, with the window " +
       "over its usual span",
   },
-  tolerance_min: { type: ["integer", "null"] },
+  tolerance_min: {
+    type: ["integer", "null"],
+    description:
+      "minutes either way of exact_time they said would do; only with exact_time, never with time_open",
+  },
   party_size: { type: ["integer", "null"], minimum: 1, maximum: 30 },
   service: {
     type: ["string", "null"],
@@ -578,6 +586,7 @@ export async function runLuna(
         ...deps,
         checks,
         planRejections: { count: 0 },
+        refused: new Map(),
         create: (req) => deps.create({ ...req, deadlineAt: Math.min(req.deadlineAt ?? deadline, deadline) }),
       },
       user,
@@ -963,16 +972,44 @@ async function turn(
       break;
     }
   }
-  // The fallback says what the Desk already has, so the user doesn't start over.
+  // Repair failed. Nothing was committed (a plan goes out only through propose_plan), and the
+  // stored state is the last one that passed its checks. The fallback says so honestly: it
+  // recites details only when they're a state no check refused, and asks for more only when
+  // something is actually missing.
   const r = await current(deps, user);
-  const known = r ? await knownDetails(deps, r, now) : "";
-  deps.trace?.("fallback", { why: "no acceptable reply", known });
+  const kind = r ? await fallbackKind(deps, user, r) : "generic";
+  const known = r && kind !== "unsure" ? await knownDetails(deps, r, now) : "";
+  deps.trace?.("fallback", { why: "no acceptable reply", kind, known });
   log.l3Result = "fallback";
   summarize("fallback", cause);
-  const tpl = known
-    ? (await store.template("fallback_known", info.language))?.replace("{details}", known)
-    : await store.template("fallback_generic", info.language);
-  if (tpl) await deps.send(user, { kind: "text", body: tpl });
+  const key = !known && kind !== "unsure" ? "fallback_generic" : `fallback_${kind}`;
+  const tpl = (await store.template(key, info.language)) ??
+    // Until a template is deployed, the generic line: never silence.
+    await store.template("fallback_generic", info.language);
+  if (tpl) await deps.send(user, { kind: "text", body: tpl.replace("{details}", known) });
+}
+
+// known: details are missing and these are what's held; held: nothing is missing; unsure: a
+// check refused the stored details this turn, so they aren't recited as settled.
+async function fallbackKind(
+  deps: LunaDeps,
+  user: User,
+  r: ActiveRequest,
+): Promise<"known" | "held" | "unsure"> {
+  if (deps.refused?.has(refusalKey("plan", r.id, r.version)) || incoherentTime(r.fields).length) {
+    return "unsure";
+  }
+  const info = await deps.store.user(user.id);
+  const mayBook = r.task === "booking" || r.task === "reschedule"
+    ? await deps.store.limitBool("book_on_first_call", user.id)
+    : undefined;
+  const need = missing(r.task, r.fields, {
+    business: !!r.businessId,
+    booking: !!r.bookingId,
+    profileName: !!info.name,
+    mayBook,
+  });
+  return need.length ? "known" : "held";
 }
 
 async function reminderExists(deps: LunaDeps, user: User): Promise<boolean> {

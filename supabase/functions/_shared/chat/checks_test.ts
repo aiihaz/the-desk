@@ -72,8 +72,7 @@ Deno.test("the plan check records its verdict; what it decides is unchanged", as
   const log = new CheckLog();
   const input = {
     task: "booking",
-    fields: {},
-    reference: "r",
+    facts: {},
     chat: [],
     language: "en-IN",
     now: "",

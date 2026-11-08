@@ -10,7 +10,7 @@ import { readChat, readingSettings } from "./reading.ts";
 import { checkSlots, collectingState, missing, type QuestionOps } from "./slots.ts";
 import { group, type Task, TASKS } from "./states.ts";
 import type { ActiveRequest, KeptTranscript } from "./store.ts";
-import { type PromptDeps, recordGrounding } from "./turn.ts";
+import { type PromptDeps, recordGrounding, refusal, refusalKey } from "./turn.ts";
 import { AGENT_ROLES } from "./verify.ts";
 
 // create: for the second readings a tool needs. Without it they don't pass.
@@ -256,6 +256,19 @@ export async function setSlots(
   }
   deps.trace?.("check_slots", check);
   if (!check.ok) return { ok: false, reason: "invalid", errors: check.errors };
+  const key = refusalKey("edit", r.id, r.version, check.patch);
+  const before = deps.refused?.get(key);
+  if (before) {
+    deps.trace?.("intent_grounding_repeat", { request_id: r.id });
+    deps.checks?.record({
+      check: "grounding",
+      outcome: "reject",
+      category: "fidelity",
+      reason: "edit:repeated",
+      request_id: r.id,
+    });
+    return refusal(before, true);
+  }
   if (deps.checkIntent) {
     const [messages, memories, profile, addresses] = await Promise.all([
       deps.store.history(user.id, new Date(now.getTime() - 24 * 3_600_000), 40),
@@ -279,7 +292,10 @@ export async function setSlots(
     if (!grounded.ok && grounded.reason === "grounding_unavailable") {
       return { ok: false, reason: UNCHECKED_EDIT };
     }
-    if (!grounded.ok) return { ...grounded };
+    if (!grounded.ok) {
+      deps.refused?.set(key, grounded);
+      return refusal(grounded, false);
+    }
   }
   const res = await deps.store.updateSlots(r.id, check.patch);
   deps.trace?.("update_slots", res);

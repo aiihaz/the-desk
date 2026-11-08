@@ -162,6 +162,12 @@ export function checkSlots(
   }
   if (errors.length) return { ok: false, errors };
 
+  // A tolerance is room around a time they chose; time_open leaves the choice to the business.
+  // One patch claiming both can't be stored: which one they meant is Luna's to read, not code's.
+  if (out.time_open === true && typeof out.tolerance_min === "number") {
+    return { ok: false, errors: [CONFLICT_OPEN_TOLERANCE] };
+  }
+
   // A time left to the business: the ends they gave, and the day's own bounds for the rest.
   if (out.time_open === true) {
     const given = (k: "window_start" | "window_end") => typeof out[k] === "string" ? out[k] as string : null;
@@ -202,7 +208,11 @@ export function checkSlots(
     if (current.window_end !== undefined) out.window_end = null;
     if (current.tolerance_min !== undefined && !("tolerance_min" in out)) out.tolerance_min = null;
   } else if (typeof out.window_start === "string" && typeof out.window_end === "string") {
-    if (current.exact_time !== undefined && !("exact_time" in out)) out.exact_time = null;
+    if (current.exact_time !== undefined && !("exact_time" in out)) {
+      out.exact_time = null;
+      // The tolerance was room around that time, which the window replaces.
+      if (current.tolerance_min !== undefined && !("tolerance_min" in out)) out.tolerance_min = null;
+    }
   }
   // A new time without a part of day ("make it 3 pm", "between 2 and 3") replaces the
   // old "afternoon" with it.
@@ -240,21 +250,48 @@ export function checkSlots(
       "service: the party size goes in party_size only; service is what's booked, or null for a table",
     );
   }
-  if (m.day_part && !(m.window_start && m.window_end)) {
-    errors.push("day_part: only with window_start and window_end spanning that part of day");
-  }
-  if (m.window_start && m.window_end && Date.parse(m.window_start) >= Date.parse(m.window_end)) {
-    errors.push("window_start: must be before window_end");
-  }
-  if (m.exact_time && m.window_start && m.window_end) {
-    const t = Date.parse(m.exact_time);
-    if (t < Date.parse(m.window_start) || t > Date.parse(m.window_end)) {
-      errors.push("exact_time: must be inside the window");
-    }
-  }
+  // A row saved before these rules may already be incoherent; an edit that doesn't touch the
+  // time isn't refused for it (the plan is, in proposePlan).
+  if (TIME_KEYS.some((k) => k in out)) errors.push(...incoherentTime(m));
   return errors.length
     ? { ok: false, errors, narrow: narrow && errors.length === 1 }
     : { ok: true, patch: out };
+}
+
+const TIME_KEYS = ["window_start", "window_end", "day_part", "exact_time", "time_open", "tolerance_min"];
+
+export const CONFLICT_OPEN_TOLERANCE =
+  "time_open and tolerance_min contradict each other: a tolerance is room around a time they chose, " +
+  "time_open leaves the choice to the business. Store the one their messages say, not both";
+
+// Combinations of time fields that can't all be true, whatever words they came from. Structure
+// only: which reading is right is Luna's call, and code never picks one for her.
+export function incoherentTime(f: Fields): string[] {
+  const errors: string[] = [];
+  if (f.time_open && f.tolerance_min) errors.push(CONFLICT_OPEN_TOLERANCE);
+  else if (f.tolerance_min && !f.exact_time) {
+    errors.push("tolerance_min: room either way of exact_time, so only with exact_time");
+  }
+  if (f.time_open && f.exact_time) errors.push("exact_time: not with time_open");
+  if (f.time_open && f.day_part) {
+    errors.push("day_part: not with time_open; a part of day has its own window");
+  }
+  if (f.time_open && !(f.window_start && f.window_end)) {
+    errors.push("time_open: needs the day, through window_start and window_end");
+  }
+  if (f.day_part && !(f.window_start && f.window_end)) {
+    errors.push("day_part: only with window_start and window_end spanning that part of day");
+  }
+  if (f.window_start && f.window_end && Date.parse(f.window_start) >= Date.parse(f.window_end)) {
+    errors.push("window_start: must be before window_end");
+  }
+  if (f.exact_time && f.window_start && f.window_end) {
+    const t = Date.parse(f.exact_time);
+    if (t < Date.parse(f.window_start) || t > Date.parse(f.window_end)) {
+      errors.push("exact_time: must be inside the window");
+    }
+  }
+  return errors;
 }
 
 // The date in India of an ISO time, as YYYY-MM-DD.

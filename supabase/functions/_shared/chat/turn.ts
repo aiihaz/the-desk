@@ -12,11 +12,13 @@ import {
   cancelReadback,
   istIso,
   type Place,
+  type PlanFacts,
+  planFacts,
   type Prompt,
   questionReadback,
   rescheduleReadback,
 } from "./readback.ts";
-import { missing } from "./slots.ts";
+import { incoherentTime, missing } from "./slots.ts";
 import type { ChatStore, Refused } from "./store.ts";
 import { WRONG_NUMBER } from "./tools.ts";
 
@@ -112,7 +114,50 @@ export type PromptDeps = Pick<TurnDeps, "store" | "send" | "now" | "trace"> & {
   checkIntent?: CheckIntent;
   // Where check results are recorded for diagnostics (checks.ts). Recording only.
   checks?: CheckLog;
+  // What grounding refused this turn (refusalKey), so the same reading isn't checked, or
+  // refused, again: repair has to be a different reading or a question.
+  refused?: Map<string, { reason: string; clarification: string }>;
 };
+
+// Keys for PromptDeps.refused. An edit is the exact change on the version it was read
+// against; a plan is the stored version itself.
+export function refusalKey(
+  phase: "edit" | "plan",
+  requestId: string,
+  version: number,
+  patch?: unknown,
+): string {
+  return phase === "plan" ? `plan:${requestId}:${version}` : `edit:${requestId}:${version}:${stable(patch)}`;
+}
+
+// JSON with sorted keys, so the same change written in another order is the same change.
+function stable(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`;
+  if (v && typeof v === "object") {
+    return `{${
+      Object.keys(v as Record<string, unknown>).sort()
+        .map((k) => `${JSON.stringify(k)}:${stable((v as Record<string, unknown>)[k])}`).join(",")
+    }}`;
+  }
+  return JSON.stringify(v);
+}
+
+// What Luna gets back when grounding refuses: nothing changed, and the way to repair it.
+export function refusal(
+  g: { reason: string; clarification: string },
+  repeated: boolean,
+): { ok: false; reason: string; clarification: string; stored: "nothing"; next: string } {
+  return {
+    ok: false,
+    reason: g.reason,
+    clarification: g.clarification,
+    stored: "nothing",
+    next: (repeated ? "You already sent this and it was refused; it wasn't checked again. " : "") +
+      "Reread their messages. If they settle this, store what they actually said (a different reading). " +
+      "If they genuinely leave it open, ask them the clarification in your words. Don't ask for anything " +
+      "they've already given.",
+  };
+}
 
 // A grounding result as a diagnostic: its reason code, and its clarification as detail.
 export function recordGrounding(
@@ -183,7 +228,7 @@ export async function proposePlan(
 ): Promise<
   | { ok: true; promptId: string; text: string }
   | Refused
-  | { ok: false; reason: string; missing?: string[]; must_cover?: string }
+  | { ok: false; reason: string; [k: string]: unknown }
 > {
   const { store } = deps;
   const now = deps.now?.() ?? new Date();
@@ -200,11 +245,35 @@ export async function proposePlan(
     mayBook,
   });
   if (need.length) return { ok: false, reason: "not ready", missing: need };
+  // A plan, and the readback behind it, only ever describe a coherent state.
+  const incoherent = incoherentTime(r.fields);
+  if (incoherent.length) {
+    return {
+      ok: false,
+      reason:
+        "the stored time doesn't hold together, so no plan can describe it. Fix it with set_slots from " +
+        "what they said; don't ask them for what they've already given",
+      errors: incoherent,
+    };
+  }
   if (r.businessId && (await store.wrongNumberFor(user.id, r.businessId))) {
     return { ok: false, reason: WRONG_NUMBER };
   }
   if (r.task === "question" && r.fields.share_phone && !info.phone) {
     return { ok: false, reason: "no number on file to share" };
+  }
+  const planKey = refusalKey("plan", r.id, r.version);
+  const before = deps.refused?.get(planKey);
+  if (before) {
+    deps.trace?.("plan_grounding_repeat", { request_id: requestId });
+    deps.checks?.record({
+      check: "grounding",
+      outcome: "reject",
+      category: "fidelity",
+      reason: "plan:repeated",
+      request_id: requestId,
+    });
+    return refusal(before, true);
   }
   if (deps.checkIntent) {
     const [messages, memories, addresses] = await Promise.all([
@@ -226,10 +295,13 @@ export async function proposePlan(
     recordGrounding(deps.checks, grounded, { request_id: requestId, phase: "plan" });
     await store.assertTurn?.();
     if (!grounded.ok) {
+      if (grounded.reason === "grounding_unavailable") return { ok: false, reason: UNCHECKED_PLAN };
+      // The stored details themselves were refused: the repair is set_slots, which makes a
+      // new version, or a question. The same version isn't checked again this turn.
+      deps.refused?.set(planKey, grounded);
       return {
-        ok: false,
-        reason: grounded.reason,
-        missing: grounded.clarification ? [grounded.clarification] : [UNCHECKED_PLAN],
+        ...refusal(grounded, false),
+        next: "The stored details were refused, not your words. " + refusal(grounded, false).next,
       };
     }
   }
@@ -257,7 +329,10 @@ export async function proposePlan(
     r = await store.request(requestId);
   }
 
+  // The readback (last resort, exact by construction) and the facts the plan check reads
+  // Luna's words against, from the same rows.
   let p: Prompt;
+  let facts: PlanFacts;
   const place: Place | null = r.businessId && (r.task === "booking" || r.task === "question")
     ? await store.place(r.businessId)
     : null;
@@ -271,6 +346,14 @@ export async function proposePlan(
         note,
         profileName: info.name,
       });
+      facts = planFacts({
+        task: "booking",
+        place: place!,
+        f: r.fields,
+        customerPhone: info.phone,
+        now,
+        profileName: info.name,
+      });
       break;
     case "question":
       p = questionReadback({
@@ -279,13 +362,20 @@ export async function proposePlan(
         customerPhone: info.phone,
         note,
       });
+      facts = planFacts({ task: "question", place: place!, f: r.fields, customerPhone: info.phone });
       break;
-    case "reschedule":
-      p = rescheduleReadback({ booking: await store.booking(r.bookingId!), f: r.fields, now });
+    case "reschedule": {
+      const booking = await store.booking(r.bookingId!);
+      p = rescheduleReadback({ booking, f: r.fields, now });
+      facts = planFacts({ task: "reschedule", booking, f: r.fields, now });
       break;
-    case "cancel":
-      p = cancelReadback({ booking: await store.booking(r.bookingId!), now });
+    }
+    case "cancel": {
+      const booking = await store.booking(r.bookingId!);
+      p = cancelReadback({ booking, now });
+      facts = planFacts({ task: "cancel", booking, now });
       break;
+    }
   }
   // Which words go out, and why: Luna's, or the readback and the reason (diagnostics).
   const runId = crypto.randomUUID();
@@ -299,7 +389,7 @@ export async function proposePlan(
       return {
         ok: false,
         reason: "text: write the plan yourself, in this conversation's words, and propose_plan again",
-        must_cover: p.spec ?? p.text,
+        facts,
       };
     }
     const chat = await store.history(user.id, new Date(now.getTime() - 24 * 3_600_000), 24);
@@ -307,8 +397,7 @@ export async function proposePlan(
     const v = await deps.checkPlan(
       {
         task: r.task,
-        fields: r.fields,
-        reference: p.spec ?? p.text,
+        facts,
         ...(place ? { place: { name: place.name, area: place.area ?? null, city: place.city } } : {}),
         chat: chat.map(({ from, text }) => ({ from, text })),
         language: info.language,
@@ -332,8 +421,9 @@ export async function proposePlan(
           ok: false,
           reason: `the plan doesn't match what the call will do: ${
             v.problems.join("; ")
-          }. Fix it and propose_plan again`,
-          must_cover: p.spec ?? p.text,
+          }. Fix those points in your own words and propose_plan again`,
+          problems: v.problems,
+          facts,
         };
       }
       source = { outcome: "readback", reason: "rejected_twice" };

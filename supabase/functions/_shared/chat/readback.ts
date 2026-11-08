@@ -275,6 +275,161 @@ export function questionReadback(
   ));
 }
 
+// What a plan has to say, as facts rather than a sentence: what the plan check reads a draft
+// against, and what Luna repairs a refused draft from. Built from the same stored rows as the
+// readbacks, so the facts, the readback and the caller's brief describe one action. Values
+// are formatted for reading (IST, the day as well as the date); none is wording to copy.
+export type PlanFacts = Record<string, unknown>;
+
+export function timeFacts(f: Fields, now: Date): Record<string, unknown> | null {
+  if (f.time_open && f.window_start && f.window_end) {
+    return {
+      kind: "left to the business: the call asks what time suits them",
+      day: fmtDayFull(new Date(f.window_start), now),
+      ...(f.time_given === "start" || f.time_given === "both"
+        ? { not_before: fmtTime(new Date(f.window_start)) }
+        : {}),
+      ...(f.time_given === "end" || f.time_given === "both"
+        ? { not_after: fmtTime(new Date(f.window_end)) }
+        : {}),
+    };
+  }
+  if (f.exact_time) {
+    const t = new Date(f.exact_time);
+    return {
+      kind: f.tolerance_min ? "their time, with room either way" : "their exact time",
+      day: fmtDayFull(t, now),
+      time: fmtTime(t),
+      ...(f.tolerance_min ? { either_way_min: f.tolerance_min } : {}),
+    };
+  }
+  if (f.window_start && f.window_end) {
+    const a = new Date(f.window_start);
+    const b = new Date(f.window_end);
+    return {
+      kind: f.day_part
+        ? "a part of day they left to the business: the call agrees a time inside the span"
+        : "a range they gave",
+      day: fmtDayFull(a, now),
+      from: fmtTime(a),
+      to: sameDay(ist(a), ist(b)) ? fmtTime(b) : `${fmtDayFull(b, now)} ${fmtTime(b)}`,
+      ...(f.day_part ? { day_part: f.day_part } : {}),
+    };
+  }
+  return null;
+}
+
+function visitFacts(f: Fields): Record<string, unknown> {
+  return {
+    ...(f.visit ? { visit: "the business comes to them" } : {}),
+    ...(f.service_address ? { address: f.service_address } : {}),
+    ...(f.service_details ? { job: f.service_details } : {}),
+  };
+}
+
+function bookingFacts(b: BookingSummary, now: Date): Record<string, unknown> {
+  return {
+    place: spokenPlace(b.place),
+    what: what(b.f, "a").slice(2),
+    when: b.time
+      ? `${fmtDayFull(b.time, now)} ${fmtTime(b.time)}`
+      : b.date
+      ? fmtDate(b.date, now)
+      : "no time confirmed",
+    name: b.customerName,
+    ...(b.uncertain ? { uncertain: "the Desk couldn't confirm the business has this booking" } : {}),
+  };
+}
+
+export function planFacts(
+  x:
+    | {
+      task: "booking";
+      place: Place;
+      f: Fields;
+      customerPhone: string | null;
+      now: Date;
+      profileName?: string | null;
+    }
+    | { task: "question"; place: Place; f: Fields; customerPhone: string | null }
+    | { task: "reschedule"; booking: BookingSummary; f: Fields; now: Date }
+    | { task: "cancel"; booking: BookingSummary; now: Date },
+): PlanFacts {
+  switch (x.task) {
+    case "booking": {
+      const { f } = x;
+      const phone = f.share_phone === false
+        ? "withheld: the business can't call them back; if it needs the number to book, the Desk checks with them first"
+        : x.customerPhone
+        ? `given (${maskPhone(x.customerPhone)}), in case the business needs to reach them`
+        : "none on file";
+      return {
+        action: f.may_book ? "book" : "ask whether they can, and book nothing yet",
+        place: callee(x.place),
+        what: what(f, "a").slice(2),
+        when: timeFacts(f, x.now),
+        ...(f.may_book
+          ? {
+            name: f.customer_name,
+            name_is: whose(f.customer_name, x.profileName).startsWith("in your name")
+              ? "theirs"
+              : "someone else's",
+            number: phone,
+          }
+          : { shared: "nothing yet: no name or number" }),
+        ...(f.max_price_rs !== undefined ? { up_to: rs(f.max_price_rs) } : {}),
+        ...(f.also_ask ? { also_ask: f.also_ask } : {}),
+        ...visitFacts(f),
+      };
+    }
+    case "question": {
+      const { f } = x;
+      const shared = [
+        f.share_name ? `name (${f.customer_name})` : null,
+        f.share_phone && x.customerPhone ? `number (${maskPhone(x.customerPhone)})` : null,
+      ].filter(Boolean);
+      return {
+        action: "ask only: nothing is booked; an offer to book comes back to them first",
+        place: callee(x.place),
+        questions: currentQuestions(f),
+        shared: shared.length
+          ? `${shared.join(" and ")}, so they know who's asking`
+          : "nothing: no name or number",
+        ...visitFacts(f),
+      };
+    }
+    case "reschedule":
+      return {
+        action: x.f.may_book ? "move the booking if they can" : "ask if they can move it; move nothing yet",
+        booking: bookingFacts(x.booking, x.now),
+        new_time: timeFacts(x.f, x.now),
+        if_not: `ask them to keep ${
+          x.booking.time ? fmtTime(x.booking.time) : "it as it is"
+        }, and check with the user`,
+        ...visitFacts(x.f),
+      };
+    case "cancel": {
+      const b = x.booking;
+      const loss = b.paidRs
+        ? `they paid a ${rs(b.paidRs)} advance and may lose it; the call asks about a refund`
+        : b.knownFeeRs || b.chargeStated
+        ? `the business said cancelling costs ${
+          b.knownFeeRs ? rs(b.knownFeeRs) : "something (no amount given)"
+        }`
+        : null;
+      return {
+        action: "cancel the booking",
+        booking: bookingFacts(b, x.now),
+        ...(loss
+          ? { possible_loss: loss, approval: "they must say clearly that they still want to cancel" }
+          : {
+            charge: "none known; if one comes up, the call agrees nothing and checks with them",
+          }),
+      };
+    }
+  }
+}
+
 export type BookingSummary = {
   place: Place;
   f: Fields;

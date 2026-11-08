@@ -241,7 +241,8 @@ Deno.test("Luna's checked words are what they approve; refused words go back; th
   assertEquals(passed.store.prompt!.text, words);
   assertEquals((passed.sent[0] as { body: string }).body, words);
 
-  // Refused once: nothing goes out, and Luna gets the problems and what the plan must cover.
+  // Refused once: nothing goes out, and Luna gets the problems and the facts, never the
+  // readback's sentence to copy.
   const refused = setup();
   refused.store.req = { ...tonight };
   const rejections = { count: 0 };
@@ -254,7 +255,10 @@ Deno.test("Luna's checked words are what they approve; refused words go back; th
     words,
   );
   assertEquals(res.ok, false);
-  assertEquals("must_cover" in res && res.must_cover?.length ? true : false, true);
+  assertEquals("problems" in res && res.problems, ["drops the time"]);
+  assertEquals("facts" in res && typeof res.facts === "object", true);
+  assertEquals("must_cover" in res, false);
+  assertEquals(JSON.stringify(res).includes(reference.slice(0, 40)), false);
   assertEquals(refused.sent, []);
   // A second refusal in the same turn sends the readback, exact by construction.
   await proposePlan({ ...refused.deps, checkPlan: no, planRejections: rejections }, user, "r1", null, words);

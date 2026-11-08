@@ -83,7 +83,7 @@ Sarvam's API isn't read back, so this catches a change on our side of the pin; c
 
 ## Which version is running
 
-Set `DESK_GIT_SHA` when deploying (`supabase secrets set DESK_GIT_SHA=$(git rev-parse HEAD)`). `health` answers with it, the newest migration applied, when `reconcile` last finished, and how many owed messages are overdue, and fails if the job has stopped.
+Set `DESK_GIT_SHA` and `DESK_CODE_VERSION` when deploying (`supabase secrets set DESK_GIT_SHA=$(git rev-parse HEAD) DESK_CODE_VERSION=$(git rev-parse --short HEAD)`). Check events (0027) record `DESK_CODE_VERSION` and read `unknown` without it. `health` answers with `DESK_GIT_SHA`, the newest migration applied, when `reconcile` last finished, and how many owed messages are overdue, and fails if the job has stopped.
 
 ## Scheduled jobs
 

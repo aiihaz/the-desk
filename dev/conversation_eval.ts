@@ -2,6 +2,7 @@
 // deno run --allow-read --allow-write=/tmp --allow-env --allow-net=api.openai.com dev/conversation_eval.ts
 // Key: OPENAI_API_KEY or ignored supabase/functions/.env. Output defaults to /tmp.
 // These transcripts support human review; they are not production qualification.
+import { callVariables } from "../supabase/functions/_shared/call_vars.ts";
 import { createPlanChecker } from "../supabase/functions/_shared/chat/plan_writer.ts";
 import { createIntentGrounding } from "../supabase/functions/_shared/chat/intent_grounding.ts";
 import { FakeChatStore } from "../supabase/functions/_shared/chat/test_chat_store.ts";
@@ -32,7 +33,7 @@ type Case = {
   // What must be true afterwards, read from state, not from wording.
   expect?: {
     plan?: boolean; // a plan was stored and sent (plan_sent), or none was
-    fields?: Record<string, unknown>; // final request fields
+    fields?: Record<string, unknown>; // final request fields; null: must be absent
     business?: string; // fixture placeId the request is bound to
     queuedTask?: string; // a separate errand of this task waits
     queuedQuestions?: number; // and carries at least this many questions
@@ -45,6 +46,21 @@ type Case = {
     searches?: number; // Places searches run, at most
   };
 };
+// The caller's settled errand, as callVariables builds it for a first call.
+function callerBrief(fields: Record<string, unknown>): Record<string, unknown> {
+  const v = callVariables("first", {
+    task: "booking",
+    fields,
+    businessName: "fixture",
+    customerPhone: "+919812345678",
+    option: null,
+    prev: null,
+    booking: null,
+    payment: null,
+    approvedLossRs: 0,
+  }, false);
+  return { when: v.resolved_when, decided: v.decided, flexible: v.flexible, may_accept: v.may_accept };
+}
 const raw = await Deno.readTextFile("fixtures/conversation/quality-smoke.json");
 type FixturePlace = Omit<PlaceHit, "openingHours" | "closed"> & { found_by: string };
 const fixture = JSON.parse(raw) as {
@@ -84,6 +100,8 @@ const sourceFiles = [
   "supabase/functions/_shared/chat/turn.ts",
   "supabase/functions/_shared/chat/plan_writer.ts",
   "supabase/functions/_shared/chat/intent_grounding.ts",
+  "supabase/functions/_shared/chat/slots.ts",
+  "supabase/functions/_shared/chat/readback.ts",
 ];
 const sourceHashes = Object.fromEntries(
   await Promise.all(sourceFiles.map(async (p) => [p, await hash(await Deno.readTextFile(p))])),
@@ -335,7 +353,9 @@ for (
       : JSON.stringify(a) === JSON.stringify(b);
   for (const [k, v] of Object.entries(want.fields ?? {})) {
     const got = (state.req?.fields as Record<string, unknown> | undefined)?.[k];
-    if (!same(got, v)) failures.push(`field ${k}: ${JSON.stringify(got)}, expected ${JSON.stringify(v)}`);
+    // null expects the field absent: a meaning that must not be stored.
+    const ok = v === null ? got === undefined || got === null : same(got, v);
+    if (!ok) failures.push(`field ${k}: ${JSON.stringify(got)}, expected ${JSON.stringify(v)}`);
   }
   if (want.business && state.req?.businessId !== businessId(want.business)) {
     failures.push(`business: not bound to ${want.business}`);
@@ -439,6 +459,10 @@ for (
     model_calls: calls,
     elapsed_ms: Math.round(performance.now() - started),
     final_request: state.req,
+    // What the caller would be told from the final fields, for review beside the plan.
+    caller: planSent && state.req?.businessId
+      ? callerBrief(state.req.fields as Record<string, unknown>)
+      : null,
     memories: state.kept,
     queued_requests: state.waiting,
     slot_writes: state.slotWrites,

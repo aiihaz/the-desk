@@ -3,6 +3,17 @@
 Checkpoint date: 5 November 2026 (India). Branch: **`imessage-linq`**.
 This checkpoint merges the conversation-quality work (b26af24, f97f939) with the local Linq line (call language, transcripts, never-silent reports), makes CI green, fixes what the evals exposed, and deploys it. **Deployed and mechanically green; conversational quality is improved but not yet accepted by the owner.**
 
+## 8 November: meaning survives to the call; repair after a refusal (uncommitted, not deployed)
+
+From the 7 Nov Kopitiam chat ("around 9" → "30 mins sooner or later" fell back after 6 steps, then a plan said "at a time that suits them"). Luna stored `time_open` + `tolerance_min` + a window, which dropped the 9 pm target; grounding refused it, Luna resubmitted until `max_steps`, and the fallback asked for "the rest" with nothing missing.
+- Time meaning: Luna's prompt and slot descriptions separate room either side of their time (`exact_time` + `tolerance_min`) from leaving the time to the business (`time_open`). Code refuses contradictory time fields (`incoherentTime` in slots.ts: tolerance with time_open, tolerance without exact_time, etc.) without picking a reading; a window replacing an exact time drops its tolerance. A plan, and the readback, are refused for an incoherent stored time.
+- Bounded repair: a grounding refusal is remembered for the turn (`refused`, keyed by request version and exact patch); the same change or the same stored version is refused again without another check, and Luna is told so. Refusals say nothing was stored and how to repair (a different reading from their messages, or the one question). A plan-phase refusal no longer comes back as `missing`.
+- Plan check: reads Luna's draft against `planFacts` (readback.ts), not the readback sentence; a refused draft gets the problems and the facts. `must_cover` is gone. The readback is only the last resort (two refusals, or an unreadable check).
+- Fallback: `fallback_held` (nothing missing: says what it has, asks nothing), `fallback_unsure` (the stored details were refused this turn: recites none), `fallback_known` only when something is missing. Templates in **0029**; until it's applied the code uses `fallback_generic`.
+- Tests: [meaning_test.ts](supabase/functions/_shared/chat/meaning_test.ts) (13) follows the meaning from chat to stored fields, facts, readback and caller brief, with forced grounding and plan-check refusals and recovery. 513 unit tests pass; `deno task check` passes. Fixture v5 adds 5 `flex-*` cases (expected `null` = field must be absent; results record the caller brief). **No paid eval has run.**
+- Deploy needs `DESK_CODE_VERSION` set (README), or check events keep reading `unknown`.
+- Separate: 0028 (test-mode call checks) is the call-check change, not part of this.
+
 ## 6 November: fix-directions card (uncommitted, not deployed)
 
 Built from the 6 Nov issues card (50-scenario eval plus the live plumber chat). The working tree on `imessage-linq` holds it; **nothing is committed, migrated on the hosted project, or deployed**. Migration **0026** is new.

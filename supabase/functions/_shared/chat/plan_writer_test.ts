@@ -3,8 +3,12 @@ import { createPlanChecker, type PlanInput } from "./plan_writer.ts";
 import type { ResponseOut } from "../openai.ts";
 const input: PlanInput = {
   task: "booking",
-  fields: { party_size: 4, exact_time: "2026-11-06T20:00:00+05:30" },
-  reference: "I'll call Paragon in Kannur Road and book a table for 4 tomorrow at 8:00 pm.",
+  facts: {
+    action: "book",
+    place: "Paragon in Kannur Road",
+    what: "table for 4",
+    when: { kind: "their exact time", day: "tomorrow (Fri 6 Nov)", time: "8:00 pm" },
+  },
   chat: [{ from: "user", text: "book Paragon Kannur Road for four tomorrow 8pm" }],
   language: "en",
   now: "2026-11-05T21:20+05:30",
@@ -16,14 +20,16 @@ const verdict = (value: unknown): ResponseOut => ({
 });
 const text = "I'll call Paragon on Kannur Road for a table for four tomorrow at 8. Shall I?";
 
-Deno.test("Luna's words pass only on an independent affirmative verdict, which sees them with the action", async () => {
+Deno.test("Luna's words pass only on an independent affirmative verdict, which sees them with the facts", async () => {
   const seen: string[] = [];
   const check = createPlanChecker(async (req) => {
     seen.push(String((req.input[0] as { content: string }).content));
     return verdict({ faithful: true, problems: [] });
   });
   equal(await check(input, text), { ok: true });
-  equal(seen[0].includes(`DRAFT: ${text}`) && seen[0].includes(input.reference), true);
+  equal(seen[0].includes(`DRAFT: ${text}`) && seen[0].includes(JSON.stringify(input.facts)), true);
+  // The checker gets facts, never a code-written sentence to compare wording with.
+  equal(seen[0].includes("reference"), false);
 });
 
 Deno.test("words that claim more than the action come back with the problems", async () => {
