@@ -4,8 +4,9 @@ begin;
 create extension if not exists pgtap with schema extensions;
 select no_plan();
 
--- 0028 test mode: while the production call checks are commented out, the tests of those
--- checks are skipped. Restoring the checks (restore_call_checks.sql) runs them again.
+-- 0028 test mode (owner's decision, 7 Nov 2026) comments out production call guards; see
+-- supabase/restore_call_checks.sql. pg_temp.test_mode() reads whether that is live, so each
+-- assertion below that depends on it switches back by itself when the guards are restored.
 create function pg_temp.test_mode() returns boolean language sql as $$
   select coalesce((select prosrc like '%is_tester := true%' from pg_proc where proname = 'check_dial_base'), false)
 $$;
@@ -230,10 +231,10 @@ insert into t values ('k1', (record_consent('e0000000-0000-0000-0000-00000000000
 select is((check_dial(pg_temp.id('d1'), 'first', p_now => pg_temp.at('12:03', '2026-10-26')) ->> 'consent_id')::uuid, pg_temp.id('k1'),
           'the dial check names the consent it rests on');
 select set_limit('agent_instructions_sha256', '"changed"', 'test');
-select case when pg_temp.test_mode() then skip('0028 test mode: production call check off') else is((check_dial(pg_temp.id('d1'), 'first', p_now => pg_temp.at('12:03', '2026-10-26')) ->> 'reason'), 'agent_instructions_mismatch',
+select case when pg_temp.test_mode() then skip('0028 test mode: the instructions pin is off until the production guards are restored') else is((check_dial(pg_temp.id('d1'), 'first', p_now => pg_temp.at('12:03', '2026-10-26')) ->> 'reason'), 'agent_instructions_mismatch',
           'instructions that drifted from the tested ones can''t dial') end;
 select set_limit('agent_instructions_sha256', 'null', 'test');
-select case when pg_temp.test_mode() then skip('0028 test mode: production call check off') else is((check_dial(pg_temp.id('d1'), 'first', p_now => pg_temp.at('12:03', '2026-10-26')) ->> 'reason'), 'no_instructions_pin',
+select case when pg_temp.test_mode() then skip('0028 test mode: the instructions pin is off until the production guards are restored') else is((check_dial(pg_temp.id('d1'), 'first', p_now => pg_temp.at('12:03', '2026-10-26')) ->> 'reason'), 'no_instructions_pin',
           'nor can an unpinned setup') end;
 select set_limit('agent_instructions_sha256', '"pin"', 'test');
 insert into t values ('c1', (reserve_call(pg_temp.id('d1'), 'first', p_now => pg_temp.at('12:04', '2026-10-26')) ->> 'call_id')::uuid);

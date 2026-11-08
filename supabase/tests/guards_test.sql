@@ -4,8 +4,9 @@ begin;
 create extension if not exists pgtap with schema extensions;
 select no_plan();
 
--- 0028 test mode: while the production call checks are commented out, the tests of those
--- checks are skipped. Restoring the checks (restore_call_checks.sql) runs them again.
+-- 0028 test mode (owner's decision, 7 Nov 2026) comments out production call guards; see
+-- supabase/restore_call_checks.sql. pg_temp.test_mode() reads whether that is live, so each
+-- assertion below that depends on it switches back by itself when the guards are restored.
 create function pg_temp.test_mode() returns boolean language sql as $$
   select coalesce((select prosrc like '%is_tester := true%' from pg_proc where proname = 'check_dial_base'), false)
 $$;
@@ -178,7 +179,7 @@ select is(check_dial((select id from t where name = 'r_nohours'), 'first', null,
 
 -- Caller numbers -----------------------------------------------------------
 update caller_numbers set active = false where id = 'c0000000-0000-0000-0000-000000000001';
-select case when pg_temp.test_mode() then skip('0028 test mode: production call check off') else is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'first', null, false, pg_temp.at('19:00'))),
+select case when pg_temp.test_mode() then skip('0028 test mode: the A2P declaration check is off until the production guards are restored') else is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'first', null, false, pg_temp.at('19:00'))),
           'no_caller_number', 'only an undeclared number left → refused for a real business') end;
 insert into t values ('r_tester', pg_temp.new_request('a0000000-0000-0000-0000-000000000001', 'b0000000-0000-0000-0000-000000000003'));
 select is(check_dial((select id from t where name = 'r_tester'), 'question', null, false, pg_temp.at('19:00')) ->> 'caller_number_id',
@@ -192,15 +193,15 @@ select is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'first
 select set_limit('kill_switch', 'false', 'test');
 
 insert into credit_ledger (delta_rs, reason) values (-350, 'calls');
-select case when pg_temp.test_mode() then skip('0028 test mode: production call check off') else is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'first', null, false, pg_temp.at('19:00'))),
+select case when pg_temp.test_mode() then skip('0028 test mode: the credit check is off until the production guards are restored') else is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'first', null, false, pg_temp.at('19:00'))),
           'low_credit', 'credit below min_credit_rs → refused') end;
 insert into credit_ledger (delta_rs, reason) values (350, 'top-up');
 
 select set_limit('active_agent_version', '"v2"', 'test');
-select case when pg_temp.test_mode() then skip('0028 test mode: production call check off') else is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'first', null, false, pg_temp.at('19:00'))),
+select case when pg_temp.test_mode() then skip('0028 test mode: the agent gate is off until the production guards are restored') else is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'first', null, false, pg_temp.at('19:00'))),
           'agent_not_gated', 'agent version without a passed test suite → refused') end;
 insert into gate_passes (agent_version, suite, passed) values ('v2', 'sarvam-tests', false);
-select case when pg_temp.test_mode() then skip('0028 test mode: production call check off') else is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'first', null, false, pg_temp.at('19:00'))),
+select case when pg_temp.test_mode() then skip('0028 test mode: the agent gate is off until the production guards are restored') else is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'first', null, false, pg_temp.at('19:00'))),
           'agent_not_gated', 'a failed suite run does not gate the version') end;
 select set_limit('active_agent_version', '"v1"', 'test');
 
@@ -216,8 +217,10 @@ select is((select caller_number_id from requests where id = (select id from t wh
 update caller_numbers set active = true where id = 'c0000000-0000-0000-0000-000000000003';
 select is(reserve_call((select id from t where name = 'r1'), 'booking', (select id from t where name = 'o_fresh'), false, pg_temp.at('19:20')) ->> 'caller_number_id',
           'c0000000-0000-0000-0000-000000000001', 'call 2 uses call 1''s number');
-select case when pg_temp.test_mode() then skip('0028 test mode: production call check off') else is(check_dial((select id from t where name = 'r_other'), 'first', null, false, pg_temp.at('19:20')) ->> 'caller_number_id',
-          'c0000000-0000-0000-0000-000000000003', 'a new request prefers the number with fewest calls to this business') end;
+-- In 0028 test mode undeclared number 2 is eligible too; it has no calls either and was added
+-- before number 3, so it is the fewest-calls choice.
+select is(check_dial((select id from t where name = 'r_other'), 'first', null, false, pg_temp.at('19:20')) ->> 'caller_number_id',
+          case when pg_temp.test_mode() then 'c0000000-0000-0000-0000-000000000002' else 'c0000000-0000-0000-0000-000000000003' end, 'a new request prefers the number with fewest calls to this business');
 
 select is(pg_temp.reason(check_dial((select id from t where name = 'r1'), 'first', null, true, pg_temp.at('19:10'))),
           'retry_too_soon', 'redial before retry_delay_minutes → refused');
@@ -266,11 +269,16 @@ select set_limit('max_calls_per_user_per_day', '10', 'test');
 select is(pg_temp.reason(check_dial((select id from t where name = 'r_other'), 'first', null, false, pg_temp.at('19:50'))),
           'ok', 'null business limit → no limit');
 select set_limit('max_calls_per_business_per_number_per_day', '5', 'test');
-select case when pg_temp.test_mode() then skip('0028 test mode: production call check off') else is(check_dial((select id from t where name = 'r_other'), 'first', null, false, pg_temp.at('19:50')) ->> 'caller_number_id',
-          'c0000000-0000-0000-0000-000000000003', 'per-number business limit: another number can still call') end;
+-- In 0028 test mode the other number with no calls to Paragon is undeclared number 2.
+select is(check_dial((select id from t where name = 'r_other'), 'first', null, false, pg_temp.at('19:50')) ->> 'caller_number_id',
+          case when pg_temp.test_mode() then 'c0000000-0000-0000-0000-000000000002' else 'c0000000-0000-0000-0000-000000000003' end, 'per-number business limit: another number can still call');
 update caller_numbers set active = false where id = 'c0000000-0000-0000-0000-000000000003';
-select case when pg_temp.test_mode() then skip('0028 test mode: production call check off') else is(pg_temp.reason(check_dial((select id from t where name = 'r_other'), 'first', null, false, pg_temp.at('19:50'))),
-          'limit_business_number_day', 'max_calls_per_business_per_number_per_day enforced') end;
+-- In 0028 test mode undeclared number 2 could still call, so it is switched off too: only
+-- number 1, at its limit for Paragon, is left.
+update caller_numbers set active = false where id = 'c0000000-0000-0000-0000-000000000002' and pg_temp.test_mode();
+select is(pg_temp.reason(check_dial((select id from t where name = 'r_other'), 'first', null, false, pg_temp.at('19:50'))),
+          'limit_business_number_day', 'max_calls_per_business_per_number_per_day enforced');
+update caller_numbers set active = true where id = 'c0000000-0000-0000-0000-000000000002' and pg_temp.test_mode();
 select set_limit('max_calls_per_business_per_number_per_day', 'null', 'test');
 
 -- Two requests racing one business: the limit lets only one through.
