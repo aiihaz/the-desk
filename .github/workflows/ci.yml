@@ -10,9 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # 3.0.0's release download returns 504 since 8 Nov 2026; 2.122.0 is the CLI that applied
+      # 0028-0029 to the hosted project. Back to 3.0.0 once its download works.
       - uses: supabase/setup-cli@v1
         with:
-          version: 3.0.0
+          version: 2.122.0
       # The ubuntu-26.04 image of 2026-11-01 had 54322 taken before Supabase started.
       # Say what holds it, and use a free port for this run.
       - name: Free database port
