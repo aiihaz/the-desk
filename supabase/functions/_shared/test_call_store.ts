@@ -36,9 +36,14 @@ export class FakeCallStore implements CallStore {
     callerNumber: "+918041234567",
     city: "Kozhikode",
     state: "Kerala",
+    stateCode: "KL",
   };
   async dialTarget(): Promise<DialTarget> {
     return this.target;
+  }
+  languageGaps: { callId: string; state: string | null; stateCode: string | null }[] = [];
+  async noteLanguageGap(callId: string, p: { state: string | null; stateCode: string | null }) {
+    this.languageGaps.push({ callId, state: p.state, stateCode: p.stateCode });
   }
   inputs: CallInputs = {
     task: "booking",

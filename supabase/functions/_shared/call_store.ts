@@ -24,6 +24,7 @@ export type DialTarget = {
   callerNumber: string;
   city: string | null;
   state: string | null;
+  stateCode: string | null;
 };
 
 export interface CallStore {
@@ -40,6 +41,11 @@ export interface CallStore {
   markFailed(callId: string, reason: string): Promise<void>;
   beginSubmission(callId: string): Promise<void>;
   markUnknown(callId: string, reason: string, attemptId?: string): Promise<void>;
+  // A call opening in the app's default only because its state matched nothing (call_language.ts).
+  noteLanguageGap?(
+    callId: string,
+    place: { city: string | null; state: string | null; stateCode: string | null },
+  ): Promise<void>;
   // false if this attempt's result was already stored.
   saveEvent(attemptId: string, payload: unknown): Promise<boolean>;
   // Writes the result to a call that is still open. Returns its id, or null if the
@@ -71,7 +77,8 @@ export class DbCallStore implements CallStore, ReconcileStore {
 
   async dialTarget(callId: string): Promise<DialTarget> {
     const { data, error } = await this.db.from("calls")
-      .select("businesses(phone_e164, city, state), caller_numbers(e164)").eq("id", callId).single();
+      .select("businesses(phone_e164, city, state, state_code), caller_numbers(e164)").eq("id", callId)
+      .single();
     if (error) throw error;
     // deno-lint-ignore no-explicit-any
     const row = data as any;
@@ -80,6 +87,7 @@ export class DbCallStore implements CallStore, ReconcileStore {
       callerNumber: row.caller_numbers.e164,
       city: row.businesses.city,
       state: row.businesses.state,
+      stateCode: row.businesses.state_code,
     };
   }
 
@@ -226,6 +234,19 @@ export class DbCallStore implements CallStore, ReconcileStore {
   async beginSubmission(callId: string): Promise<void> {
     const { error } = await this.db.from("calls").update({ submission_state: "unknown" })
       .eq("id", callId).eq("status", "queued").is("provider_result", null);
+    if (error) throw error;
+  }
+
+  async noteLanguageGap(
+    callId: string,
+    place: { city: string | null; state: string | null; stateCode: string | null },
+  ): Promise<void> {
+    const { error } = await this.db.rpc("raise_alert", {
+      p_kind: "call_language_unknown",
+      p_request_id: null,
+      p_call_id: callId,
+      p_detail: { city: place.city, state: place.state, state_code: place.stateCode },
+    });
     if (error) throw error;
   }
 

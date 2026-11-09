@@ -66,9 +66,32 @@ Deno.test("no language given: the call opens in the business's local language, E
   await handle(post(ok), deps);
   assertEquals(started[1].language, "English");
 
-  store.target = { ...store.target, city: null, state: null };
+  store.target = { ...store.target, city: null, state: null, stateCode: null };
   await handle(post(ok), deps);
   assertEquals(started[2].language, undefined);
+  assertEquals(store.languageGaps, []);
+});
+
+Deno.test("the state is read by its code, so a renamed state keeps its language", async () => {
+  const { deps, store, started } = setup();
+  // Google now names Kerala "Keralam"; its code is still KL (Places, 8 Nov 2026).
+  store.target = { ...store.target, city: "Thiruvananthapuram", state: "Keralam", stateCode: "KL" };
+  await handle(post(ok), deps);
+  assertEquals(started[0].language, "Malayalam");
+  assertEquals(store.languageGaps, []);
+});
+
+Deno.test("a state that matches nothing still calls, in the default, and is reported", async () => {
+  const { deps, store, started } = setup();
+  // A row saved before codes were kept, under a name nothing knows.
+  store.target = { ...store.target, city: "Thiruvananthapuram", state: "Keralam", stateCode: null };
+  assertEquals((await handle(post(ok), deps)).status, 200);
+  assertEquals(started[0].language, undefined);
+  assertEquals(store.languageGaps, [{ callId: "c-1", state: "Keralam", stateCode: null }]);
+  // Where Sarvam speaks no local language, the default is intended: nothing to report.
+  store.target = { ...store.target, city: "Panaji", state: "Goa", stateCode: "GA" };
+  await handle(post(ok), deps);
+  assertEquals(store.languageGaps.length, 1);
 });
 
 Deno.test("must_reask from reserve_call reaches the agent", async () => {

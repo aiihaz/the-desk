@@ -11,6 +11,7 @@ export type PlaceHit = {
   city: string | null;
   // The state, for the language a call opens in (call_language.ts).
   state?: string | null;
+  stateCode?: string | null;
   phone: string | null;
   countryCode?: string | null;
   // The phone came from a web search (serper.ts), not Google Maps.
@@ -62,6 +63,10 @@ export function parsePlaces(body: Row): PlaceHit[] {
     city: component(p.addressComponents, "locality") ??
       component(p.addressComponents, "administrative_area_level_3"),
     state: component(p.addressComponents, "administrative_area_level_1"),
+    // Its code (KA, KL), which outlasts a change of name: what the call language is read by.
+    stateCode:
+      p.addressComponents?.find((c: Row) => c.types?.includes("administrative_area_level_1"))?.shortText ??
+        null,
     phone: toE164(p.internationalPhoneNumber),
     countryCode: p.addressComponents?.find((c: Row) => c.types?.includes("country"))?.shortText ?? null,
     openingHours: p.regularOpeningHours ?? null,

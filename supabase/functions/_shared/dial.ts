@@ -4,7 +4,7 @@
 // dial function and the chat agent's consent hand-off both start calls through here.
 import { isTurnInvalidated } from "./chat/turn_control.ts";
 import type { CallStore } from "./call_store.ts";
-import { openingLanguage } from "./call_language.ts";
+import { languageGap, openingLanguage } from "./call_language.ts";
 import { callVariables } from "./call_vars.ts";
 import type { CallKind, Language, StartCall } from "./sarvam.ts";
 import { CallRejected } from "./sarvam.ts";
@@ -67,6 +67,12 @@ export async function dial(deps: DialDeps, a: DialArgs): Promise<DialResult> {
     // A missing input fails here, after the reservation, so the attempt still counts.
     const variables = callVariables(a.kind, await deps.store.callInputs(r.call_id), r.must_reask);
     const target = await deps.store.dialTarget(r.call_id);
+    // The call still goes, in the app's default; the gap is reported so it gets a language.
+    if (!a.language && languageGap(target.city, target.state, target.stateCode)) {
+      await deps.store.noteLanguageGap?.(r.call_id, target).catch(() =>
+        console.warn("could not report a call language gap", r.call_id)
+      );
+    }
     call = {
       callId: r.call_id,
       kind: a.kind,
@@ -75,7 +81,7 @@ export async function dial(deps: DialDeps, a: DialArgs): Promise<DialResult> {
       businessPhone: target.businessPhone,
       variables,
       // An explicit language (the dial function's body) wins over where the business is.
-      language: a.language ?? openingLanguage(target.city, target.state),
+      language: a.language ?? openingLanguage(target.city, target.state, target.stateCode),
     };
   } catch (e) {
     // The row stays, marked failed, so the attempt counts against the limits.

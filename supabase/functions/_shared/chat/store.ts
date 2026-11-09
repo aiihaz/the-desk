@@ -895,6 +895,7 @@ export class DbChatStore implements ChatStore {
       area: p.area,
       city: p.city,
       state: p.state ?? null,
+      state_code: p.stateCode ?? null,
       phone_e164: p.phone,
       opening_hours: p.openingHours,
       source: p.placeId.startsWith("dev/") ? "user" : p.phoneFromWeb ? "serper" : "places",

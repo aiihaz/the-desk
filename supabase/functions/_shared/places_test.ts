@@ -13,6 +13,7 @@ Deno.test("parsePlaces: name, area, city, phone, closed", () => {
     area: "Ashok Nagar",
     city: "Bengaluru",
     state: "Karnataka",
+    stateCode: "KA",
     phone: "+919800000101",
     countryCode: "IN",
     openingHours: fixture("two_branches").places[0].regularOpeningHours,
