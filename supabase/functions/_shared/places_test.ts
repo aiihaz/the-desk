@@ -19,6 +19,7 @@ Deno.test("parsePlaces: name, area, city, phone, closed", () => {
     openingHours: fixture("two_branches").places[0].regularOpeningHours,
     closed: false,
     rating: null,
+    reviewCount: null,
   });
   assertEquals(indira.address, "100 Feet Rd, Indiranagar, Bengaluru, Karnataka 560038");
   assertEquals(

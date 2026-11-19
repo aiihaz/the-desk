@@ -14,6 +14,7 @@ const id=n=>'00000000-0000-0000-0000-'+String(n).padStart(12,'0');
 try {
 await db.query("update limits set value='4' where key='active_agent_version'");
 await db.query("insert into users(id,wa_id)values($1,'synthetic')",[id(1)]);
+await db.query("insert into user_limits(user_id,key,value,updated_by)values($1,'comparison_mode','true','synthetic')",[id(1)]);
 await db.query("insert into caller_numbers(id,e164,provider)values($1,'+919800000099','sarvam')",[id(2)]);
 await db.query("insert into requests(id,user_id,task,comparison,fields)values($1,$2,'question',true,'{\"questions\":[\"price?\"]}')",[id(3),id(1)]);
 for(let i=10;i<15;i++) await db.query("insert into businesses(id,name,phone_e164,source)values($1,$2,$3,'user')",[id(i),'Synthetic '+i,'+9198000000'+i]);

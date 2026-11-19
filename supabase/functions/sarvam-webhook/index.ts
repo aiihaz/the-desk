@@ -4,8 +4,7 @@ import { DbChatStore } from "../_shared/chat/store.ts";
 import { claimChecker, verifier } from "../_shared/chat/verify.ts";
 import { createDelivery } from "../_shared/messaging.ts";
 import { observedResponsesClient as responsesClient } from "../_shared/model_client.ts";
-import { DbStore, serviceClient } from "../_shared/store.ts";
-import { getRecording, sarvamConfigFromEnv } from "../_shared/sarvam.ts";
+import { DbStore } from "../_shared/store.ts";
 import { handle } from "./handler.ts";
 
 const store = new DbCallStore();
@@ -35,19 +34,5 @@ Deno.serve((req) =>
         callId,
         r,
       ),
-    // 0031: archive the call's recording to the private call-audio bucket. Runs only
-    // when limits.comparison_mode is on (checked by the handler). A missing recording
-    // on the provider's side leaves calls.audio_path null.
-    archiveAudio: async (callId, interactionId) => {
-      const wav = await getRecording(sarvamConfigFromEnv(), interactionId);
-      if (!wav) return;
-      const path = `${callId}.wav`;
-      const { error } = await serviceClient().storage.from("call-audio").upload(path, wav, {
-        contentType: "audio/wav",
-        upsert: true,
-      });
-      if (error) throw new Error(`call-audio upload failed: ${error.message}`);
-      await store.setAudioPath(callId, path);
-    },
   })
 );

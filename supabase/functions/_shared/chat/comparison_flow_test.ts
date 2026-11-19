@@ -87,6 +87,8 @@ Deno.test("comparison find: named businesses first, rated fill, unusable named d
   const deps: FindDeps = {
     store,
     send: async () => "wamid.x",
+    resolveNamed: async (named, _area, _city, hits) =>
+      hits.find((h) => h.name === (named === "Salon Zulu" ? "Salon Zulu HSR" : named)) ?? null,
     searchPlaces: async ({ text }) => {
       if (text.startsWith("Salon Zulu")) return [hit("z1", "Salon Zulu HSR", 4.2)];
       if (text.startsWith("Ghost Salon")) return [];
@@ -125,6 +127,8 @@ Deno.test("comparison find: four named plus rated stays under the cap", async ()
   const deps: FindDeps = {
     store,
     send: async () => "wamid.x",
+    resolveNamed: async (named, _area, _city, hits) =>
+      hits.find((h) => h.name === (named === "Salon Zulu" ? "Salon Zulu HSR" : named)) ?? null,
     searchPlaces: async ({ text }) => {
       for (const n of ["One", "Two", "Three", "Four"]) {
         if (text.startsWith(`Salon ${n}`)) return [hit(`n-${n}`, `Salon ${n}`, 4.0)];

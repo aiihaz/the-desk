@@ -1098,14 +1098,25 @@ async function reportComparisonCall(
 
   const places = await store.recipientPlaces(req.id);
   const attempted = new Set(calls.map((c) => c.businessId));
-  const notAttempted = (req.recipientIds ?? []).flatMap((id, i) =>
-    attempted.has(id) ? [] : [{ place: places[i]?.name ?? "a selected business", outcome: "not called" }]
+  const byBusiness = new Map(places.map((p) => [p.businessId, p]));
+  const notAttempted = (req.recipientIds ?? []).flatMap((id) =>
+    attempted.has(id)
+      ? []
+      : [{ place: byBusiness.get(id)?.name ?? "a selected business", outcome: "not called" }]
   );
-  const facts: Facts = {
+  const facts: Facts & { _comparison_result: BatchOutcome & { place: string } } = {
     event: "comparison_summary",
-    errand: errandFacts(req, call, now),
+    errand: {
+      ...errandFacts(req, call, now),
+      task: "question",
+      purpose: "comparison questions only; no booking or hold",
+    },
+    _comparison_result: {
+      ...batchOutcome(r, outputs),
+      place: calls.find((c) => c.id === call.callId)?.placeName ?? "a selected business",
+    },
     happened: {
-      status: "every call is in; the places ranked by what they said",
+      status: "every call is in; the places ranked by response completeness, not value",
       results,
       ...(notAttempted.length ? { not_called: notAttempted } : {}),
     },
@@ -1143,7 +1154,9 @@ async function reportCallImpl(deps: ReportDeps, callId: string, r: CallResult): 
   const req = await store.request(call.requestId);
   // A comparison errand (0032): no per-call booking machinery, no per-call message. The
   // call settles on its own; when its batch is done, one ranked summary goes out.
-  if (req.comparison) return reportComparisonCall(deps, call, req, r, now);
+  if (req.comparison && req.task !== "cancel" && req.task !== "reschedule") {
+    return reportComparisonCall(deps, call, req, r, now);
+  }
   const outputs = readOutputs(call.kind, r.outputs);
   const optOut = outputs?.opt_out_requested === "yes";
 

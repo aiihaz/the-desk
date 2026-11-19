@@ -107,7 +107,12 @@ export class FakeChatStore implements ChatStore {
     { name: "Salon Three", address: null, area: "HSR Layout", city: "Bengaluru" },
   ];
   async recipientPlaces() {
-    return this.req?.recipientIds?.length ? this.recipientList.slice(0, this.req.recipientIds.length) : [];
+    return this.req?.recipientIds?.length
+      ? this.recipientList.slice(0, this.req.recipientIds.length).map((p, i) => ({
+        ...p,
+        businessId: this.req!.recipientIds![i],
+      }))
+      : [];
   }
   recipientsSet: { requestId: string; ids: string[] }[] = [];
   async setRecipients(requestId: string, ids: string[]) {
@@ -115,7 +120,10 @@ export class FakeChatStore implements ChatStore {
     if (this.req) this.req.recipientIds = ids;
     return { ok: true as const };
   }
-  async finishComparisonDispatch(_requestId: string) {}
+  dispatchFinishes: { requestId: string; interrupted: boolean }[] = [];
+  async finishComparisonDispatch(requestId: string, interrupted = false) {
+    this.dispatchFinishes.push({ requestId, interrupted });
+  }
   comparisonSettlements: { callId: string; s: unknown; facts: unknown }[] = [];
   comparisonBatchComplete = true;
   async settleComparisonCall(callId: string, s2: { optOut: boolean; wrongNumber: boolean }, facts: Facts) {

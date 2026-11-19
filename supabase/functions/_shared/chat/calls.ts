@@ -2,6 +2,7 @@
 // If the call can't start, the request ends (call_not_started) and the user is told why,
 // so nothing waits in calling_1 for a call that isn't coming.
 // The result comes back through sarvam-webhook to report.ts.
+import { isTurnInvalidated } from "./turn_control.ts";
 import type { DialArgs, DialResult } from "../dial.ts";
 import type { User } from "../store.ts";
 import type { CallKind } from "../sarvam.ts";
@@ -90,11 +91,14 @@ async function comparisonAfterConsent(
 ): Promise<{ started: boolean }> {
   const ids = explicitRecipients(r.recipientIds) ?? [];
   const places = await deps.store.recipientPlaces(c.request_id);
-  const nameOf = (i: number) => (places[i] ? spokenPlace(places[i]) : "a picked place");
+  const byId = new Map(places.map((p) => [p.businessId, p]));
+  const nameOf = (id: string) =>
+    byId.has(id) ? spokenPlace(byId.get(id)!) : "a selected business whose listing is unavailable";
   const started: string[] = [];
   const skipped: { place: string; why: string }[] = [];
+  let interrupted = false;
   try {
-    for (const [i, businessId] of ids.entries()) {
+    for (const businessId of ids) {
       const res = await deps.dial({
         requestId: c.request_id,
         kind: "question",
@@ -104,32 +108,45 @@ async function comparisonAfterConsent(
       });
       deps.trace?.("dial", { comparison: true, businessId, res });
       if (res.ok) {
-        started.push(nameOf(i));
+        started.push(nameOf(businessId));
         continue;
       }
       if (res.error === "submission_unknown") {
-        started.push(`${nameOf(i)} (submission uncertain, do not retry)`);
+        started.push(`${nameOf(businessId)} (submission uncertain, do not retry)`);
         break;
       }
       // They wrote again mid-batch: the rest waits for their next message; calls already
       // started run and report.
       if (res.error === "refused" && res.reason === "new_inbound") {
         if (!started.length) await deps.store.deferChangedConsent?.(c.request_id);
-        return { started: started.length > 0 };
+        interrupted = true;
+        for (const id of ids.slice(ids.indexOf(businessId))) {
+          skipped.push({
+            place: nameOf(id),
+            why: "you sent a new message, so the remaining calls were stopped and need a new approved plan",
+          });
+        }
+        break;
       }
       if (res.error === "refused" && res.reason.startsWith("caller_contract_")) {
         await deps.store.raiseAlert(res.reason, c.request_id, null, { kind: "question" });
       }
       skipped.push({
-        place: nameOf(i),
+        place: nameOf(businessId),
         why: res.error === "refused"
           ? WHY[res.reason] ?? "a check on the Desk's side; the Desk doesn't have a reason it can give them"
           : "the phone provider, which rejected the Desk's request to place the call",
       });
     }
+  } catch (error) {
+    if (!isTurnInvalidated(error)) throw error;
+    interrupted = true;
   } finally {
-    await deps.store.finishComparisonDispatch(c.request_id);
+    await deps.store.finishComparisonDispatch(c.request_id, interrupted);
   }
+  // An interrupted turn cannot write through its expired fence. The cleanup RPC
+  // durably queues the immediate status notice for the outbox worker instead.
+  if (interrupted) return { started: started.length > 0 };
   if (!started.length) {
     const ended = await deps.store.callNotStarted(c.request_id);
     deps.trace?.("call_not_started", ended);
@@ -157,7 +174,9 @@ export async function callAfterConsent(
   c: ConsentStored,
 ): Promise<{ started: boolean }> {
   const r = await deps.store.request(c.request_id);
-  if (r.comparison) return comparisonAfterConsent(deps, user, c, r);
+  if (r.comparison && r.task !== "cancel" && r.task !== "reschedule") {
+    return comparisonAfterConsent(deps, user, c, r);
+  }
   const kind = callKind(c.kind, r.task);
   // Calling again after no answer or busy is a retry: it counts against
   // max_retries_no_answer and waits retry_delay_minutes, not against the request's calls.

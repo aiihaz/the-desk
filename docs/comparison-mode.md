@@ -1,5 +1,10 @@
 # Comparison mode
 
+REVIEW HOLD: the deployed version below has confirmed defects. Keep comparison OFF.
+The review corrections and test limits are recorded in
+[comparison-review-fixes.md](comparison-review-fixes.md). The fix pass is committed for branch review only, not deployed. The description below records the original deployed
+implementation, not a readiness claim.
+
 Branch: `comparison-mode`, based on `imessage-linq` at `c1ff38e`.
 Deployed on 19 November 2026 from runtime commit `53a97b5`.
 Live schema: `0033`. `comparison_mode=false`. Original `imessage-linq` unchanged.

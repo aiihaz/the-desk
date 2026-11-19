@@ -235,6 +235,9 @@ export async function proposePlan(
   const { store } = deps;
   const now = deps.now?.() ?? new Date();
   let r = await store.request(requestId);
+  // Cancellation/rescheduling can never be converted into discovery calls, even
+  // for an old row created by the original broad snapshot trigger.
+  if (r.task === "cancel" || r.task === "reschedule") r = { ...r, comparison: false };
   if (r.pausedAt) return { ok: false, reason: "paused" };
   const info = await store.user(user.id);
   const mayBook = r.task === "booking" || r.task === "reschedule"
@@ -356,7 +359,8 @@ export async function proposePlan(
       note,
     });
     facts = comparisonPlanFacts({ places: comparisonPlaces, f: r.fields, customerPhone: info.phone });
-  } else {switch (r.task) {
+  } else {
+    switch (r.task) {
       case "booking":
         p = bookingReadback({
           place: place!,
@@ -396,7 +400,8 @@ export async function proposePlan(
         facts = planFacts({ task: "cancel", booking, now });
         break;
       }
-    }}
+    }
+  }
   // Which words go out, and why: Luna's, or the readback and the reason (diagnostics).
   const runId = crypto.randomUUID();
   let source: { outcome: "writer" | "readback"; reason: string } = {

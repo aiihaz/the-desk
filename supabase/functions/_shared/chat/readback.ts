@@ -13,6 +13,7 @@ const TZ = "Asia/Kolkata";
 // webNumber: the phone came from a web search, not Google Maps (eng plan 3.3).
 // area: the neighbourhood from Maps (0026), which tells two outlets apart.
 export type Place = {
+  businessId?: string;
   name: string;
   address: string | null;
   city: string | null;
@@ -294,7 +295,7 @@ export function comparisonReadback(
     x.note,
     `I'll call these ${x.places.length} places and ask each of them: ${asks}${
       serviceContext(x.f)
-    }\n\nThe calls:${list}\n\n${who} When they all answer I'll rank what they said.\n\nShall I call them?`,
+    }\n\nThe calls:${list}\n\n${who} When all the calls finish I'll group the answers by completeness, not by business quality.\n\nShall I call them?`,
   ));
 }
 

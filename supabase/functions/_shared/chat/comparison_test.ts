@@ -1,11 +1,5 @@
 import { deepStrictEqual as assertEquals } from "node:assert/strict";
-import {
-  COMPARISON_CAP,
-  comparisonQuestions,
-  explicitRecipients,
-  nameMatches,
-  rankedRecipients,
-} from "./comparison.ts";
+import { COMPARISON_CAP, comparisonQuestions, explicitRecipients, rankedRecipients } from "./comparison.ts";
 
 Deno.test("explicit list keeps order, dedupes and caps at five", () => {
   assertEquals(explicitRecipients(null), null);
@@ -39,8 +33,6 @@ Deno.test("comparison question brief excludes unapproved identity fields", () =>
   assertEquals(qs.join(" ").includes("blow dry"), true);
 });
 Deno.test("comparison recipient identity and unique cap", () => {
-  assertEquals(nameMatches("SS Roofings", "RR Roofings"), false);
-  assertEquals(nameMatches("SS Roofings", "SS Roofings"), true);
   assertEquals(
     rankedRecipients([{ id: "a", rating: 5 }, { id: "a", rating: 5 }, { id: "b", rating: 4 }]).map((x) =>
       x.id

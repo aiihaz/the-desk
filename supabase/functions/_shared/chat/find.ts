@@ -3,12 +3,21 @@
 // what was searched, where, and each match's name, area and city. Luna reads them
 // against what the user meant (a branch, a spelling, a city by its old name) and asks
 // when it can't tell. Nothing here ranks or recommends.
+import { resolveNamedBusiness } from "./business_identity.ts";
 import type { User } from "../store.ts";
 import type { PlaceHit, SearchPlaces } from "../places.ts";
-import { COMPARISON_CAP, mergeRecipients, nameMatches, rankedRecipients } from "./comparison.ts";
+import { COMPARISON_CAP, mergeRecipients, rankedRecipients } from "./comparison.ts";
 import { cleanField, type ToolDeps, type ToolResult } from "./tools.ts";
 
-export type FindDeps = ToolDeps & { searchPlaces: SearchPlaces };
+export type FindDeps = ToolDeps & {
+  searchPlaces: SearchPlaces;
+  resolveNamed?: (
+    named: string,
+    area: string | null,
+    city: string,
+    hits: PlaceHit[],
+  ) => Promise<PlaceHit | null>;
+};
 
 // query: the place's name, or a kind of place ("dentist") when by_kind.
 // recipients (comparison errands only): the businesses they named for this errand, in
@@ -56,7 +65,8 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
   // The comparison version (0031): ratings come with the results so the Desk can pick
   // the highest-rated five. places.rating is a pricier SKU, asked for only here.
   const { request: activeReq } = await deps.store.active(user.id);
-  const comparison = !!activeReq?.comparison;
+  const comparison = !!activeReq?.comparison && activeReq.task !== "cancel" &&
+    activeReq.task !== "reschedule";
 
   const text = [query, area, city].filter(Boolean).join(", ");
   let found: PlaceHit[];
@@ -84,13 +94,15 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
 
   if (comparison && activeReq) {
     // The Desk picks, and they never choose. Businesses they named go first in their
-    // order (each resolved by its own search; one that can't be found, or has no phone
-    // or is closed, is dropped and said so); the highest-rated results only fill the
+    // order. Ambiguous identity stops for clarification. No callable search results
+    // are disclosed as unavailable; the highest-rated results only fill the
     // slots the named list can't supply. Never more than five. The plan names every
     // pick.
+    const identityModel = (await deps.store.limitText("luna_model", user.id)) ?? "gpt-6-luna";
     const namedIds: string[] = [];
     const namedHits = new Map<string, { hit: PlaceHit; rating: number | null }>();
     const dropped: string[] = [];
+    const unresolved: string[] = [];
     for (const rawName of (a.recipients ?? []).slice(0, COMPARISON_CAP)) {
       const recipient = cleanField(rawName, 80);
       if (!recipient) continue;
@@ -101,17 +113,37 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
           withRating: true,
         });
       } catch {
-        hits = [];
+        unresolved.push(recipient);
+        continue;
       }
-      const matches = hits.filter((h) =>
-        nameMatches(recipient, h.name) && h.phone && !h.closed && (!h.countryCode || h.countryCode === "IN")
-      );
-      const match = matches.length === 1 ? matches[0] : null;
-      if (match) {
+      const matches = hits.filter((h) => h.phone && !h.closed && (!h.countryCode || h.countryCode === "IN"));
+      const resolve = deps.resolveNamed ??
+        (deps.create
+          ? (name: string, a: string | null, c: string, candidates: PlaceHit[]) =>
+            resolveNamedBusiness(deps.create!, identityModel, name, a, c, candidates)
+          : null);
+      // Missing resolver is not evidence that the first hit is the named business.
+      if (!matches.length) {
+        dropped.push(recipient);
+        continue;
+      }
+      let match: PlaceHit | null = null;
+      try {
+        match = resolve ? await resolve(recipient, area, city, matches) : null;
+      } catch { /* An unavailable identity check is unresolved, not a rejected listing. */ }
+      if (match && matches.some((candidate) => candidate.placeId === match!.placeId)) {
         const id = await deps.store.savePlace(match);
         namedIds.push(id);
         namedHits.set(id, { hit: match, rating: match.rating ?? null });
-      } else dropped.push(recipient);
+      } else unresolved.push(recipient);
+    }
+    if (unresolved.length) {
+      return {
+        ok: false,
+        reason:
+          "Named business identity unresolved; do not replace it silently. Clarify only the unresolved branch or location, then search again.",
+        unresolved_named: unresolved,
+      };
     }
     const ranked = rankedRecipients(callable.map((hit, i) => ({ id: ids[i], rating: hit.rating, hit })));
     const byId = new Map(ranked.map((x) => [x.id, x]));
@@ -139,18 +171,18 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
         name: x.hit ? cleanField(x.hit.name, 80) : null,
         area: x.hit ? cleanField(x.hit.area, 60) : null,
         rating: x.rating,
+        review_count: x.hit?.reviewCount ?? null,
       })),
       named_first: namedIds.length,
       unusable_named: dropped.length ? dropped : undefined,
-      note: `propose_plan when nothing else is missing: the plan names all ${
-        picked.length > COMPARISON_CAP ? COMPARISON_CAP : picked.length
-      } places and says each gets the same questions. No choose_business, no asking them to pick.${
-        dropped.length
-          ? ` Named but can't be called: ${
-            dropped.join(", ")
-          } — say so and why (not found, no number, or closed).`
-          : ""
-      }`,
+      note:
+        `propose_plan when nothing else is missing: the plan names all ${picked.length} places and says each gets the same questions. No choose_business, no asking them to pick.${
+          dropped.length
+            ? ` Named but can't be called: ${
+              dropped.join(", ")
+            }. Say so and why (not found, no number, or closed).`
+            : ""
+        }`,
     };
   }
 

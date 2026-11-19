@@ -1,3 +1,4 @@
+import { audioWork, processCallAudio } from "../_shared/call_audio.ts";
 import { ingestPayload } from "../wa-inbound/handler.ts";
 import { callAfterConsent } from "../_shared/chat/calls.ts";
 import { createAgentRuntime } from "../_shared/agent_runtime.ts";
@@ -53,6 +54,7 @@ Deno.serve(async (req) => {
   const denied = authorizeInternal(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "");
   if (denied) return denied;
   if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
+  await processCallAudio(audioWork(db), Deno.env.get("DESK_AUDIO_ARCHIVE_APPROVED") === "true");
   const recovered = await db.rpc("recover_reserved_calls");
   if (recovered.error) throw recovered.error;
   // Terminal provider results remain durable until settlement, regardless of webhook retries.

@@ -109,12 +109,12 @@ Deno.test("comparison on and off flip comparison_mode", async () => {
   const a = new FakeAdmin();
   assertEquals((await runAdmin(a, "comparison on", by)).startsWith("Comparison on"), true);
   assertEquals((await runAdmin(a, "comparison off", by)).startsWith("Comparison off"), true);
-  assertEquals(a.calls, [["setLimit", "comparison_mode", true, by, null], [
+  assertEquals(a.calls, [["setLimit", "comparison_mode", true, by, by], [
     "setLimit",
     "comparison_mode",
     false,
     by,
-    null,
+    by,
   ]]);
 });
 
@@ -198,4 +198,12 @@ Deno.test("alerts: sent once any admin gets them; kept new when none can be reac
   });
   assertEquals(res2, { sent: 0, undelivered: 1 });
   assertEquals(b.notified, []);
+});
+
+Deno.test("generic limit command cannot turn comparison on globally or for another account", async () => {
+  const a = new FakeAdmin();
+  for (const text of ["set limit comparison_mode true", "set limit comparison_mode true for 919999999999"]) {
+    assertEquals((await runAdmin(a, text, by)).includes("global comparison switch is not allowed"), true);
+  }
+  assertEquals(a.calls, []);
 });

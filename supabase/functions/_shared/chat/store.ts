@@ -378,7 +378,7 @@ export interface ChatStore {
   comparisonCalls(requestId: string): Promise<ComparisonCall[]>;
   // The businesses a comparison errand will call (0032). At most five, deduped.
   setRecipients(requestId: string, ids: string[]): Promise<{ ok: true } | Refused>;
-  finishComparisonDispatch(requestId: string): Promise<void>;
+  finishComparisonDispatch(requestId: string, interrupted?: boolean): Promise<void>;
   // The recipients' places, in recipient order.
   recipientPlaces(requestId: string): Promise<Place[]>;
   // now: only to simulate a later time. Unset, the database's clock decides what's due,
@@ -1257,8 +1257,13 @@ export class DbChatStore implements ChatStore {
     );
   }
 
-  async finishComparisonDispatch(requestId: string): Promise<void> {
-    await this.rpc("finish_comparison_dispatch", { p_request_id: requestId });
+  async finishComparisonDispatch(requestId: string, interrupted = false): Promise<void> {
+    // Machine-owned cleanup survives a superseded turn, but cannot reserve calls.
+    const { error } = await serviceClient().rpc(
+      interrupted ? "interrupt_comparison_dispatch" : "finish_comparison_dispatch",
+      { p_request_id: requestId },
+    );
+    if (error) throw error;
   }
 
   async comparisonCalls(requestId: string): Promise<ComparisonCall[]> {
@@ -1295,6 +1300,7 @@ export class DbChatStore implements ChatStore {
     // deno-lint-ignore no-explicit-any
     const byId = new Map(data.map((b: any) => [b.id, b]));
     return ids.map((id) => byId.get(id)).filter(Boolean).map((b) => ({
+      businessId: b.id,
       name: b.name,
       address: null,
       area: b.area,

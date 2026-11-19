@@ -36,16 +36,6 @@ export function mergeRecipients(primary: string[], fill: string[]): string[] {
   return out;
 }
 
-// Whether a search hit is the business someone named, forgiving about case, extra
-// words and punctuation ("TONI&GUY HSR" naming "Toni & Guy Essensuals"). Words of four
-// letters or more from the named text must all appear in the hit's name.
-export function nameMatches(named: string, hitName: string): boolean {
-  const words = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean);
-  const hit = new Set(words(hitName));
-  const significant = words(named).filter((w) => w.length >= 2);
-  return significant.length > 0 && significant.every((w) => hit.has(w));
-}
-
 // Shared by the consent readback and each caller brief. Do not serialize the whole
 // fields record: names and phone numbers have their own explicit sharing controls.
 export function comparisonQuestions(f: Record<string, unknown>): string[] {
@@ -54,23 +44,26 @@ export function comparisonQuestions(f: Record<string, unknown>): string[] {
     : typeof f.question === "string"
     ? [f.question]
     : [];
-  const keys = [
-    "service",
-    "party_size",
-    "exact_time",
-    "window_start",
-    "window_end",
-    "tolerance_min",
-    "max_price_rs",
-    "service_details",
-    "also_ask",
-  ];
-  const details = Object.fromEntries(
-    keys.filter((k) => f[k] !== undefined && f[k] !== null)
-      .map((k) => [k, f[k]]),
-  );
-  if (Object.keys(details).length) {
-    qs.push(`Ask about availability, price and conditions for: ${JSON.stringify(details)}`);
+  const text = (value: unknown): string | null => {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (Array.isArray(value)) return value.filter((x) => typeof x === "string").join(", ") || null;
+    return null;
+  };
+  const labels: Record<string, string> = {
+    service: "Service",
+    party_size: "Party size",
+    exact_time: "Requested time",
+    window_start: "Earliest time",
+    window_end: "Latest time",
+    tolerance_min: "Time flexibility in minutes",
+    max_price_rs: "Budget in rupees",
+    service_details: "Service details",
+    also_ask: "Also ask",
+  };
+  for (const [key, label] of Object.entries(labels)) {
+    const value = text(f[key]);
+    if (value) qs.push(`${label}: ${value}`);
   }
   return qs;
 }

@@ -22,6 +22,7 @@ export type PlaceHit = {
   // Google Maps rating (1-5). Requested only for comparison errands (places.rating is
   // an Atmosphere-SKU field, priced above the Enterprise fields above).
   rating?: number | null;
+  reviewCount?: number | null;
 };
 
 export type SearchPlaces = (q: { text: string; withRating?: boolean }) => Promise<PlaceHit[]>;
@@ -46,7 +47,7 @@ export function placesClient(apiKey: string, timeoutMs = 10_000, f: typeof fetch
       headers: {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": withRating ? `${FIELDS},places.rating` : FIELDS,
+        "X-Goog-FieldMask": withRating ? `${FIELDS},places.rating,places.userRatingCount` : FIELDS,
       },
       body: JSON.stringify({ textQuery: text, regionCode: "IN", languageCode: "en", pageSize: 5 }),
     });
@@ -79,6 +80,7 @@ export function parsePlaces(body: Row): PlaceHit[] {
     openingHours: p.regularOpeningHours ?? null,
     closed: p.businessStatus === "CLOSED_PERMANENTLY" || p.businessStatus === "CLOSED_TEMPORARILY",
     rating: typeof p.rating === "number" ? p.rating : null,
+    reviewCount: typeof p.userRatingCount === "number" ? p.userRatingCount : null,
   })).filter((p) => p.name);
 }
 

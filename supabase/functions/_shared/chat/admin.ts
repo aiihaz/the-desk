@@ -30,7 +30,7 @@ export interface AdminStore {
     by: string,
     userWaId: string | null,
   ): Promise<{ ok: boolean; reason?: string }>;
-  limits(): Promise<{ key: string; value: unknown }[]>;
+  limits(userWaId?: string): Promise<{ key: string; value: unknown }[]>;
   addCredit(rs: number, by: string): Promise<number>;
   optOut(phone: string): Promise<boolean>;
   numbers(): Promise<Json[]>;
@@ -64,7 +64,7 @@ export async function runAdmin(store: AdminStore, text: string, by: string): Pro
 
   if (lower === "status") {
     const s = await store.status();
-    const limits = await store.limits();
+    const limits = await store.limits(by);
     const comparison = limits.find((l) => l.key === "comparison_mode")?.value === true;
     const calls = Object.entries(s.calls_today ?? {}).map(([k, v]) => `${k} ${v}`).join(", ") || "none";
     return [
@@ -106,11 +106,11 @@ export async function runAdmin(store: AdminStore, text: string, by: string): Pro
     // them, and each settled call's audio is archived to the call-audio bucket.
     // Off = today's behaviour, unchanged.
     const on = m[1] === "on";
-    const r = await store.setLimit("comparison_mode", on, by, null);
+    const r = await store.setLimit("comparison_mode", on, by, by);
     if (!r.ok) return `Couldn't change comparison mode: ${r.reason}`;
     return on
-      ? "Comparison on: new errands call up to 5 picked businesses and keep call audio. Anything already under way is unchanged."
-      : "Comparison off: back to the regular flow; new calls aren't archived.";
+      ? "Comparison on for your account only: new question/comparison errands can call up to 5 businesses. Cancellation and rescheduling stay in the regular flow. Audio archiving requires verified recording and retention consent."
+      : "Comparison off for your account: new errands use the regular flow. Existing requests keep their approved mode.";
   }
   if ((m = lower.match(/^credit (?:rs\.? ?)?([0-9]+(?:\.[0-9]+)?)$/))) {
     try {
@@ -139,6 +139,9 @@ export async function runAdmin(store: AdminStore, text: string, by: string): Pro
     } catch {
       // A bare word is a string: "set limit luna_model gpt-6-luna".
       value = raw;
+    }
+    if (key.toLowerCase() === "comparison_mode") {
+      return "Use comparison on/off for your own account. A global comparison switch is not allowed.";
     }
     const r = await store.setLimit(key.toLowerCase(), value, by, waId ?? null);
     return r.ok
@@ -191,6 +194,14 @@ export class DbAdminStore implements AdminStore {
   }
 
   async setLimit(key: string, value: unknown, by: string, userWaId: string | null) {
+    if (
+      key === "comparison_mode" && value === true && Deno.env.get("DESK_AUDIO_ARCHIVE_APPROVED") !== "true"
+    ) {
+      return {
+        ok: false,
+        reason: "recording and retention consent have not been verified; comparison mode remains off",
+      };
+    }
     let userId: string | null = null;
     if (userWaId) {
       const { data, error } = await this.db.from("users").select("id")
@@ -209,9 +220,24 @@ export class DbAdminStore implements AdminStore {
     return error ? { ok: false, reason: error.message } : { ok: true };
   }
 
-  async limits() {
+  async limits(userWaId?: string) {
     const { data, error } = await this.db.from("limits").select("key, value").order("key");
     if (error) throw error;
+    if (userWaId) {
+      const { data: user, error: ue } = await this.db.from("users").select("id").eq(
+        "wa_id",
+        identityKey(userWaId, this.channel),
+      ).maybeSingle();
+      if (ue) throw ue;
+      const scoped = user
+        ? await this.db.from("user_limits").select("value").eq("user_id", user.id).eq(
+          "key",
+          "comparison_mode",
+        ).maybeSingle()
+        : { data: null, error: null };
+      if (scoped.error) throw scoped.error;
+      return data.map((l) => l.key === "comparison_mode" ? { ...l, value: scoped.data?.value === true } : l);
+    }
     return data;
   }
 
