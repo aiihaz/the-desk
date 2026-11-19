@@ -91,3 +91,7 @@ Fixes to the review-fix commit above. Like that commit, these are not migrated o
 Still open: the `erase_requested_users` and `defer_changed_consent` patches match on repository source text. If the live functions differ, the migration stops with "source changed: review required" rather than misapplying. Compare against the live definitions before applying.
 
 Checks for this pass: `deno task check` clean; `deno task test` 557 passed, 0 failed; `comparison_full_schema_test.mjs`, `comparison_sql_test.mjs` and the new `comparison_audio_erasure_test.mjs` pass in PGlite 0.5.17. `comparison_review_db_test.py` was updated to the new behaviour but not run here (no `pgserver`).
+
+## Owner decision, 19 November 2026
+
+Ihaz decided that recording consent is not needed for now. When comparison mode is deployed, set `DESK_AUDIO_ARCHIVE_APPROVED=true` so that `comparison on` is accepted and call audio is archived under the existing retention and erasure rules. No code change.
