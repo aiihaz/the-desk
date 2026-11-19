@@ -7,7 +7,6 @@ import {
   parseWebhook,
   type SarvamConfig,
   startCall,
-  TEST_CALL_RECIPIENT,
   verifyWebhookToken,
 } from "./sarvam.ts";
 
@@ -57,7 +56,7 @@ Deno.test("buildOutbound: version, numbers, variables, webhook", () => {
     agent_phone_number: "+918041234567",
   });
   assertEquals(p.app_config.app_overrides, { initial_language_name: "Hindi" });
-  assertEquals(p.user_config, { user_phone_number: TEST_CALL_RECIPIENT });
+  assertEquals(p.user_config, { user_phone_number: call.businessPhone });
   assertEquals(p.webhook_config.metadata, { call_id: "c-1" });
   assertEquals(new URL(p.webhook_config.url).searchParams.get("token"), "t0ken");
 });
@@ -136,7 +135,7 @@ Deno.test("every call kind's variables build a request Sarvam's caller declares"
   assert(String(first.task_context).includes("Up to 30 minutes either way of the time."));
 });
 
-Deno.test("every call kind ignores the Maps destination and any supplied destination override", () => {
+Deno.test("every call kind dials the call's own business, and no variable can redirect it", () => {
   for (const kind of ["first", "booking", "question", "reschedule", "payment_confirm", "cancel"] as const) {
     const p = buildOutbound(cfg, {
       ...call,
@@ -144,7 +143,7 @@ Deno.test("every call kind ignores the Maps destination and any supplied destina
       businessPhone: "+14155551234",
       variables: { ...call.variables, user_phone_number: "+14155559999", business_phone: "+14155550000" },
     });
-    assertEquals(p.user_config.user_phone_number, "+918848878757");
+    assertEquals(p.user_config.user_phone_number, "+14155551234");
   }
 });
 
@@ -171,7 +170,7 @@ Deno.test("startCall: posts to Instant Outbound with the API key", async () => {
     assertEquals(await startCall(cfg, call), "a-1");
     assertEquals(seen!.url, "https://apps.sarvam.ai/api/outbounds/v1/orgs/org/workspaces/ws/outbounds");
     assertEquals(seen!.headers.get("x-api-key"), "key");
-    assertEquals((await seen!.json()).user_config.user_phone_number, "+918848878757");
+    assertEquals((await seen!.json()).user_config.user_phone_number, call.businessPhone);
   } finally {
     globalThis.fetch = real;
   }

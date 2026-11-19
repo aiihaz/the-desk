@@ -4,10 +4,6 @@
 
 export type CallKind = "first" | "booking" | "question" | "reschedule" | "payment_confirm" | "cancel";
 
-// This alternate branch is an owner-only test deployment. Never route to a
-// discovered business or accept a destination override from configuration/tools.
-export const TEST_CALL_RECIPIENT = "+918848878757";
-
 // Values Sarvam accepts for app_overrides.initial_language_name.
 export const LANGUAGES = [
   "Assamese",
@@ -110,7 +106,9 @@ export function buildOutbound(cfg: SarvamConfig, call: StartCall): Json {
       agent_variables: { ...inputs, call_kind: call.kind },
       ...(call.language ? { app_overrides: { initial_language_name: call.language } } : {}),
     },
-    user_config: { user_phone_number: TEST_CALL_RECIPIENT },
+    // The call's own business (calls.business_id, checked by reserve_call). Nothing in the
+    // variables, configuration or tools can change where a call goes.
+    user_config: { user_phone_number: call.businessPhone },
     // Echoed back in the webhook; the call id is how results find their row.
     webhook_config: { url: url.toString(), metadata: { call_id: call.callId } },
   };
