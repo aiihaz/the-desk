@@ -1,8 +1,8 @@
-# Comparison mode, staged implementation
+# Comparison mode
 
 Branch: `comparison-mode`, based on `imessage-linq` at `c1ff38e`.
-Push and deployment approved on 19 November 2026. Deployment verification is in progress.
-No migrations applied to the live database as of this commit.
+Deployed on 19 November 2026 from runtime commit `53a97b5`.
+Live schema: `0033`. `comparison_mode=false`. Original `imessage-linq` unchanged.
 No paid model runs or business calls have run.
 
 ## Behavior
@@ -87,14 +87,38 @@ The current Sarvam test-recipient override is also unchanged.
   Uses pgcrypto plus minimal storage/role stand-ins. No production rows.
 - The focused SQL test guard dependencies are mocked. Neither SQL test establishes complete deployed
   schema compatibility, concurrent transaction safety, live provider success or
-  exact end-to-end parity. No migration has been applied to a full staging clone.
+  exact end-to-end parity on their own.
 - Ordinary-path tests pass; this is not proof that every ordinary production path
   is byte-identical.
 
-## Before execution
+## Deployment verification, 19 November 2026
 
-1. Review/apply migrations in an authorized staging database with the complete live
-   schema. Exercise concurrency, provider failure, timeout and recovery paths.
+- Exported the live public schema without production rows. Restored it locally,
+  then applied 0031-0033. Platform roles and storage were minimal local stand-ins.
+- Ten overlapping reservation attempts for five synthetic businesses produced
+  exactly five calls. Ten settlement attempts produced one final delivery.
+  Local PostgreSQL was 16.2; production is 17.11.
+- Existing local concurrency checks passed for outbox ownership, stale approval
+  refusal and missing-watermark refusal after setting up local service-role grants.
+- Live migrations applied through the normal migration runner, exactly 0031-0033.
+- All eight functions ACTIVE. Downloaded deployed sources match branch runtime
+  sources. Prior JWT settings preserved; only revision metadata secrets changed.
+- Verified mode OFF, audio bucket private, schema columns present, schema 0033.
+- Read-only recovery check showed no overdue/unsettled calls, unknown submissions,
+  failed deliveries or unhandled inbox/events. Two pre-existing unpriced calls remain.
+- Before deployment the project overview showed Unhealthy. This work does not claim
+  to fix that platform status. No application health endpoint was invoked because
+  it can send queued alerts. No provider/model/call smoke test was run.
+- Pre-deployment sources, public schema and prior revision values saved separately.
+  A non-destructive ordinary-flow rollback was rehearsed locally.
+
+Project: https://supabase.com/dashboard/project/rvglpiyctuzpegbvlane/functions
+
+## Before paid or business-call execution
+
+1. Review the deployed changes with comparison mode OFF. Live-schema clone and
+   concurrency checks passed; provider failure, timeout and recovery still need
+   an explicitly authorized frozen evaluation, not real-business trial and error.
 2. Bind the original Aurora recipients to the frozen evaluation cases. The runtime
    accepts those names; it does not autonomously recover them from recordings.
 3. Verify current provider recording requirements and consent for persistent
