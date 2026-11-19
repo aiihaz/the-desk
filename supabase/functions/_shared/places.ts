@@ -19,9 +19,12 @@ export type PlaceHit = {
   // regularOpeningHours as Places returns it (periods with day/hour/minute).
   openingHours: unknown;
   closed: boolean;
+  // Google Maps rating (1-5). Requested only for comparison errands (places.rating is
+  // an Atmosphere-SKU field, priced above the Enterprise fields above).
+  rating?: number | null;
 };
 
-export type SearchPlaces = (q: { text: string }) => Promise<PlaceHit[]>;
+export type SearchPlaces = (q: { text: string; withRating?: boolean }) => Promise<PlaceHit[]>;
 
 // Phone, hours and address components put this in the Enterprise tier (eng plan 3).
 const FIELDS = [
@@ -36,11 +39,15 @@ const FIELDS = [
 ].join(",");
 
 export function placesClient(apiKey: string, timeoutMs = 10_000, f: typeof fetch = fetch): SearchPlaces {
-  return async ({ text }) => {
+  return async ({ text, withRating }) => {
     const res = await f("https://places.googleapis.com/v1/places:searchText", {
       method: "POST",
       signal: AbortSignal.timeout(timeoutMs),
-      headers: { "Content-Type": "application/json", "X-Goog-Api-Key": apiKey, "X-Goog-FieldMask": FIELDS },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": withRating ? `${FIELDS},places.rating` : FIELDS,
+      },
       body: JSON.stringify({ textQuery: text, regionCode: "IN", languageCode: "en", pageSize: 5 }),
     });
     const body = await res.json().catch(() => ({}));
@@ -71,6 +78,7 @@ export function parsePlaces(body: Row): PlaceHit[] {
     countryCode: p.addressComponents?.find((c: Row) => c.types?.includes("country"))?.shortText ?? null,
     openingHours: p.regularOpeningHours ?? null,
     closed: p.businessStatus === "CLOSED_PERMANENTLY" || p.businessStatus === "CLOSED_TEMPORARILY",
+    rating: typeof p.rating === "number" ? p.rating : null,
   })).filter((p) => p.name);
 }
 

@@ -44,7 +44,11 @@ export type NextStep =
   | "answer_the_open_plan"
   | "pick_which_payment"
   | "send_screenshot_again"
-  | "reply_start_first";
+  | "reply_start_first"
+  // A comparison errand: its calls are running; one ranked summary follows.
+  | "wait_for_ranked_summary"
+  // A comparison errand's summary is in: they name a place; a booking is a fresh go-ahead.
+  | "pick_a_place_for_a_new_errand";
 
 export type Facts = {
   // What this message is about.

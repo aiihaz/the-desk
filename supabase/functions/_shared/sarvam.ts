@@ -276,6 +276,24 @@ export async function getTranscript(
   }));
 }
 
+// The stitched dual-channel recording for an interaction, as a WAV; null when the
+// interaction has no recording (404). Used to archive call audio when comparison_mode
+// is on. https://docs.sarvam.ai/api-reference/analytics/recordings
+export async function getRecording(cfg: SarvamConfig, interactionId: string): Promise<Uint8Array | null> {
+  const res = await fetch(
+    `${cfg.baseUrl}/analytics/v1/${cfg.orgId}/${cfg.workspaceId}/${cfg.appId}/recordings/${
+      encodeURIComponent(interactionId)
+    }`,
+    { headers: { "X-API-Key": cfg.apiKey }, signal: AbortSignal.timeout(30_000) },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`sarvam recording failed ${res.status}: ${body.replace(/\s+/g, " ").slice(0, 200)}`);
+  }
+  return new Uint8Array(await res.arrayBuffer());
+}
+
 // An attempt with a final status, as the webhook would have reported it; null while the
 // attempt is still going (or its status is one we don't know).
 export function attemptResult(

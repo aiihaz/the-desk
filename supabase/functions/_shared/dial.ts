@@ -23,6 +23,8 @@ export type DialArgs = {
   optionId: string | null;
   isRetry: boolean;
   language?: Language;
+  // A comparison errand's per-call recipient (0032). Omitted = the request's business.
+  businessId?: string;
 };
 
 export type DialResult =
@@ -51,7 +53,7 @@ export async function dialForTurn(
 }
 
 export async function dial(deps: DialDeps, a: DialArgs): Promise<DialResult> {
-  const r = await deps.store.reserveCall(a.requestId, a.kind, a.optionId, a.isRetry);
+  const r = await deps.store.reserveCall(a.requestId, a.kind, a.optionId, a.isRetry, a.businessId);
   if (!r.ok) return { ok: false, error: "refused", reason: r.reason };
 
   const notSubmitted = async (error: unknown) => {

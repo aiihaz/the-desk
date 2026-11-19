@@ -1,3 +1,4 @@
+import { comparisonQuestions } from "./chat/comparison.ts";
 // Database access for the call functions (dial, sarvam-webhook). The interface lets tests use a fake.
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2.45.4";
 import type { CallInputs } from "./call_vars.ts";
@@ -28,11 +29,14 @@ export type DialTarget = {
 };
 
 export interface CallStore {
+  // businessId: a comparison errand's per-call recipient (the request itself names no
+  // business, 0032). Null = the request's business, exactly as before.
   reserveCall(
     requestId: string,
     kind: CallKind,
     optionId: string | null,
     isRetry: boolean,
+    businessId?: string,
   ): Promise<Reservation>;
   dialTarget(callId: string): Promise<DialTarget>;
   // What the voice agent's variables are built from, read for a reserved call (P15).
@@ -51,6 +55,12 @@ export interface CallStore {
   // Writes the result to a call that is still open. Returns its id, or null if the
   // call is unknown or already has a result (a redelivery), so hand-off runs once.
   finishCall(result: CallResult): Promise<string | null>;
+  // The comparison-version switch (limits.comparison_mode, 0031). Drives the call-audio
+  // archive in the webhook; false when the key is missing or unreadable.
+  comparisonMode(callId?: string): Promise<boolean>;
+  // Records where a call's archived recording lives (0031). Called only after the
+  // object exists in the call-audio bucket.
+  setAudioPath(callId: string, path: string): Promise<void>;
 }
 
 // What reconcile needs on top of the CallStore.
@@ -64,12 +74,19 @@ const OPEN = ["queued", "dialing", "in_progress"];
 export class DbCallStore implements CallStore, ReconcileStore {
   constructor(private db: SupabaseClient = serviceClient()) {}
 
-  async reserveCall(requestId: string, kind: CallKind, optionId: string | null, isRetry: boolean) {
+  async reserveCall(
+    requestId: string,
+    kind: CallKind,
+    optionId: string | null,
+    isRetry: boolean,
+    businessId?: string,
+  ) {
     const { data, error } = await this.db.rpc("reserve_call", {
       p_request_id: requestId,
       p_kind: kind,
       p_option_id: optionId,
       p_is_retry: isRetry,
+      ...(businessId ? { p_business_id: businessId } : {}),
     });
     if (error) throw error;
     return data as Reservation;
@@ -92,10 +109,29 @@ export class DbCallStore implements CallStore, ReconcileStore {
   }
 
   async callInputs(callId: string): Promise<CallInputs> {
-    const { data, error } = await this.db.from("calls").select("request_id, option_id").eq("id", callId)
+    const { data, error } = await this.db.from("calls").select(
+      "request_id, option_id, business_id, businesses(name)",
+    ).eq("id", callId)
       .single();
     if (error) throw error;
-    return this.requestInputs(data.request_id, data.option_id);
+    const inputs = await this.requestInputs(data.request_id, data.option_id);
+    // The call owns its recipient; comparison requests have no single business.
+    const { data: request, error: requestError } = await this.db.from("requests")
+      .select("comparison").eq("id", data.request_id).single();
+    if (requestError) throw requestError;
+    if (request.comparison) {
+      const { data: business, error: businessError } = await this.db.from("businesses")
+        .select("name").eq("id", data.business_id).single();
+      if (businessError) throw businessError;
+      inputs.businessName = business.name;
+      inputs.task = "question";
+      inputs.fields = {
+        ...inputs.fields,
+        questions: comparisonQuestions(inputs.fields),
+      };
+      inputs.prev = null;
+    }
+    return inputs;
   }
 
   // The same inputs for a request with no call yet (the dev bench shows what a call would get).
@@ -281,6 +317,21 @@ export class DbCallStore implements CallStore, ReconcileStore {
     const { data, error } = await this.db.rpc("finish_provider_call", { p_result: r });
     if (error) throw error;
     return data;
+  }
+
+  async comparisonMode(callId?: string): Promise<boolean> {
+    if (!callId) return false;
+    const { data: call, error } = await this.db.from("calls").select("request_id").eq("id", callId).single();
+    if (error) throw error;
+    const { data: request, error: e2 } = await this.db.from("requests").select("comparison")
+      .eq("id", call.request_id).single();
+    if (e2) throw e2;
+    return request.comparison === true;
+  }
+
+  async setAudioPath(callId: string, path: string): Promise<void> {
+    const { error } = await this.db.from("calls").update({ audio_path: path }).eq("id", callId);
+    if (error) throw error;
   }
 
   async pendingSettlements(): Promise<CallResult[]> {

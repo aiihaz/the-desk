@@ -5,12 +5,22 @@
 // when it can't tell. Nothing here ranks or recommends.
 import type { User } from "../store.ts";
 import type { PlaceHit, SearchPlaces } from "../places.ts";
+import { COMPARISON_CAP, mergeRecipients, nameMatches, rankedRecipients } from "./comparison.ts";
 import { cleanField, type ToolDeps, type ToolResult } from "./tools.ts";
 
 export type FindDeps = ToolDeps & { searchPlaces: SearchPlaces };
 
 // query: the place's name, or a kind of place ("dentist") when by_kind.
-export type FindArgs = { query: string; area: string | null; city: string | null; byKind: boolean };
+// recipients (comparison errands only): the businesses they named for this errand, in
+// their order. Each is resolved against its own search; the rated results only fill
+// what the named list can't supply.
+export type FindArgs = {
+  query: string;
+  area: string | null;
+  city: string | null;
+  byKind: boolean;
+  recipients?: string[];
+};
 
 const MAX_MATCHES = 5;
 // A search by kind is a list for them to choose from, so it stays short: a name search keeps
@@ -43,10 +53,15 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
     };
   }
 
+  // The comparison version (0031): ratings come with the results so the Desk can pick
+  // the highest-rated five. places.rating is a pricier SKU, asked for only here.
+  const { request: activeReq } = await deps.store.active(user.id);
+  const comparison = !!activeReq?.comparison;
+
   const text = [query, area, city].filter(Boolean).join(", ");
   let found: PlaceHit[];
   try {
-    found = await deps.searchPlaces({ text });
+    found = await deps.searchPlaces({ text, withRating: comparison });
   } catch (e) {
     deps.trace?.("places_error", { text, error: e instanceof Error ? e.message : String(e) });
     return {
@@ -55,7 +70,7 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
     };
   }
   const callable = found.filter((p) => p.phone && !p.closed && (!p.countryCode || p.countryCode === "IN"))
-    .slice(0, a.byKind ? MAX_BY_KIND : MAX_MATCHES);
+    .slice(0, comparison ? found.length : a.byKind ? MAX_BY_KIND : MAX_MATCHES);
   deps.trace?.("find_business", {
     searched: text,
     city_from: named ? "named" : "saved",
@@ -66,6 +81,79 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
 
   const ids: string[] = [];
   for (const p of callable) ids.push(await deps.store.savePlace(p));
+
+  if (comparison && activeReq) {
+    // The Desk picks, and they never choose. Businesses they named go first in their
+    // order (each resolved by its own search; one that can't be found, or has no phone
+    // or is closed, is dropped and said so); the highest-rated results only fill the
+    // slots the named list can't supply. Never more than five. The plan names every
+    // pick.
+    const namedIds: string[] = [];
+    const namedHits = new Map<string, { hit: PlaceHit; rating: number | null }>();
+    const dropped: string[] = [];
+    for (const rawName of (a.recipients ?? []).slice(0, COMPARISON_CAP)) {
+      const recipient = cleanField(rawName, 80);
+      if (!recipient) continue;
+      let hits: PlaceHit[] = [];
+      try {
+        hits = await deps.searchPlaces({
+          text: [recipient, area, city].filter(Boolean).join(", "),
+          withRating: true,
+        });
+      } catch {
+        hits = [];
+      }
+      const matches = hits.filter((h) =>
+        nameMatches(recipient, h.name) && h.phone && !h.closed && (!h.countryCode || h.countryCode === "IN")
+      );
+      const match = matches.length === 1 ? matches[0] : null;
+      if (match) {
+        const id = await deps.store.savePlace(match);
+        namedIds.push(id);
+        namedHits.set(id, { hit: match, rating: match.rating ?? null });
+      } else dropped.push(recipient);
+    }
+    const ranked = rankedRecipients(callable.map((hit, i) => ({ id: ids[i], rating: hit.rating, hit })));
+    const byId = new Map(ranked.map((x) => [x.id, x]));
+    const merged = mergeRecipients(namedIds, ranked.map((x) => x.id));
+    const picked = merged.map((id) =>
+      byId.get(id) ?? { id, rating: namedHits.get(id)?.rating ?? null, hit: namedHits.get(id)?.hit ?? null }
+    );
+    const saved = await deps.store.setRecipients(activeReq.id, merged);
+    if (!saved.ok) return { ok: false, reason: saved.reason };
+    deps.trace?.("comparison_recipients", {
+      request_id: activeReq.id,
+      named: namedIds.length,
+      dropped,
+      picked: picked.map((x) => [x.hit?.name ?? x.id, x.rating]),
+    });
+    return {
+      ok: true,
+      searched: text,
+      searched_in: city,
+      comparison:
+        `the Desk picked ${picked.length}: resolved original recipients first, rated fallback after those`,
+      picked: picked.map((x, i) => ({
+        business_id: x.id,
+        rank: i + 1,
+        name: x.hit ? cleanField(x.hit.name, 80) : null,
+        area: x.hit ? cleanField(x.hit.area, 60) : null,
+        rating: x.rating,
+      })),
+      named_first: namedIds.length,
+      unusable_named: dropped.length ? dropped : undefined,
+      note: `propose_plan when nothing else is missing: the plan names all ${
+        picked.length > COMPARISON_CAP ? COMPARISON_CAP : picked.length
+      } places and says each gets the same questions. No choose_business, no asking them to pick.${
+        dropped.length
+          ? ` Named but can't be called: ${
+            dropped.join(", ")
+          } — say so and why (not found, no number, or closed).`
+          : ""
+      }`,
+    };
+  }
+
   // What happened when the Desk called each before, for Luna to weigh. Nothing is left out
   // for it: a call that went wrong is context, not a verdict on the place.
   const history = await deps.store.pastCalls(user.id, ids);

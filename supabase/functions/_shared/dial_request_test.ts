@@ -26,7 +26,13 @@ Deno.test("reserves, builds the variables from stored fields, dials, stores the 
   const res = await handle(post({ ...ok, language: "Tamil" }), deps);
   assertEquals(res.status, 200);
   assertEquals(await res.json(), { call_id: "c-1", attempt_id: "a-1", flags: [] });
-  assertEquals(store.reserved, [{ requestId: "r-1", kind: "first", optionId: null, isRetry: false }]);
+  assertEquals(store.reserved, [{
+    requestId: "r-1",
+    kind: "first",
+    optionId: null,
+    isRetry: false,
+    businessId: undefined,
+  }]);
   assertEquals(started[0].businessPhone, "+919876543210");
   assertEquals(started[0].agentVersion, "3");
   assertEquals(started[0].language, "Tamil");

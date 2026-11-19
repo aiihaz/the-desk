@@ -10,6 +10,8 @@ import { classify, type Route } from "./gate.ts";
 import {
   bookingReadback,
   cancelReadback,
+  comparisonPlanFacts,
+  comparisonReadback,
   istIso,
   type Place,
   type PlanFacts,
@@ -239,12 +241,22 @@ export async function proposePlan(
     ? await store.limitBool("book_on_first_call", user.id)
     : undefined;
   const need = missing(r.task, r.fields, {
-    business: !!r.businessId,
+    business: !!r.businessId || !!r.comparison,
     booking: !!r.bookingId,
     profileName: !!info.name,
     mayBook,
   });
   if (need.length) return { ok: false, reason: "not ready", missing: need };
+  // A comparison errand calls the businesses the Desk picked (find_business or the
+  // errand's frozen list), never one they picked.
+  const comparisonPlaces: Place[] | null = r.comparison ? await store.recipientPlaces(r.id) : null;
+  if (r.comparison && !comparisonPlaces?.length) {
+    return {
+      ok: false,
+      reason:
+        "no businesses chosen yet: call find_business and the Desk picks up to five from the results; don't ask them to pick",
+    };
+  }
   // A plan, and the readback behind it, only ever describe a coherent state.
   const incoherent = incoherentTime(r.fields);
   if (incoherent.length) {
@@ -336,47 +348,55 @@ export async function proposePlan(
   const place: Place | null = r.businessId && (r.task === "booking" || r.task === "question")
     ? await store.place(r.businessId)
     : null;
-  switch (r.task) {
-    case "booking":
-      p = bookingReadback({
-        place: place!,
-        f: r.fields,
-        customerPhone: info.phone,
-        now,
-        note,
-        profileName: info.name,
-      });
-      facts = planFacts({
-        task: "booking",
-        place: place!,
-        f: r.fields,
-        customerPhone: info.phone,
-        now,
-        profileName: info.name,
-      });
-      break;
-    case "question":
-      p = questionReadback({
-        place: place!,
-        f: r.fields,
-        customerPhone: info.phone,
-        note,
-      });
-      facts = planFacts({ task: "question", place: place!, f: r.fields, customerPhone: info.phone });
-      break;
-    case "reschedule": {
-      const booking = await store.booking(r.bookingId!);
-      p = rescheduleReadback({ booking, f: r.fields, now });
-      facts = planFacts({ task: "reschedule", booking, f: r.fields, now });
-      break;
-    }
-    case "cancel": {
-      const booking = await store.booking(r.bookingId!);
-      p = cancelReadback({ booking, now });
-      facts = planFacts({ task: "cancel", booking, now });
-      break;
-    }
-  }
+  if (r.comparison && comparisonPlaces?.length) {
+    p = comparisonReadback({
+      places: comparisonPlaces,
+      f: r.fields,
+      customerPhone: info.phone,
+      note,
+    });
+    facts = comparisonPlanFacts({ places: comparisonPlaces, f: r.fields, customerPhone: info.phone });
+  } else {switch (r.task) {
+      case "booking":
+        p = bookingReadback({
+          place: place!,
+          f: r.fields,
+          customerPhone: info.phone,
+          now,
+          note,
+          profileName: info.name,
+        });
+        facts = planFacts({
+          task: "booking",
+          place: place!,
+          f: r.fields,
+          customerPhone: info.phone,
+          now,
+          profileName: info.name,
+        });
+        break;
+      case "question":
+        p = questionReadback({
+          place: place!,
+          f: r.fields,
+          customerPhone: info.phone,
+          note,
+        });
+        facts = planFacts({ task: "question", place: place!, f: r.fields, customerPhone: info.phone });
+        break;
+      case "reschedule": {
+        const booking = await store.booking(r.bookingId!);
+        p = rescheduleReadback({ booking, f: r.fields, now });
+        facts = planFacts({ task: "reschedule", booking, f: r.fields, now });
+        break;
+      }
+      case "cancel": {
+        const booking = await store.booking(r.bookingId!);
+        p = cancelReadback({ booking, now });
+        facts = planFacts({ task: "cancel", booking, now });
+        break;
+      }
+    }}
   // Which words go out, and why: Luna's, or the readback and the reason (diagnostics).
   const runId = crypto.randomUUID();
   let source: { outcome: "writer" | "readback"; reason: string } = {

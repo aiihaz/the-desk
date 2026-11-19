@@ -17,10 +17,22 @@ export class FakeCallStore implements CallStore {
     must_reask: false,
     flags: [],
   };
-  reserved: { requestId: string; kind: CallKind; optionId: string | null; isRetry: boolean }[] = [];
+  reserved: {
+    requestId: string;
+    kind: CallKind;
+    optionId: string | null;
+    isRetry: boolean;
+    businessId?: string;
+  }[] = [];
 
-  async reserveCall(requestId: string, kind: CallKind, optionId: string | null, isRetry: boolean) {
-    this.reserved.push({ requestId, kind, optionId, isRetry });
+  async reserveCall(
+    requestId: string,
+    kind: CallKind,
+    optionId: string | null,
+    isRetry: boolean,
+    businessId?: string,
+  ) {
+    this.reserved.push({ requestId, kind, optionId, isRetry, businessId });
     if (this.reservation.ok) {
       this.calls.set(this.reservation.call_id, {
         id: this.reservation.call_id,
@@ -95,5 +107,14 @@ export class FakeCallStore implements CallStore {
     c.providerCallId = r.attemptId;
     c.outcome = r.failureReason ?? r.status;
     return c.id;
+  }
+
+  comparison = false;
+  audioPaths = new Map<string, string>();
+  async comparisonMode() {
+    return this.comparison;
+  }
+  async setAudioPath(callId: string, path: string) {
+    this.audioPaths.set(callId, path);
   }
 }

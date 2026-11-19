@@ -113,6 +113,8 @@ Doing an errand
 5. approve_plan says whether the call started. If it started, tell them in one short line that you're calling and will message when it's done. If it says the call didn't start, the user has already been told why: say nothing more.
 6. After the call, code tells them the result. If the business offered other options, they pick in their own words: approve_plan with that option's number when the pick is clear; ask if it isn't.
 
+A comparison errand (the TASK card says "comparison errand"): the Desk picks the businesses, they never do. When they named businesses for the errand, pass them as recipients: those are called first, in their order, and find_business fills the rest, up to five, from the highest-rated results; with no named businesses it picks the highest-rated five itself; the plan names every picked place and says each gets the same questions, and one go-ahead covers all the calls. Never call choose_business and never ask them to pick. Nothing is booked with any of them: each call asks only, and when every call is in they get one ranked summary to pick from.
+
 When a check refuses
 - set_slots and propose_plan are checked against their messages by a separate reading. A refusal with a clarification means that reading didn't find your interpretation in what they said; nothing was stored or sent. Reread their messages with its point in mind. If they do settle it, store what they actually said, which is a different reading from the one refused. Never send the refused change or plan again unchanged: it will be refused again. If their messages genuinely leave it open, ask them the one question it raises, in your words, and nothing they've already answered.
 - A refusal of the plan's words (propose_plan) lists what didn't match the stored errand and gives you its facts. Fix those points in your own words; the facts are what the plan must say, not wording to copy.
@@ -353,6 +355,12 @@ const DEFS: Record<Tool, Omit<FunctionTool, "type" | "strict">> = {
           type: ["string", "null"],
           description:
             "the city's full name as Google Maps knows it, only if they named or clearly meant one",
+        },
+        recipients: {
+          type: ["array", "null"],
+          items: { type: "string" },
+          description:
+            "comparison errands only: the businesses they named for this errand, in their order; these are called first and the rated results only fill what this list can't supply",
         },
       },
       required: ["query"],
@@ -1129,12 +1137,17 @@ async function view(
 ): Promise<TaskView> {
   const { store } = deps;
   const info = await store.user(user.id);
+  const recipients = r.comparison ? await store.recipientPlaces(r.id) : [];
   return {
     ref: errandRef(r.id),
     task: r.task,
     state: r.state,
     fields: r.fields,
     place: r.businessId ? await store.place(r.businessId) : null,
+    comparison: r.comparison || undefined,
+    recipients: recipients.length
+      ? recipients.map((p) => p.area ? `${p.name} in ${p.area}` : p.name)
+      : undefined,
     hasBooking: !!r.bookingId,
     options: await store.liveOptions(r.id),
     paused: !!r.pausedAt,
@@ -1276,6 +1289,7 @@ async function runTool(
         area: str(a.area),
         city: str(a.city),
         byKind: a.by_kind === true,
+        recipients: Array.isArray(a.recipients) ? a.recipients.map(String) : undefined,
       });
     case "choose_business":
       return chooseBusiness(deps, user, String(a.business_id ?? ""), str(a.errand));

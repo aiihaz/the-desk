@@ -64,6 +64,8 @@ export async function runAdmin(store: AdminStore, text: string, by: string): Pro
 
   if (lower === "status") {
     const s = await store.status();
+    const limits = await store.limits();
+    const comparison = limits.find((l) => l.key === "comparison_mode")?.value === true;
     const calls = Object.entries(s.calls_today ?? {}).map(([k, v]) => `${k} ${v}`).join(", ") || "none";
     return [
       s.kill_switch === true ? "STOPPED: no calls go out (resume to restart)." : "Running.",
@@ -74,6 +76,7 @@ export async function runAdmin(store: AdminStore, text: string, by: string): Pro
       `Active requests: ${s.active_requests}`,
       `Open alerts: ${s.open_alerts}${s.open_alerts ? " (review)" : ""}`,
       `Stopped users: ${s.stopped_users}`,
+      `Comparison: ${comparison ? "on" : "off"}`,
     ].join("\n");
   }
   if (lower === "review") {
@@ -96,6 +99,18 @@ export async function runAdmin(store: AdminStore, text: string, by: string): Pro
     return on
       ? "Stopped: no new calls will go out. Calls already under way finish."
       : "Resumed: calls can go out.";
+  }
+  if ((m = lower.match(/^comparison (on|off)$/))) {
+    // 0031/0032: the comparison-version switch. On = new errands pick up to five
+    // businesses themselves, one go-ahead covers the calls, one ranked summary reports
+    // them, and each settled call's audio is archived to the call-audio bucket.
+    // Off = today's behaviour, unchanged.
+    const on = m[1] === "on";
+    const r = await store.setLimit("comparison_mode", on, by, null);
+    if (!r.ok) return `Couldn't change comparison mode: ${r.reason}`;
+    return on
+      ? "Comparison on: new errands call up to 5 picked businesses and keep call audio. Anything already under way is unchanged."
+      : "Comparison off: back to the regular flow; new calls aren't archived.";
   }
   if ((m = lower.match(/^credit (?:rs\.? ?)?([0-9]+(?:\.[0-9]+)?)$/))) {
     try {

@@ -101,6 +101,36 @@ export class FakeChatStore implements ChatStore {
   async place() {
     return { name: "Paragon", address: "Kannur Rd, Kozhikode", city: "Kozhikode" };
   }
+  recipientList: { name: string; address: string | null; area?: string | null; city: string | null }[] = [
+    { name: "Salon One", address: null, area: "HSR Layout", city: "Bengaluru" },
+    { name: "Salon Two", address: null, area: "HSR Layout", city: "Bengaluru" },
+    { name: "Salon Three", address: null, area: "HSR Layout", city: "Bengaluru" },
+  ];
+  async recipientPlaces() {
+    return this.req?.recipientIds?.length ? this.recipientList.slice(0, this.req.recipientIds.length) : [];
+  }
+  recipientsSet: { requestId: string; ids: string[] }[] = [];
+  async setRecipients(requestId: string, ids: string[]) {
+    this.recipientsSet.push({ requestId, ids });
+    if (this.req) this.req.recipientIds = ids;
+    return { ok: true as const };
+  }
+  async finishComparisonDispatch(_requestId: string) {}
+  comparisonSettlements: { callId: string; s: unknown; facts: unknown }[] = [];
+  comparisonBatchComplete = true;
+  async settleComparisonCall(callId: string, s2: { optOut: boolean; wrongNumber: boolean }, facts: Facts) {
+    this.comparisonSettlements.push({ callId, s: s2, facts });
+    return {
+      ok: true as const,
+      request_id: this.req?.id ?? "r1",
+      batch_complete: this.comparisonBatchComplete,
+      state: "done" as const,
+    };
+  }
+  batchCalls: import("./store.ts").ComparisonCall[] = [];
+  async comparisonCalls() {
+    return this.batchCalls;
+  }
   async booking(): Promise<never> {
     throw new Error("not used");
   }

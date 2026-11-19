@@ -105,6 +105,19 @@ Deno.test("stop all and resume flip the kill switch", async () => {
   ]]);
 });
 
+Deno.test("comparison on and off flip comparison_mode", async () => {
+  const a = new FakeAdmin();
+  assertEquals((await runAdmin(a, "comparison on", by)).startsWith("Comparison on"), true);
+  assertEquals((await runAdmin(a, "comparison off", by)).startsWith("Comparison off"), true);
+  assertEquals(a.calls, [["setLimit", "comparison_mode", true, by, null], [
+    "setLimit",
+    "comparison_mode",
+    false,
+    by,
+    null,
+  ]]);
+});
+
 Deno.test("credit, optout, numbers", async () => {
   const a = new FakeAdmin();
   assertEquals(await runAdmin(a, "credit Rs 500", by), "Added Rs 500. Balance: Rs 1313.");

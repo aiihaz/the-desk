@@ -1,3 +1,4 @@
+import { comparisonQuestions } from "./comparison.ts";
 // Code-built plans: what the Desk will say and agree to on a call, and the options after
 // call 1 (eng plan 2 step 3, E4 design 2.6-2.9). The user approves exactly this text, in
 // their own words, and the voice agent gets the same stored fields. Luna never writes
@@ -275,6 +276,28 @@ export function questionReadback(
   ));
 }
 
+// A comparison errand's plan (0031/0032): the same ask of up to five places, one
+// go-ahead for all of them, nothing booked. The user approved the batch, not a pick.
+export function comparisonReadback(
+  x: { places: Place[]; f: Fields; customerPhone?: string | null; note?: string | null },
+): Prompt {
+  const qs = comparisonQuestions(x.f);
+  const asks = qs.length === 1 ? `"${qs[0]}"` : qs.map((q, i) => `\n${i + 1}. ${q}`).join("");
+  const list = x.places.map((p, i) => `\n${i + 1}. ${spokenPlace(p)}`).join("");
+  const name = x.f.share_name ? `your name (${x.f.customer_name})` : null;
+  const phone = x.f.share_phone && x.customerPhone ? `your number (${maskPhone(x.customerPhone)})` : null;
+  const shared = [name, phone].filter(Boolean).join(" and ");
+  const who = shared
+    ? `I'll give them ${shared} so they know who's asking, and I won't book anything.`
+    : "I won't book anything or share your name or number.";
+  return ask(withNote(
+    x.note,
+    `I'll call these ${x.places.length} places and ask each of them: ${asks}${
+      serviceContext(x.f)
+    }\n\nThe calls:${list}\n\n${who} When they all answer I'll rank what they said.\n\nShall I call them?`,
+  ));
+}
+
 // What a plan has to say, as facts rather than a sentence: what the plan check reads a draft
 // against, and what Luna repairs a refused draft from. Built from the same stored rows as the
 // readbacks, so the facts, the readback and the caller's brief describe one action. Values
@@ -338,6 +361,29 @@ function bookingFacts(b: BookingSummary, now: Date): Record<string, unknown> {
       : "no time confirmed",
     name: b.customerName,
     ...(b.uncertain ? { uncertain: "the Desk couldn't confirm the business has this booking" } : {}),
+  };
+}
+
+// The same for the plan check: every place, the questions, what's shared, and that
+// one go-ahead covers every call and nothing is booked.
+export function comparisonPlanFacts(
+  x: { places: Place[]; f: Fields; customerPhone: string | null },
+): PlanFacts {
+  const { f } = x;
+  const shared = [
+    f.share_name ? `name (${f.customer_name})` : null,
+    f.share_phone && x.customerPhone ? `number (${maskPhone(x.customerPhone)})` : null,
+  ].filter(Boolean);
+  return {
+    action:
+      `ask only, of every place listed: nothing is booked with any of them; an offer to book comes back to them first`,
+    places: x.places.map((p) => callee(p)),
+    one_go_ahead_covers: `all ${x.places.length} calls`,
+    questions: comparisonQuestions(f),
+    shared: shared.length
+      ? `${shared.join(" and ")}, so they know who's asking`
+      : "nothing: no name or number",
+    ...visitFacts(f),
   };
 }
 

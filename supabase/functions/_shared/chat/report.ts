@@ -1021,6 +1021,110 @@ function notConnected(r: CallResult, call: CallForReport): Decision {
   }
 }
 
+// One batch call's outcome for the summary: what the user needs to weigh the places,
+// in plan terms. Answered first (plan order), then unclear, then unreachable.
+type BatchOutcome = { rank: number; outcome: string; detail: string | null };
+
+function batchOutcome(r: CallResult, outputs: Record<string, unknown> | null): BatchOutcome {
+  if (r.status !== "completed") {
+    const why: Record<string, string> = {
+      no_answer: "no answer",
+      busy: "the line was busy",
+      failed: "the call didn't connect",
+      timeout: "no result came back",
+    };
+    return { rank: 3, outcome: "unreachable", detail: why[r.status] ?? "the call didn't connect" };
+  }
+  const said = String(outputs?.outcome ?? "");
+  if (said === "wrong_number") {
+    return { rank: 3, outcome: "wrong_number", detail: "the number reached someone else" };
+  }
+  if (NO_CONVERSATION[said]) return { rank: 3, outcome: "unreachable", detail: NO_CONVERSATION[said] };
+  if (!hasResult(outputs)) {
+    return {
+      rank: 2,
+      outcome: "unclear",
+      detail: cleanField(outputs?.summary, 240) ?? "they talked, but what was agreed isn't captured",
+    };
+  }
+  return { rank: 1, outcome: "answered", detail: cleanField(outputs?.summary, 300) ?? null };
+}
+
+async function reportComparisonCall(
+  deps: ReportDeps,
+  call: CallForReport,
+  req: ActiveRequest,
+  r: CallResult,
+  now: Date,
+): Promise<void> {
+  const { store } = deps;
+  const outputs = readOutputs(call.kind, r.outputs);
+  const optOut = r.status === "completed" && outputs?.opt_out_requested === "yes";
+  const wrongNumber = r.status === "completed" && (outputs?.outcome ?? "") === "wrong_number";
+  const saidNow = String(outputs?.outcome ?? "");
+  const blind = r.status === "completed" && !hasResult(outputs) && !NO_CONVERSATION[saidNow] &&
+    saidNow !== "wrong_number";
+  if (blind) {
+    await store.callerContractBroken(call.callId);
+    await store.raiseAlert("caller_contract_missing", call.requestId, call.callId, {
+      kind: call.kind,
+      outputs: Object.keys(r.outputs ?? {}),
+    });
+  }
+
+  // The batch so far: every call's stored row, this one's fresh result overlaid, ranked
+  // answered → unclear → unreachable, plan order inside each group.
+  const order = new Map((req.recipientIds ?? []).map((id, i) => [id, i]));
+  const calls = await store.comparisonCalls(req.id);
+  const results = calls.map((c) => {
+    const fresh = c.id === call.callId;
+    const o = fresh ? batchOutcome(r, outputs) : batchOutcome(
+      {
+        ...(r as CallResult),
+        status: c.status as CallResult["status"],
+        outputs: c.outputs as CallResult["outputs"],
+      },
+      c.outputs ? readOutputs(call.kind, c.outputs) : null,
+    );
+    return {
+      place: c.placeArea ? `${c.placeName}, ${c.placeArea}` : c.placeName,
+      outcome: o.outcome,
+      ...(o.detail ? { detail: o.detail } : {}),
+      _rank: o.rank,
+      _order: order.get(c.businessId) ?? 99,
+    };
+  }).sort((a, b) => a._rank - b._rank || a._order - b._order)
+    .map(({ _rank, _order, ...rest }) => rest);
+
+  const places = await store.recipientPlaces(req.id);
+  const attempted = new Set(calls.map((c) => c.businessId));
+  const notAttempted = (req.recipientIds ?? []).flatMap((id, i) =>
+    attempted.has(id) ? [] : [{ place: places[i]?.name ?? "a selected business", outcome: "not called" }]
+  );
+  const facts: Facts = {
+    event: "comparison_summary",
+    errand: errandFacts(req, call, now),
+    happened: {
+      status: "every call is in; the places ranked by what they said",
+      results,
+      ...(notAttempted.length ? { not_called: notAttempted } : {}),
+    },
+    values: {},
+    next_step: "pick_a_place_for_a_new_errand",
+  };
+
+  const res = await store.settleComparisonCall(call.callId, { optOut, wrongNumber }, facts);
+  deps.trace?.("settle_comparison_call", { callId: call.callId, res });
+  if (!res.ok) return;
+  if (r.status === "completed" && r.outputs) {
+    await store.recordCallerOutputs(call.callId, Object.keys(r.outputs));
+  }
+  if (res.batch_complete) {
+    await writeOwed(deps, call.callId);
+    await drainDeliveries(deps, call.callId);
+  }
+}
+
 export async function reportCall(deps: ReportDeps, callId: string, r: CallResult): Promise<void> {
   if (deps.store.claimSettlement && !await deps.store.claimSettlement(callId)) return;
   try {
@@ -1037,6 +1141,9 @@ async function reportCallImpl(deps: ReportDeps, callId: string, r: CallResult): 
   if (!call) return console.warn("report: unknown call", callId);
   const place: Place = await store.place(call.businessId);
   const req = await store.request(call.requestId);
+  // A comparison errand (0032): no per-call booking machinery, no per-call message. The
+  // call settles on its own; when its batch is done, one ranked summary goes out.
+  if (req.comparison) return reportComparisonCall(deps, call, req, r, now);
   const outputs = readOutputs(call.kind, r.outputs);
   const optOut = outputs?.opt_out_requested === "yes";
 

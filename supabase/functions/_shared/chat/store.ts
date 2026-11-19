@@ -32,6 +32,22 @@ export type ActiveRequest = {
   remindAt?: Date | null;
   // Asked to cancel while the call ran: it ends with the result.
   cancelRequestedAt?: Date | null;
+  // The comparison version (0031): snapshotted at creation. The Desk picks the
+  // businesses (recipientIds, at most 5), one go-ahead covers every call, one ranked
+  // summary reports them.
+  comparison?: boolean;
+  recipientIds?: string[] | null;
+};
+
+// One call of a comparison errand's batch, for the ranked summary (report.ts).
+export type ComparisonCall = {
+  id: string;
+  businessId: string;
+  placeName: string;
+  placeArea: string | null;
+  status: string;
+  outcome: string | null;
+  outputs: Record<string, unknown> | null;
 };
 
 // A fact or preference the Desk keeps for a user (0012). Never a permission.
@@ -351,6 +367,20 @@ export interface ChatStore {
     s: CallSettlement,
     report?: CallReport,
   ): Promise<{ ok: true; request_id: string; state: State; option_ids: string[] } | Refused>;
+  // A comparison errand's call settles without touching the request; when its batch is
+  // done the request ends and one summary delivery carries p_facts (0032).
+  settleComparisonCall(
+    callId: string,
+    s: { optOut: boolean; wrongNumber: boolean },
+    facts: Facts,
+  ): Promise<{ ok: true; request_id: string; batch_complete: boolean; state: State } | Refused>;
+  // Every call of a comparison errand's batch, with where it went, for the summary.
+  comparisonCalls(requestId: string): Promise<ComparisonCall[]>;
+  // The businesses a comparison errand will call (0032). At most five, deduped.
+  setRecipients(requestId: string, ids: string[]): Promise<{ ok: true } | Refused>;
+  finishComparisonDispatch(requestId: string): Promise<void>;
+  // The recipients' places, in recipient order.
+  recipientPlaces(requestId: string): Promise<Place[]>;
   // now: only to simulate a later time. Unset, the database's clock decides what's due,
   // the same clock that stamped it, so a skew can't hold back a message just stored.
   raiseAlert(
@@ -450,11 +480,13 @@ function toRequest(r: Row): ActiveRequest {
     waitingFor: r.waiting_for ?? null,
     remindAt: r.remind_at ? new Date(r.remind_at) : null,
     cancelRequestedAt: r.cancel_requested_at ? new Date(r.cancel_requested_at) : null,
+    comparison: r.comparison ?? false,
+    recipientIds: r.recipient_ids ?? null,
   };
 }
 
 const REQUEST_COLUMNS =
-  "id, task, state, version, fields, business_id, booking_id, created_at, paused_at, waiting_for, remind_at, cancel_requested_at";
+  "id, task, state, version, fields, business_id, booking_id, created_at, paused_at, waiting_for, remind_at, cancel_requested_at, comparison, recipient_ids";
 
 export class DbChatStore implements ChatStore {
   private writerClaims = new Map<string, string>();
@@ -1210,6 +1242,64 @@ export class DbChatStore implements ChatStore {
         p_end: report?.end ?? false,
       },
     );
+  }
+
+  async settleComparisonCall(callId: string, s: { optOut: boolean; wrongNumber: boolean }, facts: Facts) {
+    return this.rpc<{ ok: true; request_id: string; batch_complete: boolean; state: State } | Refused>(
+      "settle_comparison_call",
+      {
+        p_call_id: callId,
+        p_claim_token: this.settlementClaims.get(callId),
+        p_opt_out: s.optOut,
+        p_wrong_number: s.wrongNumber,
+        p_facts: facts,
+      },
+    );
+  }
+
+  async finishComparisonDispatch(requestId: string): Promise<void> {
+    await this.rpc("finish_comparison_dispatch", { p_request_id: requestId });
+  }
+
+  async comparisonCalls(requestId: string): Promise<ComparisonCall[]> {
+    const { data, error } = await this.db.from("calls")
+      .select("id, business_id, status, outcome, outputs, businesses!inner(name, area, city)")
+      .eq("request_id", requestId).order("created_at");
+    if (error) throw error;
+    // deno-lint-ignore no-explicit-any
+    return data.map((c: any) => ({
+      id: c.id,
+      businessId: c.business_id,
+      placeName: c.businesses.name,
+      placeArea: c.businesses.area ?? c.businesses.city,
+      status: c.status,
+      outcome: c.outcome,
+      outputs: c.outputs ?? null,
+    }));
+  }
+
+  async setRecipients(requestId: string, ids: string[]) {
+    return this.rpc<{ ok: true } | Refused>("set_recipients", {
+      p_request_id: requestId,
+      p_business_ids: ids,
+    });
+  }
+
+  async recipientPlaces(requestId: string): Promise<Place[]> {
+    const r = await this.request(requestId);
+    const ids = r.recipientIds ?? [];
+    if (!ids.length) return [];
+    const { data, error } = await this.db.from("businesses").select("id, name, area, city")
+      .in("id", ids);
+    if (error) throw error;
+    // deno-lint-ignore no-explicit-any
+    const byId = new Map(data.map((b: any) => [b.id, b]));
+    return ids.map((id) => byId.get(id)).filter(Boolean).map((b) => ({
+      name: b.name,
+      address: null,
+      area: b.area,
+      city: b.city,
+    }));
   }
 
   async recordCallerOutputs(callId: string, outputs: string[]) {

@@ -10,6 +10,10 @@ export type Deps = {
   // Runs after the response is sent (EdgeRuntime.waitUntil in production).
   background: (p: Promise<unknown>) => void;
   handOff: (callId: string, result: CallResult) => Promise<void>;
+  // Archives the call's recording to private storage (0031). Wired only when the
+  // deployment supports it; the handler calls it only when comparison_mode is on.
+  // A failure here must never fail the hand-off or the webhook response.
+  archiveAudio?: (callId: string, interactionId: string) => Promise<void>;
 };
 
 export async function handle(req: Request, deps: Deps): Promise<Response> {
@@ -39,7 +43,20 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   }
 
   deps.background(
-    deps.handOff(callId, result).catch((e) => console.error("handoff failed", callId, e)),
+    (async () => {
+      await deps.handOff(callId, result).catch((e) => console.error("handoff failed", callId, e));
+      // Audio archive runs after the hand-off, only under the comparison switch, and
+      // only for calls that produced a recording. Errors are logged, never thrown.
+      if (deps.archiveAudio && result.interactionId) {
+        try {
+          if (await deps.store.comparisonMode(callId)) {
+            await deps.archiveAudio(callId, result.interactionId);
+          }
+        } catch (e) {
+          console.error("audio archive failed", callId, e);
+        }
+      }
+    })(),
   );
   return new Response("ok");
 }

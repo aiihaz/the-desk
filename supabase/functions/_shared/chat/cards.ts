@@ -58,6 +58,9 @@ export type TaskView = {
   planSentAt?: Date | null;
   // For missing(): a profile name to book under, and whether the call books.
   has?: Pick<Has, "profileName" | "mayBook">;
+  // A comparison errand (0031): the Desk picked these businesses; the user never picks.
+  comparison?: boolean;
+  recipients?: string[];
 };
 
 // "r-1a2b3c4d": the first 8 hex of the request id.
@@ -161,13 +164,27 @@ export function taskCard(t: TaskView | null, now: Date, waiting: TaskView[] = []
       `tools: ${toolsFor(null, false, open).join(", ")}`,
     ].join("\n");
   }
-  const need = missing(t.task, t.fields, { business: !!t.place, booking: t.hasBooking, ...t.has });
+  const need = missing(t.task, t.fields, {
+    business: !!t.place || !!t.comparison,
+    booking: t.hasBooking,
+    ...t.has,
+  });
   const lines = [
     "TASK",
     `errand: ${t.ref}`,
     `task: ${t.task}`,
     // Paused: the state's usual next step (a plan, an approval) is on hold.
     `state: ${t.state}${!t.paused && STATE_NOTE[t.state] ? ` (${STATE_NOTE[t.state]})` : ""}`,
+    ...(t.comparison
+      ? [
+        `comparison errand: the Desk picks the businesses, they never do. ${
+          t.recipients?.length
+            ? `calling these ${t.recipients.length}: ${t.recipients.join("; ")}`
+            : "no businesses picked yet: run find_business and up to five are picked from the results"
+        }`,
+        "the plan names every picked place and says each gets the same questions; one go-ahead covers all the calls; nothing is booked. No choose_business, no asking them to pick.",
+      ]
+      : []),
     ...(t.paused ? ["paused: yes (they asked you to wait; no plan or call until resume_request)"] : []),
     ...(t.planSentAt ? [`plan sent: ${clock(t.planSentAt)}; it is in the chat above`] : []),
     ...(t.cancelRequested ? ["cancel requested during the call; it ends when the result comes"] : []),
