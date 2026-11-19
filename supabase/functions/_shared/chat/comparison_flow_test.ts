@@ -117,7 +117,7 @@ Deno.test("comparison find: named businesses first, rated fill, unusable named d
     "Mid Rated",
   ]);
   assertEquals(store.recipientsSet[0].ids, ["b:z1", "b:a1", "b:p2", "b:p5", "b:p4"]);
-  assertEquals(r.unusable_named, ["Ghost Salon"]);
+  assertEquals(r.unusable_named, ["Ghost Salon (not found)"]);
   assertEquals(r.named_first, 2);
 });
 

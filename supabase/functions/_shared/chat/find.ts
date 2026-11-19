@@ -116,26 +116,42 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
         unresolved.push(recipient);
         continue;
       }
-      const matches = hits.filter((h) => h.phone && !h.closed && (!h.countryCode || h.countryCode === "IN"));
       const resolve = deps.resolveNamed ??
         (deps.create
           ? (name: string, a: string | null, c: string, candidates: PlaceHit[]) =>
             resolveNamedBusiness(deps.create!, identityModel, name, a, c, candidates)
           : null);
-      // Missing resolver is not evidence that the first hit is the named business.
-      if (!matches.length) {
-        dropped.push(recipient);
+      // Nothing came back for the name: it isn't on Maps as given.
+      if (!hits.length) {
+        dropped.push(`${recipient} (not found)`);
         continue;
       }
+      // Identity is decided over every listing the search returned, callable or not, so a
+      // named business with no number is reported as that, not as an unclear identity.
+      // A missing resolver is not evidence that the first hit is the named business.
       let match: PlaceHit | null = null;
       try {
-        match = resolve ? await resolve(recipient, area, city, matches) : null;
+        match = resolve ? await resolve(recipient, area, city, hits) : null;
       } catch { /* An unavailable identity check is unresolved, not a rejected listing. */ }
-      if (match && matches.some((candidate) => candidate.placeId === match!.placeId)) {
-        const id = await deps.store.savePlace(match);
-        namedIds.push(id);
-        namedHits.set(id, { hit: match, rating: match.rating ?? null });
-      } else unresolved.push(recipient);
+      const resolved = match ? hits.find((candidate) => candidate.placeId === match!.placeId) ?? null : null;
+      if (!resolved) {
+        unresolved.push(recipient);
+        continue;
+      }
+      const unusable = !resolved.phone
+        ? "no phone number on its listing"
+        : resolved.closed
+        ? "closed"
+        : resolved.countryCode && resolved.countryCode !== "IN"
+        ? "outside India"
+        : null;
+      if (unusable) {
+        dropped.push(`${recipient} (${unusable})`);
+        continue;
+      }
+      const id = await deps.store.savePlace(resolved);
+      namedIds.push(id);
+      namedHits.set(id, { hit: resolved, rating: resolved.rating ?? null });
     }
     if (unresolved.length) {
       return {
@@ -178,9 +194,7 @@ export async function findBusiness(deps: FindDeps, user: User, a: FindArgs): Pro
       note:
         `propose_plan when nothing else is missing: the plan names all ${picked.length} places and says each gets the same questions. No choose_business, no asking them to pick.${
           dropped.length
-            ? ` Named but can't be called: ${
-              dropped.join(", ")
-            }. Say so and why (not found, no number, or closed).`
+            ? ` Named but can't be called: ${dropped.join(", ")}. Say so, with the reason given for each.`
             : ""
         }`,
     };

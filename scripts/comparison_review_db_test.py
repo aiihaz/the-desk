@@ -105,10 +105,16 @@ assert one('select audio_path from calls where id=%s',[call])==call+'.wav'
 c.execute("update calls set created_at=now()-interval '10 years' where id=%s",[call]);one('select prepare_audio_cleanup()')
 assert one('select count(*) from call_audio_deletions where path=%s',[call+'.wav'])==1
 print('PASS delayed recording retry, durable completion, retention tombstone')
-# Cascaded deletion must queue deterministic path even after upload-before-ack crash.
-u2,r2,calls2=batch(1);call2=calls2[0]
-c.execute('delete from calls where id=%s',[call2])
-assert one('select count(*) from call_audio_deletions where path=%s',[call2+'.wav'])==1
+# Cascaded deletion must queue deterministic path even after upload-before-ack crash:
+# a job that was taken at least once may have left bytes. A never-taken one has none.
+u2,r2,calls2=batch(2);call2,call2b=calls2[0],calls2[1]
+for x in (call2,call2b):
+    provider['callId']=x;provider['attemptId']='synthetic-'+x
+    one('select finish_provider_call(%s)',[Jsonb(provider)])
+c.execute('update call_audio_jobs set attempts=1 where call_id=%s',[call2])
+c.execute('delete from calls where id in (%s,%s)',[call2,call2b])
+assert one('select count(*) from call_audio_deletions where path=%s and user_id=%s',[call2+'.wav',u2])==1
+assert one('select count(*) from call_audio_deletions where path=%s',[call2b+'.wav'])==0
 print('PASS cascade/account deletion preserves orphan-upload cleanup tombstone')
 # Erasure waits on a live archive lease; no new work may claim after deletion starts.
 u3,r3,calls3=batch(1);call3=calls3[0]
@@ -121,7 +127,11 @@ one('select erase_requested_users()')
 assert one('select count(*) from users where id=%s',[u3])==1
 assert one('select finish_audio_job(%s,%s,true)',[call3,job['token']])is False
 assert one('select count(*) from call_audio_deletions where path=%s',[call3+'.wav'])==1
+# Still queued for removal: erasure keeps waiting until the worker removes the bytes.
+one('select prepare_audio_cleanup()');one('select erase_requested_users()')
+assert one('select count(*) from users where id=%s',[u3])==1
+c.execute('delete from call_audio_deletions where path=%s',[call3+'.wav'])  # worker removed it
 one('select erase_requested_users()')
 assert one('select count(*) from users where id=%s',[u3])==0
-print('PASS erasure waits for leased uploads, rejects saved audio after deletion, keeps tombstones')
+print('PASS erasure waits for leased uploads and for queued deletions to be removed')
 print('ALL REVIEW DB REGRESSIONS PASS, synthetic data only')

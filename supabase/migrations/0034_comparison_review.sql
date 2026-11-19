@@ -133,10 +133,20 @@ create table call_audio_jobs(
   last_error text
 );
 alter table call_audio_jobs enable row level security;
+-- user_id has no foreign key on purpose: the tombstone outlives the user's rows, and
+-- erasure waits until that user's tombstones are gone (the bytes are removed).
 create table call_audio_deletions(
   path text primary key,
+  user_id uuid,
   created_at timestamptz not null default now()
 );
+create index call_audio_deletions_user_idx on call_audio_deletions(user_id);
+
+-- One way to queue a deletion, so every path keeps the first owner it was queued with.
+create function queue_audio_deletion(p_path text, p_user_id uuid) returns void language sql as $$
+  insert into call_audio_deletions(path,user_id) values(p_path,p_user_id)
+  on conflict(path) do update set user_id=coalesce(call_audio_deletions.user_id,excluded.user_id);
+$$;
 alter table call_audio_deletions enable row level security;
 
 create function queue_call_audio() returns trigger language plpgsql as $$
@@ -157,23 +167,32 @@ for each row execute function queue_call_audio();
 -- directly: the worker removes the actual bytes through the Storage API.
 create function queue_deleted_audio() returns trigger language plpgsql as $$
 begin
-  -- Deterministic path also catches an upload that completed before its worker crashed.
-  insert into call_audio_deletions(path)values(coalesce(old.audio_path,old.id::text||'.wav')) on conflict do nothing;
+  -- Only a call that can have bytes in the bucket: a saved recording, or an archive job
+  -- that was taken at least once (an upload may have landed before its worker crashed).
+  -- Every other deleted call (ordinary calls, never-attempted jobs) has nothing to remove.
+  if old.audio_path is not null or exists(select 1 from call_audio_jobs where call_id=old.id and attempts>0) then
+    perform queue_audio_deletion(coalesce(old.audio_path,old.id::text||'.wav'),old.user_id);
+  end if;
   return old;
 end $$;
 create trigger queue_deleted_audio before delete on calls
 for each row execute function queue_deleted_audio();
 
 create function prepare_audio_cleanup(p_now timestamptz default now()) returns void language plpgsql as $$
+declare n int;
 begin
-  insert into call_audio_deletions(path)
-    select audio_path from calls c where audio_path is not null and
-      (transcript_until(c.id)<=p_now or exists(select 1 from users u where u.id=c.user_id and u.delete_requested_at is not null))
-    on conflict do nothing;
-  insert into call_audio_deletions(path)select call_id::text||'.wav' from call_audio_jobs where expires_at<=p_now and (lease_until is null or lease_until<=p_now) on conflict do nothing;
-  delete from call_audio_jobs j where (lease_until is null or lease_until<=p_now) and (expires_at<=p_now or exists(
-    select 1 from calls c join users u on u.id=c.user_id where c.id=j.call_id and
-      (u.delete_requested_at is not null or transcript_until(c.id)<=p_now)));
+  perform queue_audio_deletion(c.audio_path,c.user_id) from calls c where c.audio_path is not null and
+      (transcript_until(c.id)<=p_now or exists(select 1 from users u where u.id=c.user_id and u.delete_requested_at is not null));
+  -- Jobs that can no longer run: expired, past retention, or their user asked for erasure.
+  -- An attempted job may have left bytes, so its path is queued; an unattempted one has none.
+  with dead as (
+    delete from call_audio_jobs j where (lease_until is null or lease_until<=p_now) and (expires_at<=p_now or exists(
+      select 1 from calls c join users u on u.id=c.user_id where c.id=j.call_id and
+        (u.delete_requested_at is not null or transcript_until(c.id)<=p_now)))
+    returning j.call_id, j.attempts
+  )
+  select count(queue_audio_deletion(d.call_id::text||'.wav',c.user_id)) into n
+    from dead d left join calls c on c.id=d.call_id where d.attempts>0;
 end $$;
 
 create function take_audio_jobs(p_now timestamptz default now()) returns jsonb language plpgsql as $$
@@ -197,18 +216,18 @@ returns boolean language plpgsql as $$
 declare j call_audio_jobs; c calls; v_path text:=p_call_id::text||'.wav';
 begin
   select * into j from call_audio_jobs where call_id=p_call_id for update;
-  if not found or j.token is distinct from p_token or j.lease_until<=p_now then
-    if p_uploaded then insert into call_audio_deletions(path) values(v_path) on conflict do nothing; end if;
+  select * into c from calls where id=p_call_id for update;
+  if j.call_id is null or j.token is distinct from p_token or j.lease_until<=p_now then
+    if p_uploaded then perform queue_audio_deletion(v_path,c.user_id); end if;
     return false;
   end if;
-  select * into c from calls where id=p_call_id for update;
   if p_uploaded and c.id is not null and transcript_until(c.id)>p_now and
     not exists(select 1 from users where id=c.user_id and delete_requested_at is not null) then
     update calls set audio_path=v_path where id=c.id;
     delete from call_audio_jobs where call_id=p_call_id;
     return true;
   end if;
-  if p_uploaded then insert into call_audio_deletions(path)values(v_path)on conflict do nothing; end if;
+  if p_uploaded then perform queue_audio_deletion(v_path,c.user_id); end if;
   update call_audio_jobs set token=null,lease_until=null,
     next_attempt_at=p_now+interval '5 minutes',last_error='recording unavailable or archive failed'
     where call_id=p_call_id;
@@ -217,7 +236,7 @@ end $$;
 
 revoke all on call_audio_jobs,call_audio_deletions from public,anon,authenticated;
 grant all on call_audio_jobs,call_audio_deletions to service_role;
-revoke execute on function queue_call_audio(),queue_deleted_audio(),prepare_audio_cleanup(timestamptz),take_audio_jobs(timestamptz),finish_audio_job(uuid,uuid,boolean,timestamptz) from public,anon,authenticated;
+revoke execute on function queue_audio_deletion(text,uuid),queue_call_audio(),queue_deleted_audio(),prepare_audio_cleanup(timestamptz),take_audio_jobs(timestamptz),finish_audio_job(uuid,uuid,boolean,timestamptz) from public,anon,authenticated;
 grant execute on function prepare_audio_cleanup(timestamptz),take_audio_jobs(timestamptz),finish_audio_job(uuid,uuid,boolean,timestamptz) to service_role;
 
 -- Stop a superseded batch without reusing its turn lease or silently dropping calls.
@@ -239,14 +258,18 @@ end $$;
 revoke execute on function interrupt_comparison_dispatch(uuid) from public,anon,authenticated;
 grant execute on function interrupt_comparison_dispatch(uuid) to service_role;
 
--- An already leased upload must finish (or lose its lease) before account erasure.
+-- Erasure waits until the user's audio is gone: no saved recording, no archive job
+-- (prepare_audio_cleanup turns them into deletions once erasure is requested), and no
+-- queued deletion of theirs still waiting for the worker to remove the bytes. So the
+-- confirmation only goes out once the bytes are removed, and a Storage outage delays
+-- that one user's erasure instead of failing the job that runs everyone's work.
 -- New uploads cannot claim work once delete_requested_at is set.
 do $$
 declare src text; needle text:='perform lock_user(u.id);';
 begin
  src:=pg_get_functiondef('public.erase_requested_users(timestamptz)'::regprocedure);
  if position(needle in src)=0 then raise exception 'erasure source changed: review required'; end if;
- execute replace(src,needle,needle||' if exists(select 1 from call_audio_jobs j join calls c on c.id=j.call_id where c.user_id=u.id and j.lease_until>p_now) then continue; end if;');
+ execute replace(src,needle,needle||' if exists(select 1 from call_audio_jobs j join calls c on c.id=j.call_id where c.user_id=u.id) or exists(select 1 from calls c where c.user_id=u.id and c.audio_path is not null) or exists(select 1 from call_audio_deletions d where d.user_id=u.id) then continue; end if;');
 end $$;
 
 -- If earlier calls already produced results, a newer message must not rewind their

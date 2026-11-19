@@ -1,5 +1,5 @@
 import { deepStrictEqual as eq } from "node:assert/strict";
-import { type AudioWork, processCallAudio } from "./call_audio.ts";
+import { type AudioWork, processCallAudio, runCallAudio } from "./call_audio.ts";
 
 function fake() {
   const log: string[] = [];
@@ -65,4 +65,20 @@ Deno.test("audio upload failure persists a retry instead of claiming success", a
   };
   await processCallAudio(work, true);
   eq(log.at(-1), "finish:false");
+});
+Deno.test("scheduled audio work reports a Storage outage instead of throwing into the job", async () => {
+  const { work } = fake();
+  work.remove = async () => {
+    throw Error("storage unavailable");
+  };
+  const res = await runCallAudio(work, true);
+  eq(res, { ok: false, error: "storage unavailable" });
+});
+Deno.test("a deletion backlog is left for the next run, not thrown", async () => {
+  const { work, log } = fake();
+  work.acknowledge = async () => {
+    log.push("ack"); // the queue never empties
+  };
+  await processCallAudio(work, false);
+  eq(log.filter((x) => x === "remove").length, 20);
 });

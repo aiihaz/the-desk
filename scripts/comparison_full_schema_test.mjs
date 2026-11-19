@@ -2,7 +2,7 @@ const {PGlite} = await import(process.env.PGLITE_MODULE || '@electric-sql/pglite
 const {pgcrypto} = await import(process.env.PGLITE_PGCRYPTO_MODULE || '@electric-sql/pglite/contrib/pgcrypto');
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
-const root = new URL('..', import.meta.url).pathname;
+const root = decodeURIComponent(new URL('..', import.meta.url).pathname);
 const db=new PGlite({extensions:{pgcrypto}});
 await db.exec('create role anon;create role authenticated;create role service_role;create schema storage; create table storage.buckets(id text primary key,name text,public boolean);');
 for(const file of fs.readdirSync(root+'/supabase/migrations').sort()) {

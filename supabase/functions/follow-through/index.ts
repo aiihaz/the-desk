@@ -1,4 +1,4 @@
-import { audioWork, processCallAudio } from "../_shared/call_audio.ts";
+import { audioWork, runCallAudio } from "../_shared/call_audio.ts";
 import { authorizeInternal } from "../_shared/internal_auth.ts";
 import { createAgentRuntime } from "../_shared/agent_runtime.ts";
 import { runFollowThrough } from "../_shared/chat/followup.ts";
@@ -19,11 +19,11 @@ Deno.serve(async (req) => {
     create: responsesClient(Deno.env.get("OPENAI_API_KEY") ?? ""),
   });
   const db = serviceClient();
-  await processCallAudio(audioWork(db), Deno.env.get("DESK_AUDIO_ARCHIVE_APPROVED") === "true");
+  // Removes queued audio first, so a user whose recordings are now gone can be erased
+  // in this same run. erase_requested_users skips anyone with audio still in the bucket.
+  const audio = await runCallAudio(audioWork(db), Deno.env.get("DESK_AUDIO_ARCHIVE_APPROVED") === "true");
   const { data: notices, error } = await db.rpc("erase_requested_users");
   if (error) throw error;
-  // Cascading deletion creates tombstones; remove bytes before confirming erasure.
-  await processCallAudio(audioWork(db), false);
   for (const notice of notices ?? []) {
     // Do not recreate the deleted profile or log its confirmation in application storage.
     if (notice.channel !== "linq" && Date.now() - Date.parse(notice.last_inbound_at) >= 24 * 3_600_000) {
@@ -43,7 +43,7 @@ Deno.serve(async (req) => {
       console.error("could not deliver deletion confirmation");
     }
   }
-  const job = await db.rpc("job_ran", { p_name: "follow-through", p_detail: result });
+  const job = await db.rpc("job_ran", { p_name: "follow-through", p_detail: { ...result, audio } });
   if (job.error) throw job.error;
   return Response.json(result);
 });

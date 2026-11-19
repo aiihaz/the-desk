@@ -191,3 +191,24 @@ Deno.test("cancel and reschedule never enter comparison dial, even for a legacy 
     eq(s.dispatchFinishes, []);
   }
 });
+Deno.test("a named business resolved to a listing with no number is reported as that, not as unclear", async () => {
+  const s = store();
+  s.req!.state = "collecting";
+  const noPhone: PlaceHit = { ...hit, placeId: "named-no-phone", name: "Named Salon", phone: null };
+  const result = await findBusiness(
+    {
+      store: s,
+      send: async () => "x",
+      searchPlaces: async ({ text }) => text.startsWith("Named Salon") ? [noPhone] : [hit],
+      // The resolver sees every listing, callable or not.
+      resolveNamed: async (_named, _area, _city, hits) =>
+        hits.find((h) => h.placeId === "named-no-phone") ?? null,
+    },
+    user,
+    { query: "salon", area: "HSR", city: "Bengaluru", byKind: false, recipients: ["Named Salon"] },
+  );
+  eq(result.ok, true);
+  // deno-lint-ignore no-explicit-any
+  eq((result as any).unusable_named, ["Named Salon (no phone number on its listing)"]);
+  eq(s.recipientsSet.length, 1);
+});

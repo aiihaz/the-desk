@@ -15,12 +15,13 @@ export type AudioWork = {
 
 // Cleanup always runs, including with archive permission off. A missing recording
 // is durable work, not a successful archive. Every attempt is fenced by a DB lease.
+// A backlog is left for the next run: erasure waits in the database until a user's
+// queued deletions are gone, so nothing here has to fail to hold a confirmation back.
 export async function processCallAudio(work: AudioWork, approved: boolean): Promise<void> {
   await work.prepare();
-  for (let batch = 0;; batch++) {
+  for (let batch = 0; batch < 20; batch++) {
     const paths = await work.deletions();
     if (!paths.length) break;
-    if (batch >= 20) throw new Error("Audio cleanup backlog; do not confirm erasure yet");
     await work.remove(paths);
     await work.acknowledge(paths);
   }
@@ -37,6 +38,23 @@ export async function processCallAudio(work: AudioWork, approved: boolean): Prom
       // Bounded by job expiry/retention. The database schedules the next attempt.
     }
     await work.finish(job, uploaded);
+  }
+}
+
+// What the scheduled jobs call. Audio is side work: a Storage or provider outage is
+// logged and reported, never thrown into the job that also settles calls, replays
+// events and erases accounts.
+export async function runCallAudio(
+  work: AudioWork,
+  approved: boolean,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await processCallAudio(work, approved);
+    return { ok: true };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    console.error("call audio work failed", error);
+    return { ok: false, error };
   }
 }
 

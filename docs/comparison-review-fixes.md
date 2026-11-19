@@ -74,3 +74,20 @@ These are synthetic local tests. They do not verify production traffic or the re
 - No paid semantic-model benchmark or provider/storage integration test has been run. Identity quality, actual recording readiness/deletion, and remote crash/retry behavior remain unverified end to end.
 - Original Aurora recipient binding and frozen case evaluation remain separate work.
 - Bolna migration reconciliation is explicitly left aside, not resolved.
+
+## Second review pass, 19 November 2026
+
+Fixes to the review-fix commit above. Like that commit, these are not migrated or deployed. They edit `0034` in place because `0034` has never been applied anywhere.
+
+| Second-review finding | Correction | Check |
+|---|---|---|
+| Audio work ran first in reconcile and threw on any Storage/RPC error or after 20 deletion batches, blocking call recovery, settlement retries, event replay and erasure | `runCallAudio` catches and reports the error in the job's detail. Reconcile runs it last. A backlog is left for the next run, not thrown | `call_audio_test.ts`: outage returns `ok:false`, backlog stops at 20 batches |
+| Erasure confirmation depended on the audio worker throwing | `erase_requested_users` now skips a user who still has a saved recording, an archive job or a queued deletion of their own. `call_audio_deletions.user_id` (no foreign key) keeps the owner after cascade. A Storage outage now delays only that user's erasure | `comparison_audio_erasure_test.mjs`: erasure waits for saved audio and for a late upload, then completes |
+| Every deleted call queued a deletion, comparison or not | The delete trigger queues one only when bytes can exist: a saved `audio_path`, or a job taken at least once | Ordinary and never-attempted calls queue nothing |
+| Archive jobs that expired unattempted (gate off) turned into deletion entries | Only attempted jobs queue their path when dropped | Expired unattempted job leaves no entry |
+| A named business with no number was reported as "identity unresolved" | The resolver sees every listing the search returned. A resolved listing that has no phone, is closed or is outside India is reported with that reason | `comparison_review_test.ts` no-phone case |
+| SQL test scripts failed on paths containing spaces | Root path is URL-decoded | Scripts run from `the desk/` |
+
+Still open: the `erase_requested_users` and `defer_changed_consent` patches match on repository source text. If the live functions differ, the migration stops with "source changed: review required" rather than misapplying. Compare against the live definitions before applying.
+
+Checks for this pass: `deno task check` clean; `deno task test` 557 passed, 0 failed; `comparison_full_schema_test.mjs`, `comparison_sql_test.mjs` and the new `comparison_audio_erasure_test.mjs` pass in PGlite 0.5.17. `comparison_review_db_test.py` was updated to the new behaviour but not run here (no `pgserver`).

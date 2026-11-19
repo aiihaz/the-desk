@@ -2,7 +2,7 @@ const {PGlite} = await import(process.env.PGLITE_MODULE || '@electric-sql/pglite
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 const db=new PGlite();
-const root = new URL('..', import.meta.url).pathname;
+const root = decodeURIComponent(new URL('..', import.meta.url).pathname);
 await db.exec(`
 create role anon; create role authenticated; create role service_role;
 create table requests(id uuid primary key,user_id uuid,business_id uuid,comparison boolean default false,recipient_ids uuid[],comparison_dispatching boolean default true,comparison_dispatch_until timestamptz default now()+interval '10 minutes',state text,updated_at timestamptz);

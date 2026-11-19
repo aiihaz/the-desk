@@ -1,4 +1,4 @@
-import { audioWork, processCallAudio } from "../_shared/call_audio.ts";
+import { audioWork, runCallAudio } from "../_shared/call_audio.ts";
 import { ingestPayload } from "../wa-inbound/handler.ts";
 import { callAfterConsent } from "../_shared/chat/calls.ts";
 import { createAgentRuntime } from "../_shared/agent_runtime.ts";
@@ -54,7 +54,6 @@ Deno.serve(async (req) => {
   const denied = authorizeInternal(req, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "");
   if (denied) return denied;
   if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
-  await processCallAudio(audioWork(db), Deno.env.get("DESK_AUDIO_ARCHIVE_APPROVED") === "true");
   const recovered = await db.rpc("recover_reserved_calls");
   if (recovered.error) throw recovered.error;
   // Terminal provider results remain durable until settlement, regardless of webhook retries.
@@ -171,7 +170,9 @@ Deno.serve(async (req) => {
   }
   const followThrough = await runFollowThrough(report);
   const alerts = await pushAlerts({ store: admin, admins: adminUsers, send });
-  const detail = { ...summary, redials: redials.length, followThrough };
+  // Last, and never fatal: a recording fetch or Storage outage can't hold up recovery.
+  const audio = await runCallAudio(audioWork(db), Deno.env.get("DESK_AUDIO_ARCHIVE_APPROVED") === "true");
+  const detail = { ...summary, redials: redials.length, followThrough, audio };
   const ran = await db.rpc("job_ran", { p_name: "reconcile", p_detail: detail });
   if (ran.error) console.error("job_ran failed", ran.error);
   return Response.json({ ...summary, redials, followThrough, alerts });
