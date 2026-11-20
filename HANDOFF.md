@@ -54,7 +54,7 @@ Meaning comes from models, never word lists; code guards money and state. **Do n
 
 ## Non-negotiable operational constraints
 
-- Every actual Sarvam call stays hardcoded to **+918848878757**, never a business/Maps destination. Purchased outgoing caller ID is **+918064269395**.
+- Since Nov 20, 2026 (comparison-mode) every Sarvam call dials its own business; the hardcoded test destination was removed at the owner's request. Purchased outgoing caller ID is **+918064269395**.
 - Calling stays paused until the owner explicitly resumes: `DESK_CALLS_PAUSED=1` and database `kill_switch=true` (both verified after this deployment). No automatic unpause, no real call tests.
 - Work stays on `imessage-linq`; don't push it into main or overwrite the Codex branch.
 - Supabase project **rvglpiyctuzpegbvlane** (`thedesk`). Preserve data and migration history.
