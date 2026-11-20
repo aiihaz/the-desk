@@ -56,7 +56,7 @@ const args = parseArgs(Deno.args, {
 type Row = Record<string, any>;
 
 async function loadEnv() {
-  const here = new URL("..", import.meta.url).pathname;
+  const here = decodeURIComponent(new URL("..", import.meta.url).pathname);
   const candidates = args.env ? [args.env] : [
     `${here}supabase/functions/.env`,
     `${here}../desk/supabase/functions/.env`,
