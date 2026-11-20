@@ -279,7 +279,7 @@ async function start() {
   Deno.env.set("DESK_CALLS_PAUSED", "0");
   const sarvam = sarvamConfigFromEnv();
   const calls = new DbCallStore();
-  console.log(`\nApproved (consent ${consent.consent_id}). Dialling…`);
+  console.log(`\nApproved. Request ${requestId} (follow or reprint: --watch ${requestId}). Dialling…`);
   const res = await callAfterConsent(
     {
       store: chat,
