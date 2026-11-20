@@ -105,6 +105,8 @@ Deno.serve(async (req) => {
   }
   for (const row of await waStore.pendingInbound()) {
     if (row.blocked) continue;
+    // The bench marks its own approval handled; it has no conversation to resume.
+    if ((row.channel as string) === "bench") continue;
     const channel = row.channel ?? "whatsapp";
     const parsed = channel === "linq" ? parseStoredLinqMessage(row.body) : parseWebhook({
       object: "whatsapp_business_account",

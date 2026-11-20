@@ -8,7 +8,8 @@
     "report-eval": "deno run --allow-net --allow-env --allow-read dev/report_eval.ts",
     "caller-check": "deno run --allow-read dev/caller_check.ts",
     "test:auth": "deno run --allow-run --allow-read --allow-net=127.0.0.1 scripts/test_internal_auth.ts",
-    "test:bench": "deno test dev/safety_test.ts"
+    "test:bench": "deno test dev/safety_test.ts",
+    "bench": "deno run --allow-net --allow-env --allow-read --allow-run=supabase scripts/comparison_bench.ts"
   },
   "fmt": {
     "lineWidth": 110,

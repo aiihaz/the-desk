@@ -26,6 +26,7 @@ Deno.serve(async (req) => {
   if (error) throw error;
   for (const notice of notices ?? []) {
     // Do not recreate the deleted profile or log its confirmation in application storage.
+    if (notice.channel === "bench") continue;
     if (notice.channel !== "linq" && Date.now() - Date.parse(notice.last_inbound_at) >= 24 * 3_600_000) {
       continue;
     }

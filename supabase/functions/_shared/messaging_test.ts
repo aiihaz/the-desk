@@ -88,3 +88,12 @@ Deno.test("missing or blocked delivery targets cannot be sent through either cha
   );
   assertEquals(s.sent.length, 0);
 });
+
+Deno.test("bench user messages are stored and never reach a channel sender", async () => {
+  const s = setup();
+  s.users.set("bench-user", { id: "bench-user", waId: "bench:comparison", blocked: false, channel: "bench" });
+  const id = await s.send(s.users.get("bench-user")!, { kind: "text", body: "Ranked summary" });
+  assertEquals(id.startsWith("bench:"), true);
+  assertEquals(s.sent.length, 0);
+  assertEquals(s.saved, ["bench-user"]);
+});

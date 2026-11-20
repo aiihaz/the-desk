@@ -438,7 +438,9 @@ export async function setFollowUp(
   if (a.remindAt && (!ISO_TIME.test(a.remindAt) || Date.parse(a.remindAt) <= now.getTime())) {
     return { ok: false, reason: "remind_at: a future time, ISO 8601 with +05:30" };
   }
-  const end = user.channel === "linq" ? undefined : await deps.store.serviceWindowEnds?.(user.id);
+  const end = user.channel === "linq" || user.channel === "bench"
+    ? undefined
+    : await deps.store.serviceWindowEnds?.(user.id);
   if (a.remindAt && (end === null || end && Date.parse(a.remindAt) >= end.getTime())) {
     return {
       ok: false,

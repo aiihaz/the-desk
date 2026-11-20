@@ -4,7 +4,9 @@ import { waIdToE164 } from "./e164.ts";
 import type { Inbound, Outbound } from "./whatsapp.ts";
 
 export type MessagingChannel = "whatsapp" | "linq";
-export type User = { id: string; waId: string; blocked: boolean; channel?: MessagingChannel };
+// "bench": the comparison bench's own user (0036). What the Desk sends it is stored, never sent.
+export type DeliveryChannel = MessagingChannel | "bench";
+export type User = { id: string; waId: string; blocked: boolean; channel?: DeliveryChannel };
 
 // Keep existing WhatsApp keys and unique constraints intact. Linq identities get
 // a separate user UUID even when the same phone uses both channels.
@@ -20,7 +22,9 @@ export function storedUser(row: {
   phone_e164: string | null;
   channel: string;
 }): User {
-  if (row.channel !== "whatsapp" && row.channel !== "linq") throw new Error("unknown messaging channel");
+  if (row.channel !== "whatsapp" && row.channel !== "linq" && row.channel !== "bench") {
+    throw new Error("unknown messaging channel");
+  }
   return {
     id: row.id,
     waId: row.channel === "linq" ? (row.phone_e164 ?? "").slice(1) : row.wa_id,
